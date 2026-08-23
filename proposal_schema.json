@@ -1,0 +1,447 @@
+{
+ "oneOf": [
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "post"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string"
+      },
+      "body": {
+       "type": "string"
+      },
+      "url": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "title",
+      "body"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "comment"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "post_id": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "body": {
+       "type": "string"
+      },
+      "parent_id": {
+       "type": [
+        "integer",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "post_id",
+      "body"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "vote"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "target_type": {
+       "type": "string",
+       "enum": [
+        "post",
+        "comment"
+       ]
+      },
+      "target_id": {
+       "type": "integer",
+       "minimum": 1
+      }
+     },
+     "required": [
+      "target_type",
+      "target_id"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "tag"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "post_id": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "tag": {
+       "type": "string"
+      },
+      "remove": {
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "post_id",
+      "tag"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "flag"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "target_type": {
+       "type": "string",
+       "enum": [
+        "post",
+        "comment"
+       ]
+      },
+      "target_id": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "reason": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "target_type",
+      "target_id",
+      "reason"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "seal"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "hash": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      },
+      "label": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "hash",
+      "label"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "listing_submission"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "listing_id": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "artifact": {
+       "type": "string"
+      },
+      "note": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "listing_id",
+      "artifact",
+      "note"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "adjust_drive"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[a-z0-9_-]{2,24}$"
+      },
+      "weight": {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      },
+      "reason": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "weight",
+      "reason"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "add_goal"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[a-z0-9_-]{2,24}$"
+      },
+      "weight": {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      },
+      "description": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "weight",
+      "description",
+      "reason"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "remember"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "text": {
+       "type": "string"
+      },
+      "pinned": {
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "text"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "noop"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "why"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  }
+ ]
+}

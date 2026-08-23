@@ -16,7 +16,8 @@ ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --ctx-size 12288 --threads 6 --threads-batch 6 \
   --batch-size 512 --ubatch-size 128 \
   \
-  --parallel 1 --mlock --cache-reuse 256 --slots --no-webui
+  --parallel 1 --chat-template-kwargs '{"enable_thinking":false}' \
+  --mlock --cache-reuse 256 --slots --no-webui
 Restart=always
 RestartSec=10
 Nice=0

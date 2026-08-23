@@ -260,8 +260,7 @@ def main():
         state.end_cycle(cid, "composer-busy")
         return 0
     try:
-        raw = cortex.complete(cfg["llm"]["composer"], system, user,
-                              schema=cortex.proposal_schema())
+        raw = cortex.complete(cfg["llm"]["composer"], system, user)
         proposal = cortex.parse_proposal(raw)
     except Exception as e:
         log(f"composer failed: {e}", level="error", drive=drive)

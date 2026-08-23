@@ -80,7 +80,7 @@ payload fields by action:
   flag                {"target_type": "post"|"comment", "target_id": int, "reason": <=200}
   seal                {"hash": 64 hex chars, "label": string}
   listing_submission  {"listing_id": int, "artifact": string, "note": string}
-  noop                {"why": string, UNDER 400 CHARACTERS}
+  noop                {"why": string}
 
   Reflexive actions change YOU, not the square. They are never sent anywhere.
   adjust_drive        {"name": goal, "weight": 0-1, "reason": >=20 chars}
@@ -112,27 +112,15 @@ def _post_json(url, body, timeout=1800):
         return json.loads(r.read().decode())
 
 
-def complete(llm_cfg, system, user, timeout=1800, schema=None):
-    """OpenAI-compatible /v1/chat/completions, which llama-server serves.
-
-    Pass schema=proposal_schema() to constrain the sampler. Without it the
-    call is unchanged, which is what the chat path and the memory extractor
-    want — they produce prose, not proposals.
-    """
-    body = {
+def complete(llm_cfg, system, user, timeout=1800):
+    """OpenAI-compatible /v1/chat/completions, which llama-server serves."""
+    out = _post_json(llm_cfg["url"].rstrip("/") + "/v1/chat/completions", {
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "max_tokens": llm_cfg.get("max_tokens", 1600),
         "temperature": llm_cfg.get("temperature", 0.7),
         "cache_prompt": True,
-    }
-    if schema is not None:
-        body["response_format"] = {"type": "json_schema",
-                                   "json_schema": {"name": "proposal",
-                                                   "strict": True,
-                                                   "schema": schema}}
-    out = _post_json(llm_cfg["url"].rstrip("/") + "/v1/chat/completions", body,
-                     timeout=timeout)
+    }, timeout=timeout)
     return out["choices"][0]["message"]["content"]
 
 
@@ -302,30 +290,14 @@ ACTION_PAYLOADS = {'post': {'type': 'object',
 
 
 def proposal_schema():
-    """Constrained-decoding schema for one proposal, loaded from JSON.
-
-    Kept in /opt/riffle/proposal_schema.json rather than inline, so changing
-    it is a JSON edit rather than a Python patch.
-
-    String LENGTH bounds are deliberately absent. llama.cpp expands maxLength
-    into explicit repetition in the generated grammar, and an 8000-character
-    body across eleven branches produced a grammar its parser refused. Every
-    construct here compiled individually; the assembled one did not, and the
-    lengths were the difference.
-
-    Lengths, caps, locks and drive restrictions live in drives.gate, which is
-    the right split: the grammar guarantees a COMPLETE, WELL-SHAPED object so
-    the parser never sees a truncated one, and the gate decides policy. The
-    first attempt had the two overlapping, and the overlap is what broke it.
-
-    Neither makes the content TRUE. A schema-valid comment can still carry the
-    wrong post_id under a fluent rationale.
-    """
-    import json as _json
-    import os as _os
-    _p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                       "proposal_schema.json")
-    with open(_p) as _f:
-        return _json.load(_f)
-
-
+    """oneOf over per-action branches, so action and payload cannot disagree."""
+    return {"oneOf": [
+        {"type": "object",
+         "properties": {
+             "action": {"const": name},
+             "payload": payload,
+             "rationale": {"type": "string", "minLength": 10, "maxLength": 2000},
+             "sources": {"type": "object"}},
+         "required": ["action", "payload", "rationale"],
+         "additionalProperties": False}
+        for name, payload in ACTION_PAYLOADS.items()]}

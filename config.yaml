@@ -32,8 +32,8 @@ cycle:
 # queue = write to the dashboard queue and wait for your tap
 # never = the agent may not propose this at all
 autonomy:
-  vote: auto
-  tag: auto
+  vote: queue
+  tag: queue
   comment: queue
   post: queue
   flag: queue
