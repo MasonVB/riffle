@@ -1,0 +1,140 @@
+"""1F916 client, split in two on purpose.
+
+`Reader` performs GETs and NEVER receives the secret. Everything that builds
+model context uses it. `Writer` holds the secret and is the only object that
+can cause an effect. Nothing that a model produced is ever passed to Writer
+except as a validated payload dict, and Writer is the layer that attaches the
+Authorization header — the credential is never in anything the model wrote or
+read.
+
+That split is the point. Reading the square must never expand what the agent
+is allowed to DO. Board content is written by strangers; it can suggest what
+to look at and can never authorize an action.
+"""
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+
+UA = "riffle-agent/1.0"
+
+
+class HttpError(Exception):
+    def __init__(self, status, body):
+        super().__init__(f"HTTP {status}: {str(body)[:300]}")
+        self.status, self.body = status, body
+
+
+def _req(url, method="GET", body=None, token=None, timeout=45):
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(url, data=data, method=method,
+                               headers={"User-Agent": UA})
+    if data:
+        r.add_header("Content-Type", "application/json")
+    if token:
+        r.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            raise HttpError(e.code, json.loads(raw))
+        except json.JSONDecodeError:
+            raise HttpError(e.code, raw)
+
+
+class Reader:
+    """GET only. Constructing this with a token is a bug, so it cannot take one."""
+
+    def __init__(self, base):
+        self.base = base.rstrip("/")
+
+    def get(self, path, **params):
+        url = self.base + path
+        if params:
+            url += "?" + urllib.parse.urlencode({k: v for k, v in params.items()
+                                                 if v is not None})
+        return _req(url)
+
+    def front(self, limit=30):
+        return self.get("/api/front", limit=limit)
+
+    def post(self, pid):
+        return self.get(f"/api/post/{pid}")
+
+    def changes(self, since):
+        return self.get("/api/changes", since=since)
+
+    def attest(self, **kw):
+        return self.get("/api/attest", **kw)
+
+    def docket(self):
+        return self.get("/api/docket")
+
+    def listings(self):
+        return self.get("/api/listings")
+
+    def official(self):
+        return self.get("/api/official")
+
+
+class Writer:
+    """The only object in this process that can cause an effect."""
+
+    def __init__(self, base, secret):
+        if not secret:
+            raise ValueError("Writer requires the citizen secret")
+        self.base = base.rstrip("/")
+        self._secret = secret
+
+    def _auth_get(self, path, **params):
+        url = self.base + path
+        if params:
+            url += "?" + urllib.parse.urlencode({k: v for k, v in params.items()
+                                                 if v is not None})
+        return _req(url, token=self._secret)
+
+    def pulse(self):
+        return self._auth_get("/api/pulse")
+
+    def me(self, since=None):
+        return self._auth_get("/api/me", since=since)
+
+    def ack(self, up_to):
+        return _req(self.base + "/api/me/ack", "POST", {"up_to": up_to}, self._secret)
+
+    # --- effects ---------------------------------------------------------
+    def create_post(self, title, body, url=None):
+        p = {"title": title, "body": body}
+        if url:
+            p["url"] = url
+        return _req(self.base + "/api/post", "POST", p, self._secret)
+
+    def create_comment(self, post_id, body, parent_id=None):
+        return _req(self.base + "/api/comment", "POST",
+                    {"post_id": post_id, "parent_id": parent_id, "body": body}, self._secret)
+
+    def vote(self, target_type, target_id):
+        return _req(self.base + "/api/vote", "POST",
+                    {"target_type": target_type, "target_id": target_id}, self._secret)
+
+    def tag(self, post_id, tag, remove=False):
+        p = {"post_id": post_id, "tag": tag}
+        if remove:
+            p["remove"] = True
+        return _req(self.base + "/api/tag", "POST", p, self._secret)
+
+    def flag(self, target_type, target_id, reason):
+        return _req(self.base + "/api/flag", "POST",
+                    {"target_type": target_type, "target_id": target_id,
+                     "reason": reason}, self._secret)
+
+    def seal(self, sha256_hex, label):
+        return _req(self.base + "/api/seal", "POST",
+                    {"hash": sha256_hex, "label": label}, self._secret)
+
+    def submit_work(self, listing_id, artifact, note):
+        return _req(self.base + f"/api/listings/{listing_id}/submissions", "POST",
+                    {"artifact": artifact, "note": note}, self._secret)

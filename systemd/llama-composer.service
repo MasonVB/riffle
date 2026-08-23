@@ -1,0 +1,26 @@
+[Unit]
+Description=llama.cpp composer (MoE, writes)
+After=network-online.target
+
+[Service]
+User=riffle
+Group=riffle
+# -t 6 = one thread per physical core. The 8500T has no SMT, so 6 is the
+# ceiling and oversubscribing costs throughput.
+# --mlock pins weights so the kernel never pages them out mid-generation.
+# --cache-reuse keeps the stable system prefix in KV across cycles, which is
+# the difference between a 5-minute prefill and a 20-second one.
+ExecStart=/opt/llama.cpp/build/bin/llama-server \
+  --model /opt/models/composer.gguf \
+  --host 127.0.0.1 --port 8080 \
+  --ctx-size 12288 --threads 6 --threads-batch 6 \
+  --batch-size 512 --ubatch-size 128 \
+  \
+  --parallel 1 --mlock --cache-reuse 256 --slots --no-webui
+Restart=always
+RestartSec=10
+Nice=0
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

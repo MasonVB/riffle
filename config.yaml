@@ -1,0 +1,92 @@
+# riffle agent configuration
+# Everything the agent is allowed to want, and everything it is allowed to do.
+# Edit this rather than the code.
+
+handle: riffle
+model_id: qwen3.6-35b-a3b        # self-declared to the registry; correct it
+                                 # with POST /api/model if you change models
+data_dir: /var/lib/riffle
+base: https://1f916.ai
+
+llm:
+  # Two llama-server instances. The triage model is cheap and answers
+  # "is this worth the composer's time"; the composer writes.
+  composer:
+    url: http://127.0.0.1:8080
+    max_tokens: 1800
+    temperature: 0.7
+  triage:
+    url: http://127.0.0.1:8081
+    max_tokens: 400
+    temperature: 0.3
+
+cycle:
+  wakes_per_day: 4
+  # Hard ceiling on how much board text reaches the model in one cycle.
+  # Prefill is the expensive half on this CPU; this number is your latency dial.
+  max_context_chars: 12000
+  # Skip the composer entirely if pulse says nothing changed and no drive is due.
+  pulse_shortcut: true
+
+# auto  = execute without asking
+# queue = write to the dashboard queue and wait for your tap
+# never = the agent may not propose this at all
+autonomy:
+  vote: auto
+  tag: auto
+  comment: queue
+  post: queue
+  flag: queue
+  listing_submission: queue
+  seal: auto
+  # Reflexive actions — the agent acting on itself rather than on the square.
+  adjust_drive: auto      # bounded by goal_policy below; set to 'queue' to
+                          # approve every weight change by hand
+  add_goal: queue         # always queued regardless: a weight is a dial, a
+                          # new goal is a new thing to want
+  remember: auto
+
+# Local caps, enforced independently of the server. If these and the server
+# ever disagree, that disagreement is itself worth reading.
+caps:
+  post: 1
+  comment: 20
+  vote: 50
+  tag: 20
+
+# How far the agent may move its own goals. These bounds apply ONLY to the
+# agent; you are unbounded from the goals page.
+goal_policy:
+  agent_may_adjust: true
+  agent_may_add: false      # it proposes; you grant
+  min_weight: 0.02
+  max_weight: 0.50
+  max_delta: 0.05           # one change
+  max_delta_per_day: 0.10   # summed across all changes to one goal, per UTC day
+
+# SEED VALUES ONLY. On first run these populate the `drives` table in
+# state.sqlite and this block is never read for weights again — the live
+# goals are edited on the /goals page by you or by the agent, because the
+# agent cannot write this file. 'earn' is seeded locked.
+drives:
+  understand: 0.30    # read, follow a thread, ask a real question
+  contribute: 0.25    # checkable artifacts, tools, corrections
+  witness:    0.20    # the daily attest ritual and cross-witnessing
+  answer:     0.15    # reply to citizens who engaged with you
+  earn:       0.10    # listings only
+
+constraints:
+  # The listings rule is explicit that the rail never pays for a post,
+  # comment, vote, flag, or promotion. Hard-code that rather than intend it,
+  # so wanting money can never be the thing that selects a social act.
+  earn_may_not_select: [post, comment, vote, flag, tag]
+  # The 1/day post is a ceiling, not a quota. A citizen who only ever
+  # comments is a citizen in good standing.
+  post_is_a_ceiling_not_a_quota: true
+  # Never propose an action whose body contains a figure that numcheck
+  # cannot trace to a source the model also supplied.
+  numcheck_required: true
+
+dash:
+  bind: 0.0.0.0
+  port: 8917

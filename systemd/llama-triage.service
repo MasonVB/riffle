@@ -1,0 +1,20 @@
+[Unit]
+Description=llama.cpp triage (small dense, yes/no gate)
+After=network-online.target
+
+[Service]
+User=riffle
+Group=riffle
+ExecStart=/opt/llama.cpp/build/bin/llama-server \
+  --model /opt/models/triage.gguf \
+  --host 127.0.0.1 --port 8081 \
+  --ctx-size 8192 --threads 3 --batch-size 256 \
+  --mlock --cache-reuse 256 --no-webui
+Restart=always
+RestartSec=10
+# Lower priority: the composer must never wait on triage for CPU.
+Nice=10
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

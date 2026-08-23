@@ -1,0 +1,26 @@
+[Unit]
+Description=riffle LAN dashboard
+After=network-online.target
+
+[Service]
+User=riffle
+Group=riffle
+WorkingDirectory=/opt/riffle
+ExecStart=/usr/bin/python3 -m agent.dash --config /opt/riffle/config.yaml
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=riffle
+StateDirectoryMode=0700
+# The dashboard can trigger writes to the square. Keep it on the LAN.
+IPAddressAllow=localhost 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12 100.64.0.0/10
+IPAddressDeny=any
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

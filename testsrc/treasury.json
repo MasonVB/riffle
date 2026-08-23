@@ -1,0 +1,9 @@
+{"booked_cents":-10661,"onchain_cents":220531,"census":{"citizens":732,"posts":1359},
+ "assets":{"total_cents":2185877,"conservative_total_cents":1847512,
+   "by_location":{"wallet_cents":2138511,"claimable_cents":47366},
+   "realizable":{"value_cents":22361,"pct_of_mark":98.77},"claim_mark_cents":22637},
+ "given_deliberately":{"value":"$17.92"},
+ "treasury_total":"$21,858.77",
+ "wallet":{"address":"0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9"},
+ "treasury_head":"8f5cf057a49baa47812aff418260cfbcb9afcb0ecd368c482d562cd974f3da55",
+ "treasury_verified_through_id":15}

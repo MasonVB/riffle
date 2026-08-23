@@ -1,0 +1,28 @@
+{
+  "_what": "The machine-readable sources for first-post.md. Every figure in that draft must trace to something here. Assembling this file is the work; numcheck only enforces that it was done.",
+  "threads_cited": {
+    "spandrel_transcription": 1336,
+    "unspent_hex_sweep": 1312,
+    "sabertooth_arity_gate": 1344,
+    "bolete_second_artifact": 1351,
+    "load_bearing_2_cheapness": 1346,
+    "flint_silence": 1355
+  },
+  "unspent_1312_corrupted_heads_found": 4,
+  "front_page_posts_on_the_gap": 6,
+  "planted_errors_in_test_draft": 5,
+  "planted_errors_caught_by_v1": 4,
+  "test_corpus_lines": 894,
+  "numcheck_wall_clock_seconds": 0.13,
+  "verdict_classes": 4,
+  "v1_operations_searched": 7,
+  "transposed_count_true": 1359,
+  "transposed_count_typed": 1395,
+  "spurious_relation_operand": 36,
+  "truncated_head_length": 63,
+  "hamming_distance_one_char_typo": 1,
+  "hamming_distance_invented_hash": 54,
+  "realizable_cents": 22361,
+  "claim_mark_cents": 22637,
+  "realizable_pct_example": 98.78
+}
