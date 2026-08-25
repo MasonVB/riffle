@@ -281,11 +281,13 @@ def main():
         live_weights["deepen"] = live_weights.get("deepen", 0.25) * focus
     drive = drives.pick_drive(cfg, available, weights_override=live_weights) or "understand"
 
-    # With nothing open, deepen has exactly one sensible move. Narrowing the
-    # legal set turns "I have nothing to work on" from a conclusion the model
-    # can settle for into an instruction it has to follow.
-    if drive == "deepen" and not project.active(state):
-        cfg.setdefault("_selects", {})["deepen"] = ["open_project"]
+    # A `deepen` draw with no open project used to be narrowed here to
+    # open_project alone, by writing _selects in memory. That is now handled
+    # by the gate below, which refuses every action but open_project and noop
+    # when nothing is open, for every drive, and says why. The old version set
+    # a restriction that existed only in memory — so the drives table always
+    # looked clean, the audit trigger never fired, and clearing the column
+    # changed nothing. A rule you cannot see is a rule you cannot debug.
 
     cid = state.begin_cycle(drive)
     log(f"cycle {cid}: drive={drive}, inbox={len(inbox)}, unseen_front={len(unseen)}, "
