@@ -30,6 +30,7 @@ considered one, which is the only lever a design has.
 """
 import datetime as dt
 import json
+import re
 
 from agent.state import utcnow
 
@@ -125,9 +126,34 @@ def add_note(state, pid, cycle_id, kind, text, source=None):
                          "the project does not already contain")
     c = state.db.execute(
         "INSERT INTO project_notes (project_id,cycle_id,ts,kind,text,source)"
-        " VALUES (?,?,?,?,?,?)", (pid, cycle_id, utcnow(), kind, text, source))
+        " VALUES (?,?,?,?,?,?)", (pid, cycle_id, utcnow(), kind, text,
+                                 normalise_source(source)))
     state.db.commit()
     return c.lastrowid
+
+
+def normalise_source(s):
+    """One thread, one source string.
+
+    The notes on the first real project cited the same post as `1f916:2224`,
+    `<1f916:2244>` and `1F916:2244`. Readiness counts DISTINCT sources, so
+    punctuation was inflating the count — a number going up without the thing
+    it measures going up, which is the exact failure this agent exists to
+    catch. Fixing it here rather than asking the model to be consistent: a
+    rule enforced by code holds, a rule in a prompt is a hope.
+    """
+    if not s:
+        return None
+    t = str(s).strip().strip("<>[]() ").lower()
+    m = re.search(r"(?:1f916[:/#]|#)\s*(\d+)", t)
+    if m:
+        return "1f916:" + m.group(1)
+    m = re.match(r"^(\d{1,7})$", t)
+    if m:
+        return "1f916:" + m.group(1)
+    if t.startswith(("http://", "https://")):
+        return t.rstrip("/")
+    return t[:300] or None
 
 
 def notes(state, pid, limit=60):
@@ -192,6 +218,33 @@ def ready(state, cfg, pid=None):
                   f"draft and an objection. It is ready.")
 
 
+def missing_kind(state, cfg, pid):
+    """The one thing to add next, in the order that makes a post possible.
+
+    Returned as a single instruction rather than a list of deficits: an agent
+    told it needs "3 more notes, 1 more source, a draft and an objection" has
+    four things to choose between and picks none. One is a task.
+    """
+    p = cfg.get("projects") or {}
+    s = stats(state, pid)
+    k = s["by_kind"]
+    if k.get("source", 0) < 2 or s["sources"] < int(p.get("min_sources", 2)):
+        return ("read another thread and note what it said — you need at least "
+                "two distinct sources and you have " + str(s["sources"]))
+    if k.get("draft", 0) < int(p.get("min_drafts", 1)):
+        return ("write a DRAFT: a paragraph you would actually publish, in your "
+                "own words, saying what the sources add up to. You have the "
+                "reading and the objection; this is the only kind you are "
+                "missing and it is why you cannot post")
+    if k.get("objection", 0) < int(p.get("min_objections", 1)):
+        return ("write an OBJECTION: the strongest argument against your own "
+                "draft. Not a caveat — the thing that would change your mind")
+    if s["notes"] < int(p.get("min_notes", 6)):
+        return ("add " + str(int(p.get("min_notes", 6)) - s["notes"])
+                + " more note(s) of any kind")
+    return None
+
+
 def as_context(state, cfg, budget=5000):
     """The project block for the cycle prompt.
 
@@ -243,6 +296,10 @@ def as_context(state, cfg, budget=5000):
         lines.append(line)
         used += len(line)
     head.append("WHAT YOU HAVE SO FAR:\n" + "\n".join(lines))
+    _next = missing_kind(state, cfg, proj["id"])
+    if _next:
+        head.append("THE ONE THING TO DO NEXT ON THIS PROJECT: "
+                    + _next + ".")
     head.append("Add the NEXT increment. Not a restatement of the above — read "
                 "a source you have not read, draft a paragraph, or find the "
                 "strongest objection to what you have written. If the project "
