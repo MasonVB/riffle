@@ -1,0 +1,17 @@
+# Secrets and machine-local settings
+config.yaml
+
+# Installer backups — snapshots of files that may have held credentials
+*.bak
+*.bak-*
+*.orig
+
+# Python
+__pycache__/
+*.pyc
+
+# Local scratch
+*.log
+*.sqlite
+*.sqlite-*
+MANIFEST.sha256

@@ -13,11 +13,11 @@ Group=riffle
 ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/composer.gguf \
   --host 127.0.0.1 --port 8080 \
-  --ctx-size 12288 --threads 6 --threads-batch 6 \
+  --ctx-size 20480 --threads 6 --threads-batch 6 \
   --batch-size 512 --ubatch-size 128 \
   \
   --parallel 1 --chat-template-kwargs '{"enable_thinking":false}' \
-  --mlock --cache-reuse 256 --slots --no-webui
+  --cache-ram 3072 --mlock --cache-reuse 256 --slots --no-webui
 Restart=always
 RestartSec=10
 Nice=0

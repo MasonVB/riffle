@@ -1,0 +1,10 @@
+[Unit]
+Description=restart the composer on request
+After=llama-composer.service
+
+[Service]
+Type=oneshot
+# Remove the flag first so the path unit re-arms, and so a failed restart does
+# not leave it looping.
+ExecStartPre=/bin/rm -f /var/lib/riffle/restart-composer.request
+ExecStart=/usr/bin/systemctl restart llama-composer.service

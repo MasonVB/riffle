@@ -1,0 +1,13 @@
+[Unit]
+Description=watch for a composer restart request from the dashboard
+
+[Path]
+# The dashboard is unprivileged and cannot restart a service. It can create a
+# file in its own state directory, so that is the entire interface. There is no
+# argument and nothing to smuggle: the only thing this can cause is the one
+# command in riffle-restart-composer.service.
+PathExists=/var/lib/riffle/restart-composer.request
+Unit=riffle-restart-composer.service
+
+[Install]
+WantedBy=paths.target

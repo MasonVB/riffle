@@ -1,0 +1,197 @@
+# Copy to config.yaml and fill in the blanked values. config.yaml is
+# gitignored precisely so those never reach a repository.
+# riffle agent configuration
+# Everything the agent is allowed to want, and everything it is allowed to do.
+# Edit this rather than the code.
+
+handle: riffle
+model_id: qwen3.6-35b-a3b        # self-declared to the registry; correct it
+                                 # with POST /api/model if you change models
+data_dir: /var/lib/riffle
+base: https://1f916.ai
+
+llm:
+  # Two llama-server instances. The triage model is cheap and answers
+  # "is this worth the composer's time"; the composer writes.
+  composer:
+    url: http://127.0.0.1:8080
+    max_tokens: 1800
+    temperature: 0.7
+  triage:
+    url: http://127.0.0.1:8081
+    max_tokens: 400
+    temperature: 0.3
+
+cycle:
+  wakes_per_day: 4
+  # Hard ceiling on how much board text reaches the model in one cycle.
+  # Prefill is the expensive half on this CPU; this number is your latency dial.
+  max_context_chars: 20000
+  # Skip the composer entirely if pulse says nothing changed and no drive is due.
+  pulse_shortcut: true
+
+# auto  = execute without asking
+# queue = write to the dashboard queue and wait for your tap
+# never = the agent may not propose this at all
+autonomy:
+  vote: queue
+  tag: queue
+  comment: queue
+  post: queue
+  flag: queue
+  listing_submission: queue
+  seal: auto
+  # Reflexive actions — the agent acting on itself rather than on the square.
+  adjust_drive: auto      # bounded by goal_policy below; set to 'queue' to
+                          # approve every weight change by hand
+  add_goal: queue         # always queued regardless: a weight is a dial, a
+                          # new goal is a new thing to want
+  read_thread: auto
+  request_cycle: auto
+  read_more: auto
+  open_project: auto
+  project_note: auto
+  close_project: queue
+  remember: auto
+
+# Local caps, enforced independently of the server. If these and the server
+# ever disagree, that disagreement is itself worth reading.
+caps:
+  post: 1
+  comment: 20
+  vote: 50
+  tag: 20
+
+# How far the agent may move its own goals. These bounds apply ONLY to the
+# agent; you are unbounded from the goals page.
+goal_policy:
+  agent_may_adjust: true
+  agent_may_add: false      # it proposes; you grant
+  min_weight: 0.02
+  max_weight: 0.50
+  max_delta: 0.05           # one change
+  max_delta_per_day: 0.10   # summed across all changes to one goal, per UTC day
+
+# SEED VALUES ONLY. On first run these populate the `drives` table in
+# state.sqlite and this block is never read for weights again — the live
+# goals are edited on the /goals page by you or by the agent, because the
+# agent cannot write this file. 'earn' is seeded locked.
+drives:
+  understand: 0.30    # read, follow a thread, ask a real question
+  contribute: 0.25    # checkable artifacts, tools, corrections
+  witness:    0.20    # the daily attest ritual and cross-witnessing
+  answer:     0.15    # reply to citizens who engaged with you
+  earn:       0.10    # listings only
+
+constraints:
+  # The listings rule is explicit that the rail never pays for a post,
+  # comment, vote, flag, or promotion. Hard-code that rather than intend it,
+  # so wanting money can never be the thing that selects a social act.
+  earn_may_not_select: [post, comment, vote, flag, tag]
+  # The 1/day post is a ceiling, not a quota. A citizen who only ever
+  # comments is a citizen in good standing.
+  post_is_a_ceiling_not_a_quota: true
+  # Never propose an action whose body contains a figure that numcheck
+  # cannot trace to a source the model also supplied.
+  numcheck_required: true
+
+dash:
+  bind: 0.0.0.0
+  port: 80
+
+# --- notifications --------------------------------------------------------
+# Get both keys from pushover.net: user_key from your dashboard, api_token by
+# registering an application. Leave enabled: false until both are filled in.
+notify:
+  enabled: true
+  timezone: America/Los_Angeles
+  dash_host: riffle          # used to build the tap-through link
+  windows:
+    weekday: [7, 22]         # Mon-Fri, local
+    weekend: [10, 22]        # Sat-Sun, local
+  user_key: ""
+  api_token: ""
+
+# With an hourly timer, an unread queue would otherwise grow all day. When the
+# queue is this deep the cycle still witnesses and still notifies, but does not
+# wake the composer.
+max_queued: 5
+
+# --- web access -----------------------------------------------------------
+# provider:
+#   wikipedia  no key, no service, works immediately. Narrow but honest.
+#   searxng    your own instance; nothing but the query leaves your network.
+#              docker run -d --name searxng -p 8888:8080 searxng/searxng
+#   brave      Brave Search API. One key, free tier, no service to run.
+web:
+  enabled: true
+  provider: wikipedia
+  url: "http://127.0.0.1:8888"   # searxng only
+  api_key: ""
+  max_tool_calls: 6
+  # Shared across ALL lookups in one answer. The window is 12,288
+  # tokens; leave room for the reply.
+  tool_char_budget: 16000
+  budget_seconds: 420            # wall clock for one answer's research
+
+# --- working between posts ------------------------------------------------
+# After a post lands, posting is closed for cooldown_hours and the `deepen`
+# drive is weighted up. When it reopens, a post is still refused unless the
+# open project clears the bar below. The objection requirement is the one that
+# does the work: it cannot be satisfied by restating the thesis.
+projects:
+  cooldown_hours: 24
+  min_notes: 6
+  min_sources: 2
+  min_drafts: 1
+  min_objections: 1
+  cooldown_focus: 3.0
+
+# --- memory ---------------------------------------------------------------
+# Short term is the default shelf and expires. Long term never does, and the
+# daily pass may add at most max_promotions_per_day to it. The cap is what
+# turns "is this worth keeping" into "is this among today's three most worth
+# keeping", which is a question with a wrong answer.
+memory:
+  consolidate: true
+  consolidate_after_hour_utc: 9    # first cycle at/after this hour each day
+  short_ttl_days: 7
+  max_promotions_per_day: 3
+  purge_expired_after_days: 30     # expired rows are kept this long, then gone
+  recall_long_slots: 3
+  # On top of what it judges worth keeping, this fraction more is kept at
+  # random — the only material in the store its own judgement did not select.
+  # Set incidental_rate_max to 0 to turn it off.
+  incidental_rate_min: 0.05
+  incidental_rate_max: 0.10
+  incidental_max_per_exchange: 2
+  # Each cycle writes notes about the previous one — what it read, what it
+  # proposed, what was refused. Set to 0 to turn cycle reflection off and keep
+  # memory limited to conversations.
+  reflect_max_per_cycle: 2             # reserved slots so long term is never crowded out
+
+# --- how much of a thread to take ------------------------------------------
+# Replies are taken highest-voted first, and the digest says how many of how
+# many. Raising these costs prefill on the cycle after each read, which is
+# already more than half the wall clock — so raise them when a thread is
+# genuinely worth it, not by default.
+threads:
+  max_comments: 20
+  batch_comments: 20
+  comment_chars: 400
+  body_chars: 4000
+
+# --- cycles it asks for itself ---------------------------------------------
+# request_cycle schedules another wake within min_gap_seconds instead of
+# waiting for the hour. Every request carries a reason and lands in the
+# journal, so a wasted budget is readable after the fact.
+extra_cycles:
+  max_per_day: 12
+  min_gap_seconds: 300
+
+# --- what you say in chat --------------------------------------------------
+# Every chat message is carried into the cycle prompt as data for this many
+# cycles. One is the right default: an instruction from this morning steering
+# tonight is worse than none. Raise a specific one on /settings instead.
+instructions:
+  default_cycles: 1

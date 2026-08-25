@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS actions (
   id INTEGER PRIMARY KEY, cycle_id INTEGER, created_at TEXT,
   kind TEXT, drive TEXT, payload TEXT, rationale TEXT,
   status TEXT,               -- proposed | queued | approved | rejected | executed | failed | blocked
-  numcheck TEXT, executed_at TEXT, response TEXT);
+  numcheck TEXT, executed_at TEXT, response TEXT,
+  notified INTEGER DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS caps (
   day_utc TEXT, kind TEXT, used INTEGER, PRIMARY KEY (day_utc, kind));
@@ -67,7 +68,10 @@ CREATE TABLE IF NOT EXISTS memories (
   source TEXT,            -- 'chat:142', 'cycle:41', 'you'
   pinned INTEGER DEFAULT 0,
   use_count INTEGER DEFAULT 0, last_used TEXT,
-  superseded_by INTEGER);
+  superseded_by INTEGER,
+  tier TEXT DEFAULT 'short',   -- short (expires) | long (forever)
+  expires_at TEXT,
+  expired INTEGER DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS notes (
   key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
@@ -80,7 +84,8 @@ CREATE TABLE IF NOT EXISTS messages (
   role TEXT,            -- user | agent | report | proposal | error
   content TEXT,
   meta TEXT,            -- json: action_id, drive, tool calls, elapsed_s
-  done INTEGER DEFAULT 1);   -- 0 while a response is still streaming in
+  done INTEGER DEFAULT 1,   -- 0 while a response is still streaming in
+  archived_at TEXT);        -- set by the clear button; never deleted
 
 CREATE TABLE IF NOT EXISTS seen (
   kind TEXT, ref TEXT, ts TEXT, PRIMARY KEY (kind, ref));
@@ -227,9 +232,16 @@ class State:
             self.db.execute("UPDATE messages SET done=1 WHERE id=?", (mid,))
         self.db.commit()
 
-    def messages(self, after=0, limit=400):
-        return self.db.execute(
-            "SELECT * FROM messages WHERE id > ? ORDER BY id LIMIT ?", (after, limit)).fetchall()
+    def messages(self, after=0, limit=400, include_archived=False):
+        """The chat view. Archived rows are hidden here and only here.
+
+        `tail()` below still sees them, because that is what feeds the model's
+        recent-turn window, and clearing the screen is not meant to give the
+        agent amnesia."""
+        q = "SELECT * FROM messages WHERE id > ?"
+        if not include_archived:
+            q += " AND archived_at IS NULL"
+        return self.db.execute(q + " ORDER BY id LIMIT ?", (after, limit)).fetchall()
 
     def tail(self, n=40):
         rows = self.db.execute(
@@ -238,7 +250,8 @@ class State:
 
     def pending_generation(self):
         return self.db.execute(
-            "SELECT * FROM messages WHERE done=0 ORDER BY id DESC LIMIT 1").fetchone()
+            "SELECT * FROM messages WHERE done=0 AND archived_at IS NULL"
+            " ORDER BY id DESC LIMIT 1").fetchone()
 
     # ---- notes / cursor --------------------------------------------------
     def note(self, key, value=None):
@@ -259,3 +272,74 @@ class State:
     def is_seen(self, kind, ref):
         return self.db.execute("SELECT 1 FROM seen WHERE kind=? AND ref=?",
                                (kind, str(ref))).fetchone() is not None
+
+
+INSTR_SCHEMA = '\nCREATE TABLE IF NOT EXISTS instructions (\n  id INTEGER PRIMARY KEY, ts TEXT, text TEXT NOT NULL,\n  cycles_left INTEGER NOT NULL DEFAULT 1,\n  cycles_total INTEGER NOT NULL DEFAULT 1,\n  spent_at TEXT, source TEXT);\n'
+
+
+# --------------------------------------------------------------- instructions
+# What you say in chat, made available to the cycle. Bounded by a cycle count
+# rather than a clock: a wake is the unit of attention here, so it is the unit
+# an instruction should be spent in.
+
+def add_instruction(state, text, cycles=1, source="chat"):
+    text = " ".join((text or "").split())[:1200]
+    if len(text) < 4:
+        return None
+    state.db.executescript(INSTR_SCHEMA)
+    cur = state.db.execute(
+        "INSERT INTO instructions (ts,text,cycles_left,cycles_total,source)"
+        " VALUES (?,?,?,?,?)", (utcnow(), text, max(1, int(cycles)),
+                               max(1, int(cycles)), source))
+    state.db.commit()
+    return cur.lastrowid
+
+
+def live_instructions(state):
+    try:
+        return state.db.execute(
+            "SELECT * FROM instructions WHERE cycles_left > 0 ORDER BY id"
+        ).fetchall()
+    except Exception:
+        return []
+
+
+def spend_instructions(state):
+    """Charge every live instruction one cycle. Called when a cycle READS them.
+
+    Deliberately not "when the cycle succeeds": a cycle that refuses itself
+    still spent the attention, and an instruction that survives every failure
+    would steer the agent long after you stopped watching.
+    """
+    rows = live_instructions(state)
+    if not rows:
+        return []
+    state.db.execute(
+        "UPDATE instructions SET cycles_left = cycles_left - 1,"
+        " spent_at = CASE WHEN cycles_left - 1 <= 0 THEN ? ELSE spent_at END"
+        " WHERE cycles_left > 0", (utcnow(),))
+    state.db.commit()
+    return rows
+
+
+def set_instruction_cycles(state, iid, cycles):
+    state.db.execute(
+        "UPDATE instructions SET cycles_left=?, cycles_total=MAX(cycles_total,?),"
+        " spent_at=NULL WHERE id=?", (max(0, int(cycles)), max(1, int(cycles)), iid))
+    state.db.commit()
+
+
+def clear_instructions(state):
+    cur = state.db.execute(
+        "UPDATE instructions SET cycles_left=0, spent_at=? WHERE cycles_left > 0",
+        (utcnow(),))
+    state.db.commit()
+    return cur.rowcount
+
+
+def recent_instructions(state, n=25):
+    try:
+        return state.db.execute(
+            "SELECT * FROM instructions ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+    except Exception:
+        return []

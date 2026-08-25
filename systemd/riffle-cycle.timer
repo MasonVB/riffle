@@ -1,11 +1,9 @@
 [Unit]
-Description=wake riffle four times a day
+Description=wake riffle every hour
 
 [Timer]
-# Spread across the UTC day so it sees the board in different states, and
-# never lands exactly on the 00:00 UTC cap reset.
-OnCalendar=*-*-* 02,08,14,20:17:00 UTC
-RandomizedDelaySec=900
+OnCalendar=hourly
+RandomizedDelaySec=300
 Persistent=true
 
 [Install]

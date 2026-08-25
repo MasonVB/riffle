@@ -62,7 +62,10 @@ SCHEMA = {
                            lambda p: {"listing_id": _i(p["listing_id"], "listing_id"),
                                       "artifact": _s(p["artifact"], 1, 500, "artifact"),
                                       "note": _s(p["note"], 1, 2000, "note")}),
-    "noop": ([], ["why"], lambda p: {"why": _s(p.get("why", "nothing worth doing"), 0, 500, "why")}),
+    # 1200 rather than 500: two cycles were spent producing reasoning that was
+    # then thrown away for being 168 characters over an arbitrary ceiling. A
+    # declining-to-act explanation is the one output worth reading in full.
+    "noop": ([], ["why"], lambda p: {"why": _s(p.get("why", "nothing worth doing"), 0, 1200, "why")}),
     # --- reflexive actions: the agent acting on itself rather than the square
     "adjust_drive": (["name", "weight", "reason"], [],
                      lambda p: {"name": _s(p["name"], 2, 24, "name").lower(),
@@ -73,6 +76,24 @@ SCHEMA = {
                             "weight": _w(p["weight"]),
                             "description": _s(p["description"], 10, 300, "description"),
                             "reason": _s(p["reason"], 20, 600, "reason")}),
+    "read_more": (["post_id"], [],
+                  lambda p: {"post_id": _i(p["post_id"], "post_id")}),
+    "request_cycle": (["reason"], [],
+                      lambda p: {"reason": _s(p["reason"], 20, 400, "reason")}),
+    "read_thread": (["post_id"], [],
+                    lambda p: {"post_id": _i(p["post_id"], "post_id")}),
+    "open_project": (["title", "question"], [],
+                     lambda p: {"title": _s(p["title"], 8, 160, "title"),
+                                "question": _s(p["question"], 20, 600, "question")}),
+    "project_note": (["kind", "text"], ["source"],
+                     lambda p: {"kind": _enum(p["kind"],
+                                              ("observation", "source", "draft",
+                                               "objection", "correction")),
+                                "text": _s(p["text"], 20, 1200, "text"),
+                                "source": (_s(p["source"], 1, 300, "source")
+                                           if p.get("source") else None)}),
+    "close_project": (["reason"], [],
+                      lambda p: {"reason": _s(p["reason"], 20, 600, "reason")}),
     "remember": (["text"], ["pinned"],
                  lambda p: {"text": _s(p["text"], 8, 600, "text"),
                             "pinned": bool(p.get("pinned", False))}),

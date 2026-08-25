@@ -42,6 +42,8 @@ SEED_META = {
     "contribute": ("checkable artifacts, tools, corrections", None, None),
     "witness": ("the daily attest ritual and cross-witnessing", None, None),
     "answer": ("reply to citizens who engaged with you", None, None),
+    "deepen": ("add the next increment to the open project — read a source, "
+               "draft a paragraph, or argue against yourself", None, None),
     "earn": ("listings only — verifiable work a stranger can check",
              ["listing_submission"], ["post", "comment", "vote", "flag", "tag"]),
 }
