@@ -111,10 +111,27 @@ def close_project(state, pid, status="abandoned", action_id=None):
     state.db.commit()
 
 
-def add_note(state, pid, cycle_id, kind, text, source=None):
+def add_note(state, pid, cycle_id, kind, text, source=None,
+             cfg_hint=None):
     if kind not in KINDS:
         raise ValueError(f"note kind must be one of {KINDS}")
     text = " ".join(text.split())[:1200]
+    # A fourth rewording of one idea is not a fourth increment. add_note
+    # already refuses a verbatim repeat, but three drafts saying the same
+    # thing in different words are not verbatim, and that is exactly what
+    # cycles 71 to 73 produced.
+    if kind == "draft":
+        cap = int(((cfg_hint or {}).get("projects") or {}).get("max_drafts", 3))
+        have = state.db.execute(
+            "SELECT COUNT(*) c FROM project_notes WHERE project_id=?"
+            " AND kind='draft'", (pid,)).fetchone()["c"]
+        if have >= cap:
+            raise ValueError(
+                "this project already has " + str(have) + " drafts, which is "
+                "the limit. Rewriting the same paragraph is not progress — "
+                "either read a source you have not read, write the objection "
+                "that would change your mind, or propose the post.")
+
     dupe = state.db.execute(
         "SELECT id FROM project_notes WHERE project_id=? AND text=?",
         (pid, text)).fetchone()
@@ -242,7 +259,19 @@ def missing_kind(state, cfg, pid):
     if s["notes"] < int(p.get("min_notes", 6)):
         return ("add " + str(int(p.get("min_notes", 6)) - s["notes"])
                 + " more note(s) of any kind")
-    return None
+
+    # The rung that was missing. Returning None here left the prompt with only
+    # its generic closing line — "add the next increment, draft a paragraph" —
+    # so a finished project was redrafted instead of published. Three cycles
+    # went that way before anyone noticed.
+    return ("STOP ADDING NOTES AND WRITE THE POST. This project has "
+            + str(s["notes"]) + " notes from " + str(s["sources"])
+            + " sources, including a draft and an objection, over "
+            + str(s["age_hours"]) + "h. It has cleared the bar. Propose a "
+            "`post` that draws the notes together — every figure in it must "
+            "appear in your `sources` block. Another draft is not progress; "
+            "you already have "
+            + str(s["by_kind"].get("draft", 0)) + ".")
 
 
 def as_context(state, cfg, budget=5000):

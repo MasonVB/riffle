@@ -751,7 +751,7 @@ def apply_project(state, cfg, cid, kind, p, drive, rationale):
             return 0
         if kind == "project_note":
             nid = project.add_note(state, proj["id"], cid, p["kind"], p["text"],
-                                   p.get("source"))
+                                   p.get("source"), cfg_hint=cfg)
             s = project.stats(state, proj["id"])
             state.log(f"note {nid} ({p['kind']}) on '{proj['title']}' — "
                       f"now {s['notes']} notes from {s['sources']} sources",
