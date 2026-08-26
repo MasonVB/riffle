@@ -34,7 +34,11 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 :root{--bg:#12140f;--panel:#181b14;--fg:#e8e6db;--dim:#8b8878;--line:#2b2f24;
       --sig:#c8a44a;--bad:#c4553d}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{height:100%}
+/* 100dvh, not 100vh: on mobile the address bar collapses and vh is
+   measured against the taller viewport, so the page overflows by
+   exactly the height of the bar. The document itself must not
+   scroll — only the log does — or the sticky header slides away. */
+html,body{height:100dvh;overflow:hidden;overscroll-behavior:none}
 body{margin:0;background:var(--bg);color:var(--fg);
   font:15.5px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   display:flex;flex-direction:column}
@@ -111,7 +115,8 @@ button.go:active{background:var(--fg);color:var(--bg)}
 @media (hover:hover){.pillbtn.danger:hover{background:var(--bad);color:var(--bg)}}
 .pillbtn.danger:active{background:var(--bad);color:var(--bg)}
 a.link{color:var(--sig);text-decoration:none;border-color:var(--sig)}
-#log{flex:1;overflow-y:auto;padding:16px 15px 8px;display:flex;
+#log{flex:1;min-height:0;overscroll-behavior:contain;
+  overflow-y:auto;padding:16px 15px 8px;display:flex;
   flex-direction:column;gap:14px;-webkit-overflow-scrolling:touch}
 .msg{max-width:88%;white-space:pre-wrap;word-wrap:break-word}
 /* A message that steered a cycle is marked, and stays marked. The
@@ -147,6 +152,9 @@ textarea{flex:1;resize:none;background:#0e100b;color:var(--fg);border:1px solid 
 textarea:focus{outline:0;border-color:var(--sig)}
 #send{background:var(--sig);color:#12140f;border-radius:11px;height:44px}
 #send:disabled{opacity:.35}
+#autow{display:flex;align-items:center;gap:5px;font-size:11.5px;
+  color:var(--dim);white-space:nowrap;cursor:pointer;user-select:none}
+#autos{accent-color:var(--sig);width:15px;height:15px}
 /* The steering one is outlined rather than filled: it is the deliberate
    choice, not the frequent one. */
 #sendcyc{background:transparent;color:var(--sig);border:1px solid var(--sig);
@@ -182,6 +190,7 @@ footer{gap:7px}
 <div id=log></div>
 <footer>
   <textarea id=box rows=1 placeholder="ask what it's been doing&hellip;"></textarea>
+  <label id=autow title="follow new messages"><input type=checkbox id=autos checked> auto</label>
   <button id=send>send</button>
   <button id=sendcyc title="also carried into the next wake cycle as a standing instruction">send to cycle</button>
 </footer>
@@ -190,6 +199,13 @@ let after = 0, busy = false, waitStart = null;
 const log = document.getElementById('log'), box = document.getElementById('box'),
       send = document.getElementById('send');
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const autos = document.getElementById('autos');
+try{ autos.checked = localStorage.getItem('riffle.autoscroll') !== '0'; }
+catch(e){}
+autos.onchange = function(){
+  try{ localStorage.setItem('riffle.autoscroll', autos.checked?'1':'0'); }
+  catch(e){}
+};
 const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 140;
 
 function statusLine(p){
@@ -253,6 +269,10 @@ function render(m){
   if(!el){ el = document.createElement('div'); el.id = 'm'+m.id; log.appendChild(el); }
   if(m.role === 'proposal'){
     const p = m.meta || {};
+    const _csig = JSON.stringify([p.status, p.sent_at, p.ref, p.error,
+                                  m.content.length]);
+    if(el.dataset.sig === _csig) return;
+    el.dataset.sig = _csig;
     el.className = 'card';
     el.innerHTML = '<h4>' + esc(p.kind||'action') + ' &middot; drive ' + esc(p.drive||'') +
       '</h4><div class=why>' + esc(m.content) + '</div><pre>' + esc(p.payload||'') + '</pre>' +
@@ -265,6 +285,12 @@ function render(m){
   el.className = 'msg ' + (m.role==='user'?'user':m.role==='report'?'report':
                            m.role==='error'?'err':'agent')
     + (m.role==='user' && m.meta && m.meta.instruct ? ' instr' : '');
+  // Rebuilding innerHTML throws away the scroll position of any <pre>
+  // inside, and proposal cards are re-sent every poll so their state
+  // can change. Draw only when what we would draw is different.
+  const _sig = m.role + '|' + m.done + '|' + m.content.length;
+  if(el.dataset.sig === _sig) return;
+  el.dataset.sig = _sig;
   el.innerHTML = esc(m.content) + (m.done ? '' : '<span class=dot>&#9612;</span>') +
     (m.role!=='user' && m.done && m.meta && m.meta.elapsed_s
       ? '<div class=when>' + m.meta.elapsed_s + 's</div>' : '');
@@ -308,7 +334,10 @@ async function poll(){
       t.textContent = 'thinking\u2026 ' + Math.round((Date.now()-waitStart)/1000) +
                       's  (minutes are normal on this box)';
     } else if(t){ t.remove(); waitStart = null; }
-    if(stick) log.scrollTop = log.scrollHeight;
+    // Only follow if the toggle is on AND you were already at the
+    // bottom. Either condition alone would yank the view while you
+    // are reading something further up.
+    if(stick && autos.checked) log.scrollTop = log.scrollHeight;
   }catch(e){}
   setTimeout(poll, busy ? 900 : 2500);
 }
@@ -586,6 +615,37 @@ class Handler(BaseHTTPRequestHandler):
                                       level="warn")
                     except Exception:
                         pass
+
+        _th.Thread(target=loop, daemon=True).start()
+
+    _tel_started = False
+
+    @classmethod
+    def start_telemetry(cls):
+        """A sample a minute, and a prune each hour.
+
+        In the dashboard because it is the only long-lived process. The cycle
+        samples at its own start and end, which is what pairs a reading with
+        the work that produced it.
+        """
+        if cls._tel_started:
+            return
+        cls._tel_started = True
+        from agent import telemetry
+        telemetry.install(cls.state, cls.cfg)
+
+        def loop():
+            import time as _t
+            n = 0
+            while True:
+                try:
+                    telemetry.sample(cls.state, cls.cfg, "tick")
+                    n += 1
+                    if n % 60 == 0:
+                        telemetry.prune(cls.state, 24)
+                except Exception:
+                    pass          # never let the watcher break the watched
+                _t.sleep(60)
 
         _th.Thread(target=loop, daemon=True).start()
 
@@ -874,6 +934,7 @@ def main():
     Handler.worker = chat.Worker(st, cfg)
     Handler.worker.start()
     Handler.start_scheduler()
+    Handler.start_telemetry()
     bind, port = cfg["dash"]["bind"], int(cfg["dash"]["port"])
     print(f"riffle on http://{bind}:{port}")
     ThreadingHTTPServer((bind, port), Handler).serve_forever()
@@ -966,6 +1027,21 @@ td.who.agent{color:var(--sig)}
 .pj .rd{font-family:ui-monospace,monospace;font-size:12px;color:var(--dim);
   padding:3px 0}
 .pj .rd b{color:var(--fg)}
+
+#telbox{max-height:min(60vh,460px);overflow-y:auto;overscroll-behavior:contain;
+  background:#0e100b;border:1px solid var(--line);border-radius:8px;padding:0}
+.tel{border-bottom:1px solid var(--line);padding:7px 10px;font-size:12px;
+  font-family:ui-monospace,Menlo,monospace;line-height:1.45;cursor:pointer}
+.tel:last-child{border-bottom:0}
+.tel.dump{border-left:3px solid var(--bad)}
+.tel .t{color:var(--dim)}
+.tel .k{color:var(--sig);text-transform:uppercase;letter-spacing:.06em;
+  font-size:10.5px}
+.tel.dump .k{color:var(--bad)}
+.tel pre{display:none;white-space:pre-wrap;word-break:break-word;margin:7px 0 0;
+  background:#12140f;border-radius:6px;padding:9px;font-size:11.5px;
+  max-height:340px;overflow:auto;overscroll-behavior:contain}
+.tel.open pre{display:block}
 .mem .k{font-family:ui-monospace,monospace;font-size:10.5px;text-transform:uppercase;
   letter-spacing:.07em;color:var(--sig)}
 
@@ -1032,6 +1108,19 @@ the drive may propose nothing else) &rarr; <b>never</b> (red) &rarr; neutral.
 every other cycle refusing itself.</div>
 <div class=g id=restrict></div>
 
+
+<h2>log &mdash; the last 24 hours</h2>
+<div class=note>A sample a minute; a full dump whenever an error or alarm is
+written. Tap a row to expand it. Dumps are marked in red. Anything older than
+24 hours is deleted, so this is for tracing something that just happened
+rather than for keeping.</div>
+<div class=ctl style="margin-bottom:9px">
+  <a class=link href="/api/telemetry.jsonl" download>download the whole window</a>
+  <button class=ghost onclick="loadTel()">refresh</button>
+  <span class=tag id=telcount></span>
+</div>
+<div id=telbox></div>
+
 <h2>instructions &mdash; what you told it</h2>
 <div class=note>Everything you type in chat is carried into the next cycle as
 data. One cycle by default; raise the count for something you want it to keep
@@ -1066,6 +1155,22 @@ let data = null;
 
 const ACTS = ["post", "comment", "vote", "tag", "flag", "seal", "listing_submission", "read_thread", "read_more", "request_cycle", "open_project", "project_note", "close_project", "adjust_drive", "add_goal", "remember"];
 let pol = null;
+
+
+async function loadTel(){
+  const d = await (await fetch('/api/telemetry')).json();
+  document.getElementById('telcount').textContent =
+    d.entries.length + ' entries, ' + d.dumps + ' dump' + (d.dumps===1?'':'s');
+  document.getElementById('telbox').innerHTML = d.entries.map(function(e){
+    const m = e.summary || {};
+    return '<div class="tel' + (e.kind==='dump'?' dump':'') +
+      '" onclick="this.classList.toggle(\'open\')">' +
+      '<span class=k>' + esc(e.kind) + '</span> ' +
+      '<span class=t>' + esc(e.ts.slice(5,19).replace('T',' ')) + '</span> ' +
+      esc(e.label) + ' &middot; ' + esc(m.line || '') +
+      '<pre>' + esc(e.pretty) + '</pre></div>';
+  }).join('') || '<div class=alarmempty>nothing recorded yet</div>';
+}
 
 async function loadPolicy(){
   pol = await (await fetch('/api/policy')).json();
@@ -1234,7 +1339,7 @@ function addGoal(){
     reason:document.getElementById('r').value});
   ['n','d','r'].forEach(i=>document.getElementById(i).value='');
 }
-load(); loadPolicy();
+load(); loadPolicy(); loadTel();
 </script></body></html>"""
 
 
@@ -1435,6 +1540,49 @@ def _goals_routes(h):
         b = GOALS_PAGE.encode()
         h.send_response(200)
         h.send_header("Content-Type", "text/html; charset=utf-8")
+        h.send_header("Content-Length", str(len(b)))
+        h.end_headers()
+        h.wfile.write(b)
+        return True
+    if h.command == "GET" and u.path == "/api/telemetry":
+        from agent import telemetry
+        rows = telemetry.recent(s, 400)
+        ent = []
+        for r in rows:
+            try:
+                body = json.loads(r["payload"])
+            except Exception:
+                body = {}
+            mem = body.get("mem") or {}
+            cp = body.get("cpu") or {}
+            tp = body.get("temps") or {}
+            hot = max([v for v in tp.values() if isinstance(v, (int, float))],
+                      default=None)
+            co = body.get("cores") or {}
+            us = co.get("usage") if isinstance(co.get("usage"), dict) else {}
+            busy = round(sum(us.values()) / len(us), 0) if us else None
+            fan = max((body.get("fans") or {}).values(), default=None)
+            thr = len(co.get("throttle") or {})
+            line = (f"{mem.get('PctUsed', '?')}% mem, "
+                    f"{mem.get('MemAvailable', '?')}MiB free, "
+                    + (f"cpu {busy:.0f}%, " if busy is not None else "")
+                    + f"{cp.get('mhz_avg', '?')}MHz"
+                    + (f", {hot}\u00b0C" if hot is not None else "")
+                    + (f", fan {fan}" if fan else "")
+                    + (f", THROTTLED x{thr}" if thr else ""))
+            ent.append({"id": r["id"], "ts": r["ts"], "kind": r["kind"],
+                        "label": r["label"], "summary": {"line": line},
+                        "pretty": json.dumps(body, indent=1, default=str)[:12000]})
+        h._json({"entries": ent,
+                 "dumps": sum(1 for e in ent if e["kind"] == "dump")})
+        return True
+    if h.command == "GET" and u.path == "/api/telemetry.jsonl":
+        from agent import telemetry
+        b = telemetry.as_jsonl(s, 24).encode()
+        h.send_response(200)
+        h.send_header("Content-Type", "application/x-ndjson")
+        h.send_header("Content-Disposition",
+                      'attachment; filename="riffle-telemetry.jsonl"')
         h.send_header("Content-Length", str(len(b)))
         h.end_headers()
         h.wfile.write(b)

@@ -174,6 +174,12 @@ def main():
     goals.seed(state, cfg)
     project.ensure(state)
     policy.ensure(state, cfg)
+    try:
+        from agent import telemetry
+        telemetry.install(state, cfg)
+        telemetry.sample(state, cfg, "cycle-start")
+    except Exception:
+        pass
     # The settings page writes these; config.yaml only seeds them.
     cfg["autonomy"] = policy.effective(state, cfg)
     # `deepen` is a goal like any other, seeded once, editable on /goals.

@@ -97,6 +97,11 @@ CREATE INDEX IF NOT EXISTS ix_mem_pinned ON memories(pinned, id);
 """
 
 
+# Set by telemetry.install(). Left as None so state.py imports
+# standalone and nothing here depends on telemetry existing.
+ERROR_HOOK = None
+
+
 def utcnow():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -136,6 +141,15 @@ class State:
         self.db.execute("INSERT INTO journal (ts,level,drive,text) VALUES (?,?,?,?)",
                         (utcnow(), level, drive, text))
         self.db.commit()
+        # An error writes a full telemetry dump, without every call site
+        # having to remember to ask for one. Registered by telemetry.install()
+        # so state.py keeps no dependency on it, and wrapped because a broken
+        # watcher must not break the thing it is watching.
+        if level in ("error", "alarm") and ERROR_HOOK is not None:
+            try:
+                ERROR_HOOK(self, level, text)
+            except Exception:
+                pass
 
     def recent_journal(self, n=100):
         return self.db.execute(
