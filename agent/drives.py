@@ -27,6 +27,38 @@ def _s(v, lo, hi, name):
     return v
 
 
+def _trim(v, lo, hi, name):
+    """Like _s, but trims prose that runs long instead of refusing it.
+
+    Cycle 66 lost a whole wake because a project note was 1,226 characters
+    against a 1,200 limit. That limit exists to keep the prompt bounded, not
+    to protect anything — so it should be satisfied rather than enforced. A
+    model that writes twenty-six characters too many has not made a mistake
+    worth spending a cycle on.
+
+    Only prose gets this. Ids, weights and hashes still go through _s: a
+    truncated post_id is a wrong post_id, which is worse than a refusal.
+    """
+    if not isinstance(v, str):
+        raise Rejected(f"{name} must be a string")
+    v = v.strip()
+    if len(v) < lo:
+        raise Rejected(f"{name} must be at least {lo} chars, got {len(v)}")
+    if len(v) > hi:
+        ell = " […]"
+        room = hi - len(ell)          # the marker counts toward the limit
+        cut = v[:room]
+        sp = cut.rfind(" ")
+        # Only honour a word boundary if it is NEAR THE END. Falling back to
+        # the last space anywhere turned a 1,233-character note into 86, since
+        # a long unbroken run leaves the nearest space back at the start.
+        if sp >= int(room * 0.9):
+            cut = cut[:sp]
+        cut = cut.rstrip()
+        return cut + ell if len(cut) >= lo else v[:room].rstrip() + ell
+    return v
+
+
 def _i(v, name):
     if isinstance(v, bool) or not isinstance(v, int):
         raise Rejected(f"{name} must be an integer")
@@ -38,11 +70,11 @@ def _i(v, name):
 SCHEMA = {
     "post": (["title", "body"], ["url"],
              lambda p: {"title": _s(p["title"], 3, 120, "title"),
-                        "body": _s(p["body"], 1, 8000, "body"),
+                        "body": _trim(p["body"], 1, 8000, "body"),
                         **({"url": _s(p["url"], 1, 500, "url")} if p.get("url") else {})}),
     "comment": (["post_id", "body"], ["parent_id"],
                 lambda p: {"post_id": _i(p["post_id"], "post_id"),
-                           "body": _s(p["body"], 1, 8000, "body"),
+                           "body": _trim(p["body"], 1, 8000, "body"),
                            "parent_id": (_i(p["parent_id"], "parent_id")
                                          if p.get("parent_id") is not None else None)}),
     "vote": (["target_type", "target_id"], [],
@@ -61,7 +93,7 @@ SCHEMA = {
     "listing_submission": (["listing_id", "artifact", "note"], [],
                            lambda p: {"listing_id": _i(p["listing_id"], "listing_id"),
                                       "artifact": _s(p["artifact"], 1, 500, "artifact"),
-                                      "note": _s(p["note"], 1, 2000, "note")}),
+                                      "note": _trim(p["note"], 1, 2000, "note")}),
     # 1200 rather than 500: two cycles were spent producing reasoning that was
     # then thrown away for being 168 characters over an arbitrary ceiling. A
     # declining-to-act explanation is the one output worth reading in full.
@@ -70,7 +102,7 @@ SCHEMA = {
     "adjust_drive": (["name", "weight", "reason"], [],
                      lambda p: {"name": _s(p["name"], 2, 24, "name").lower(),
                                 "weight": _w(p["weight"]),
-                                "reason": _s(p["reason"], 20, 600, "reason")}),
+                                "reason": _trim(p["reason"], 20, 600, "reason")}),
     "add_goal": (["name", "weight", "description", "reason"], [],
                  lambda p: {"name": _s(p["name"], 2, 24, "name").lower(),
                             "weight": _w(p["weight"]),
@@ -84,12 +116,12 @@ SCHEMA = {
                     lambda p: {"post_id": _i(p["post_id"], "post_id")}),
     "open_project": (["title", "question"], [],
                      lambda p: {"title": _s(p["title"], 8, 160, "title"),
-                                "question": _s(p["question"], 20, 600, "question")}),
+                                "question": _trim(p["question"], 20, 600, "question")}),
     "project_note": (["kind", "text"], ["source"],
                      lambda p: {"kind": _enum(p["kind"],
                                               ("observation", "source", "draft",
                                                "objection", "correction")),
-                                "text": _s(p["text"], 20, 1200, "text"),
+                                "text": _trim(p["text"], 20, 1200, "text"),
                                 "source": (_s(p["source"], 1, 300, "source")
                                            if p.get("source") else None)}),
     "close_project": (["reason"], [],

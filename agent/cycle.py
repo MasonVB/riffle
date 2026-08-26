@@ -400,7 +400,11 @@ def main():
         log(f"composer failed: {e}", level="error", drive=drive)
         state.say("error", f"Cycle {cid} ({drive}) failed to produce a proposal: {e}")
         state.end_cycle(cid, "composer-failed", str(e)[:500])
-        return 1
+        # Exit 0: the cycle ran, the model wrote something odd, and
+        # nothing is broken. Returning 1 painted systemd red for a
+        # normal outcome, and a log where everything is red is a log
+        # in which the real failures cannot be seen.
+        return 0
     finally:
         lock.release()
 
