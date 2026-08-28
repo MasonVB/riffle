@@ -111,6 +111,49 @@ button.go:active{background:var(--fg);color:var(--bg)}
 .pillbtn{font:inherit;font-size:11.5px;background:transparent;color:var(--sig);
   border:1px solid var(--sig);border-radius:99px;padding:3px 11px;cursor:pointer}
 .pillbtn:disabled{opacity:.35;cursor:default}
+/* --- header that fits a phone -------------------------------------------
+   The old row was flex + nowrap and simply ran off the edge. The document
+   cannot scroll (deliberately, so the header stays put), so anything past the
+   viewport was unreachable rather than merely awkward. */
+.brandwrap{display:flex;flex-direction:column;line-height:1.05;margin-right:4px}
+.brandwrap .sub{font-family:ui-monospace,Menlo,monospace;font-size:9.5px;
+  letter-spacing:.06em;color:var(--sig);opacity:.62;margin-top:1px;
+  white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis}
+#pills{display:flex;gap:8px;align-items:center;overflow-x:auto;
+  scrollbar-width:none;-ms-overflow-style:none;flex:1;min-width:0;
+  padding:2px 0}
+#pills::-webkit-scrollbar{display:none}
+.menuwrap{position:relative;flex:0 0 auto}
+#menubtn{font:inherit;font-size:15px;line-height:1;background:transparent;
+  color:var(--sig);border:1px solid var(--sig);border-radius:99px;
+  height:26px;min-width:34px;padding:0 9px;cursor:pointer}
+@media (hover:hover){#menubtn:hover{background:var(--sig);color:var(--bg)}}
+#menubtn.open{background:var(--sig);color:var(--bg)}
+#menu{display:none;position:absolute;right:0;top:32px;z-index:60;
+  min-width:196px;background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;padding:5px;box-shadow:0 12px 34px rgba(0,0,0,.65)}
+#menu.open{display:block}
+#menu a,#menu button{display:block;width:100%;text-align:left;background:transparent;
+  border:0;border-radius:7px;color:var(--fg);font:inherit;font-size:14px;
+  padding:10px 12px;cursor:pointer;text-decoration:none}
+#menu .sep{height:1px;background:var(--line);margin:4px 6px}
+#menu button.danger{color:var(--bad)}
+#menu button:disabled{opacity:.4}
+@media (hover:hover){#menu a:hover,#menu button:hover{background:var(--sig);
+  color:var(--bg)}#menu button.danger:hover{background:var(--bad);color:var(--bg)}}
+#menu a:active,#menu button:active{background:var(--sig);color:var(--bg)}
+
+/* --- composer ------------------------------------------------------------
+   On a phone the textarea, the toggle and two buttons shared one row, leaving
+   about 40% of the width for the thing you actually type into. */
+@media (max-width:620px){
+  footer{flex-direction:column;align-items:stretch;gap:8px}
+  footer .btnrow{display:flex;gap:8px;align-items:center}
+  footer .btnrow #send,footer .btnrow #sendcyc{flex:1}
+  #autow{margin-right:auto}
+  .brandwrap .sub{max-width:96px}
+}
+
 .pillbtn.danger{color:var(--bad);border-color:var(--bad);margin-left:14px}
 @media (hover:hover){.pillbtn.danger:hover{background:var(--bad);color:var(--bg)}}
 .pillbtn.danger:active{background:var(--bad);color:var(--bg)}
@@ -170,29 +213,43 @@ footer{gap:7px}
   font-family:ui-monospace,monospace}
 .dot{animation:b 1.3s infinite}@keyframes b{0%,80%{opacity:.25}40%{opacity:1}}
 </style></head><body>
-<header><a class=brand href="/">riffle</a>
-  <span class=alarmwrap id=alarmwrap>
-    <span class=pill id=p-state onclick="toggleAlarms(event)">&mdash;</span>
-    <div class=alarmpanel id=alarmpanel>
-      <div id=alarmlist></div>
-      <div class=clearbar><button class=clearbtn onclick="clearAlarms(event)">clear</button></div>
+<header>
+  <a class=brandwrap href="/">
+    <span class=brand>riffle</span>
+    <span class=sub id=modelsub>%MODEL%</span>
+  </a>
+  <span id=pills>
+    <span class=alarmwrap id=alarmwrap>
+      <span class=pill id=p-state onclick="toggleAlarms(event)">&mdash;</span>
+      <div class=alarmpanel id=alarmpanel>
+        <div id=alarmlist></div>
+        <div class=clearbar><button class=clearbtn onclick="clearAlarms(event)">clear</button></div>
+      </div>
+    </span>
+    <span class=pill id=p-queue></span>
+    <span class=pill id=p-caps></span>
+  </span>
+  <span class=menuwrap>
+    <button id=menubtn onclick="toggleMenu(event)" title="controls">&#9776;</button>
+    <div id=menu>
+      <button id=runbtn onclick="runCycle();closeMenu()">run cycle</button>
+      <button id=rsbtn onclick="restartModel();closeMenu()">restart model</button>
+      <div class=sep></div>
+      <a href="/history">history</a>
+      <a href="/settings">settings</a>
+      <div class=sep></div>
+      <button id=clearbtn class=danger onclick="clearChat();closeMenu()">clear chat</button>
     </div>
   </span>
-  <span class=pill id=p-queue></span>
-  <span style="flex:1"></span>
-  <span class=pill id=p-caps></span>
-  <button id=runbtn class=pillbtn onclick="runCycle()">run cycle</button>
-  <button id=rsbtn class=pillbtn onclick="restartModel()">restart model</button>
-  <a class="pill link" href="/history">history</a>
-  <a class="pill link" href="/settings">settings</a>
-  <button id=clearbtn class="pillbtn danger" onclick="clearChat()">clear</button>
 </header>
 <div id=log></div>
 <footer>
   <textarea id=box rows=1 placeholder="ask what it's been doing&hellip;"></textarea>
-  <label id=autow title="follow new messages"><input type=checkbox id=autos checked> auto</label>
-  <button id=send>send</button>
-  <button id=sendcyc title="also carried into the next wake cycle as a standing instruction">send to cycle</button>
+  <div class=btnrow>
+    <label id=autow title="follow new messages"><input type=checkbox id=autos checked> auto</label>
+    <button id=send>send</button>
+    <button id=sendcyc title="also carried into the next wake cycle as a standing instruction">send to cycle</button>
+  </div>
 </footer>
 <script>
 let after = 0, busy = false, waitStart = null;
@@ -222,6 +279,25 @@ function statusLine(p){
            ' &middot; not sent</div>';
   return '<div class=when>' + esc(p.status || '') + '</div>';
 }
+function toggleMenu(e){
+  e.stopPropagation();
+  const m = document.getElementById('menu');
+  const b = document.getElementById('menubtn');
+  const open = !m.classList.contains('open');
+  m.classList.toggle('open', open);
+  b.classList.toggle('open', open);
+}
+function closeMenu(){
+  document.getElementById('menu').classList.remove('open');
+  document.getElementById('menubtn').classList.remove('open');
+}
+// Any tap outside closes it. A menu that stays open behind whatever you tap
+// next is worse than no menu on a screen this size.
+document.addEventListener('click', function(e){
+  const w = document.querySelector('.menuwrap');
+  if(w && !w.contains(e.target)) closeMenu();
+});
+
 function toggleAlarms(e){
   e.stopPropagation();
   const w = document.getElementById('alarmwrap');
@@ -421,7 +497,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         u = urllib.parse.urlparse(self.path)
         if u.path == "/":
-            b = PAGE.encode()
+            # Substituted at serve time: PAGE is a module constant and the
+            # model id lives in config.
+            b = PAGE.replace("%MODEL%",
+                             str(self.cfg.get("model_id", ""))[:40]).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
