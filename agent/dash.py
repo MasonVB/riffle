@@ -269,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
 
         def loop():
             import time as _t
-            n = 0
+            n, due = 0, _t.time() + 60
             while True:
                 try:
                     telemetry.sample(cls.state, cls.cfg, "tick")
@@ -279,6 +279,34 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass          # never let the watcher break the watched
                 _t.sleep(60)
+
+                # --- the loop times ITSELF ---------------------------------
+                # This thread is supposed to wake every 60 seconds. When it
+                # wakes late, the lateness is not a clock problem: the whole
+                # box was stalled, and nothing else on it was running either.
+                # That is why entering a chat message can take the dashboard
+                # AND ssh away for minutes while the journal shows nothing —
+                # no process was alive enough to write a line, so there was
+                # never going to be one. A thread that measures its own
+                # lateness is the cheapest stall detector available, because
+                # it needs no cooperation from whatever is doing the stalling.
+                late = _t.time() - due
+                due = _t.time() + 60
+                if late >= 30:
+                    try:
+                        cls.state.log(
+                            f"STALL: the telemetry thread woke {round(late)}s "
+                            f"late. The box was unresponsive for about that "
+                            f"long — check memory around this timestamp.",
+                            level="error")
+                        telemetry.sample(cls.state, cls.cfg, "stall")
+                        cls.state.say("error",
+                                      f"The machine stalled for about "
+                                      f"{round(late)}s and has come back. "
+                                      f"A full telemetry dump was written at "
+                                      f"the moment it recovered.")
+                    except Exception:
+                        pass
 
         _th.Thread(target=loop, daemon=True).start()
 
@@ -368,7 +396,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 subprocess.run(
                     [sys.executable, "-m", "agent.cycle", "--config",
-                     os.path.join("/opt/riffle", "config.yaml")],
+                     os.path.join("/opt/riffle", "config.yaml"), "--force"],
                     cwd="/opt/riffle", timeout=2700,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception as e:
@@ -679,8 +707,11 @@ def _run_cycle_detached(cls):
     def run():
         try:
             subprocess.run(
+                # --force: you pressed the button (or the agent spent a
+                # request_cycle on it). The interval governs the timer, not a
+                # deliberate wake.
                 [sys.executable, "-m", "agent.cycle", "--config",
-                 "/opt/riffle/config.yaml"],
+                 "/opt/riffle/config.yaml", "--force"],
                 cwd="/opt/riffle", timeout=2700,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
@@ -752,6 +783,8 @@ def _goals_routes(h):
     if h.command == "GET" and u.path == "/api/policy":
         from agent import policy, project as _pj, state as _state
         policy.ensure(s, cfg)
+        interval = int(s.note("cycle_interval_minutes")
+                       or (cfg.get("cycle") or {}).get("interval_minutes", 60))
         rows = s.db.execute("SELECT * FROM projects ORDER BY id DESC LIMIT 12").fetchall()
         # Queue position is the row's place in project.queue(), not its id:
         # dropping #1 has to renumber the rest, and ids never do.
@@ -782,6 +815,7 @@ def _goals_routes(h):
                                      else 1 if d["queue_pos"] else 2,
                                      d["queue_pos"] or -d["id"]))
         h._json({"modes": policy.modes(s),
+                 "interval": interval,
                  "kinds": policy.ACTION_KINDS,
                  "square": sorted(policy.REACHES_THE_SQUARE),
                  "notes": POLICY_NOTES,
@@ -845,6 +879,16 @@ def _goals_routes(h):
             n = _state.clear_instructions(s)
             s.say("report", f"You cleared {n} standing instruction(s).")
             return h._json({"ok": True, "cleared": n}) or True
+        if u.path == "/api/interval":
+            try:
+                mins = max(5, min(1440, int(b.get("minutes"))))
+            except (TypeError, ValueError):
+                return h._json({"error": "minutes must be a number"}) or True
+            old = s.note("cycle_interval_minutes")
+            s.note("cycle_interval_minutes", mins)
+            s.say("report", f"Wake interval set to {mins} minutes"
+                            + (f" (was {old})" if old else "") + ".")
+            return h._json({"ok": True, "minutes": mins}) or True
         if u.path == "/api/project/dequeue":
             from agent import project as _pj
             pid = int(b.get("id") or 0)

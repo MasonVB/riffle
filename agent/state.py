@@ -102,6 +102,48 @@ CREATE INDEX IF NOT EXISTS ix_mem_pinned ON memories(pinned, id);
 ERROR_HOOK = None
 
 
+_OUTCOME_LINE = {
+    "queue-full":       "I stopped early — too many proposals are waiting for you.",
+    "no-project":       "I could not act: that needed an open project.",
+    "not-read":         "Nothing was stored for that thread yet.",
+    "fetched":          "I read one of the square's public surfaces.",
+    "fetch-failed":     "I tried to read a public surface and could not.",
+    "project-opened":   "I opened a project.",
+    "project-queued":   "I queued a project behind the running one.",
+    "project-closed":   "I closed a project.",
+    "numcheck-blocked": "I wrote something carrying figures I could not trace, "
+                        "so it was blocked before sending.",
+    "executed":         "I acted on the square.",
+    "queued":           "I proposed something; it is waiting for your approval.",
+    "failed":           "The registry refused what I sent.",
+    "refused":          "The gate refused my own proposal.",
+    "noop":             "I looked and chose to do nothing.",
+    "no-proposal":      "The composer did not return a usable proposal.",
+    "busy":             "The composer was busy, so I skipped this wake.",
+    "composer-busy":    "The composer was busy with something else, so I "
+                        "skipped this wake rather than queue behind it.",
+    "composer-failed":  "The composer did not come back with a usable answer.",
+    "cooldown":         "I am in the post cooldown, so I left the square alone.",
+    "cap-reached":      "I have spent today's allowance for that action.",
+    "extra-capped":     "I have already asked to wake early as often as I may.",
+    "cycle-requested":  "I asked to wake again sooner.",
+    "blocked":          "What I wrote was blocked before it could be sent.",
+    "goal-refused":     "The gate refused a change I proposed to my own goals.",
+    "project-refused":  "The gate refused what I proposed for the project.",
+    "adjusted":         "I moved one of my own drive weights.",
+    "note-added":       "I wrote a note into the open project.",
+    "remembered":       "I wrote something down to keep.",
+    "not-ready":        "The project is not at the bar yet, so I did not post.",
+    "thread-read":      "I read a thread and filed it into the project.",
+    "batch-read":       "I took the next batch of replies off a thread.",
+    "thread-exhausted": "That thread is fully read.",
+    "already-read":     "I had already read that thread; I need a different one.",
+    "read-failed":      "I tried to open a thread and could not.",
+    "read-no-project":  "I opened a thread with no project to keep it in, so "
+                        "most of it is gone.",
+}
+
+
 def utcnow():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -166,6 +208,21 @@ class State:
         self.db.execute("UPDATE cycles SET ended_at=?, outcome=?, notes=? WHERE id=?",
                         (utcnow(), outcome, notes, cid))
         self.db.commit()
+        # Every cycle leaves a line in the chat, not only the ones that had
+        # something eloquent to say. Reflexive outcomes used to end in silence
+        # — the journal had them and the chat did not, so the only thing that
+        # appeared hourly was the witness pass and the box looked idle when it
+        # was working. Skipped when this cycle already spoke for itself, so a
+        # real report is never followed by a bland summary of the same thing.
+        if outcome == "not-due":
+            return
+        spoke = self.db.execute(
+            "SELECT 1 FROM messages WHERE role IN ('report','error','proposal')"
+            " AND json_extract(meta,'$.cycle') = ?", (cid,)).fetchone()
+        if spoke:
+            return
+        self.say("report", f"Cycle {cid} \u00b7 {_OUTCOME_LINE.get(outcome, outcome)}",
+                 {"cycle": cid, "outcome": outcome})
 
     def recent_cycles(self, n=30):
         return self.db.execute("SELECT * FROM cycles ORDER BY id DESC LIMIT ?", (n,)).fetchall()
