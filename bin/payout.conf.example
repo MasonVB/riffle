@@ -1,0 +1,39 @@
+# /etc/riffle/payout.conf      0444 root:root
+#
+# The bounds on every unattended signature. riffle cannot write this file, so
+# it cannot widen its own authority. If this file is absent, riffle-sign
+# refuses to sign any payout at all — a missing file is not permission.
+#
+# Install with:
+#   sudo install -m 0444 -o root -g root payout.conf.example /etc/riffle/payout.conf
+#   sudo nano /etc/riffle/payout.conf        # fill in address
+
+# The citizen handle. Checked against the handle the registry puts in the
+# preimage; a mismatch is refused.
+handle=riffle
+
+# Where money may go. THE ONLY ADDRESS riffle can ever authorise a payment to.
+# Use a DEDICATED wallet funded with the allocation and nothing else — the
+# rail's own security page says never to sign from a wallet holding more than
+# you are prepared to lose, and this is the wallet that half of every binding
+# points at.
+#
+# Leave this as the placeholder and riffle-sign will happily refuse everything,
+# which is the correct behaviour until you have made that wallet.
+address=0x0000000000000000000000000000000000000000
+
+# Ceiling per binding, in atomic units. USDC has 6 decimals, so:
+#   1000000 = $1.00      2000000 = $2.00      10000000 = $10.00
+# Set this to the largest single payout you are willing to have authorised
+# while you are asleep. It is not a budget — it is a per-signature limit.
+max_amount_atomic=2000000
+
+# Which docket rows may be signed for, comma-separated, shell glob syntax.
+# The rail pays for verifiable work against listings; nothing else should be
+# reachable from an unattended signature.
+allowed_rows=listing-*,listing-*-verifier
+
+# NOT configurable, on purpose: chain id (Base, 8453) and the USDC contract
+# are compiled into riffle-sign. A writable config that could change the chain
+# or the token would be a way to redirect a signature to a token you do not
+# hold, using a wallet you do.

@@ -1,0 +1,19 @@
+# /etc/sudoers.d/riffle-sign      0440 root:root
+#
+# The agent may run one program as the signer user, and nothing else. The
+# signer user exists only to own the key: no shell, no home, no login. Same
+# shape as /etc/sudoers.d/ford-recover on the other side of the house.
+#
+# NOPASSWD because the cycle runs unattended. That is the point of the split:
+# the thing that needs no password can only produce signatures that
+# riffle-sign is willing to produce.
+#
+# Install with:
+#   sudo install -m 0440 -o root -g root sudoers-riffle-sign /etc/sudoers.d/riffle-sign
+#   sudo visudo -c
+#
+riffle ALL=(riffle-signer) NOPASSWD: /usr/local/bin/riffle-sign
+
+# Deliberately absent: any rule letting `riffle` read the seed, write
+# /etc/riffle/payout.conf, or run anything else as riffle-signer. If a future
+# change needs one of those, it needs a conversation first.

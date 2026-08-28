@@ -1,0 +1,368 @@
+#!/usr/bin/python3
+"""Produce a citizen-key signature. The key lives here and nowhere else.
+
+    /usr/local/bin/riffle-sign          0755 root:root
+    /var/lib/riffle/keys/citizen.seed   0400 riffle-signer:riffle-signer
+    /etc/riffle/payout.conf             0444 root:root
+    /etc/sudoers.d/riffle-sign          riffle -> (riffle-signer) NOPASSWD
+
+The agent runs this through sudo as `riffle-signer`. The `riffle` user cannot
+read the seed, and this program never prints it. Same shape as ford-recover on
+the other side of the house: the caller names an intent, a fixed program
+decides what that intent means, and the credential never enters the caller's
+address space. That pattern is already load-bearing here and it works.
+
+WHAT IS AND IS NOT CONTAINED
+
+Unattended subcommands (payout, seal, attest) never sign bytes the agent
+composed. The agent passes parameters; this program builds or fetches the
+preimage itself and refuses anything that does not match a template plus a
+root-owned allowlist. The worst an unattended signature can do is authorise a
+payout to an address in /etc/riffle/payout.conf, under a ceiling in the same
+file, on a row matching a pattern in the same file. The agent cannot write
+that file.
+
+`custom` DOES sign bytes the agent composed. It is gated on --approved, and
+that gate is enforced by the action policy in agent/policy.py, NOT by this
+program: the dashboard executes an approved action as the same user that
+proposes it, so a flag is not a privilege boundary. Say that plainly rather
+than implying a strength this does not have. What --approved buys is that a
+`sign` action sits in the queue until a human presses approve, and the bytes
+are shown in full on the card before that happens. The containment for
+unattended signing is the template checking below; the containment for custom
+signing is you reading it.
+
+EVERYTHING IS LOGGED
+
+Every signature, refused or issued, appends one line to
+/var/lib/riffle/keys/signatures.log, which is append-only and owned by
+riffle-signer. The agent cannot read it, edit it or truncate it. If this
+program is ever tricked, the log is the record of what it was tricked into.
+"""
+import argparse
+import base64
+import datetime as dt
+import fcntl
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SEED_PATH = "/var/lib/riffle/keys/citizen.seed"
+CONF_PATH = "/etc/riffle/payout.conf"
+LOG_PATH = "/var/lib/riffle/keys/signatures.log"
+BASE = "https://1f916.ai"
+
+PAYOUT_PREFIX = "1f916.payout.v1"
+SEAL_PREFIX = "1f916.seal.v1"
+BIND_PREFIX = "1f916.key-bind.v1"
+REVOKE_PREFIX = "1f916.key-revoke.v1"
+
+# Base mainnet, USDC. Compiled in rather than read from the config so that a
+# writable config can never redirect a signature to another chain or token.
+CHAIN_ID = "8453"
+USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+
+
+def die(msg, code=2):
+    log("REFUSED", {"reason": msg})
+    print(f"riffle-sign: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def log(event, fields):
+    """Append one line. Never raises — a failure to log must not become a
+    failure to refuse, and a failure to log must not become a silent sign."""
+    line = json.dumps({"ts": dt.datetime.now(dt.timezone.utc)
+                       .isoformat(timespec="seconds").replace("+00:00", "Z"),
+                       "event": event, **fields}, sort_keys=True)
+    try:
+        with open(LOG_PATH, "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def b64url(raw):
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def load_seed():
+    try:
+        with open(SEED_PATH, "rb") as f:
+            raw = f.read().strip()
+    except PermissionError:
+        die(f"cannot read {SEED_PATH}: this must run as the signer user")
+    except FileNotFoundError:
+        die(f"no key at {SEED_PATH}; run `riffle-sign genkey` first")
+    if len(raw) == 32:
+        return raw
+    try:
+        seed = base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+    except Exception:
+        die("the key file is neither 32 raw bytes nor base64url")
+    if len(seed) != 32:
+        die(f"the key is {len(seed)} bytes; an ed25519 seed is 32")
+    return seed
+
+
+def sign_bytes(seed, message):
+    sys.path.insert(0, "/opt/riffle")
+    import keyutil
+    return keyutil.sign(seed, message)
+
+
+def public_key(seed):
+    sys.path.insert(0, "/opt/riffle")
+    import keyutil
+    return keyutil.public_from_seed(seed)
+
+
+def conf():
+    """Root-owned policy. Absent means no payout may be signed at all, which
+    is the right default: a missing file is not permission."""
+    out = {}
+    try:
+        with open(CONF_PATH) as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip()
+    except FileNotFoundError:
+        die(f"{CONF_PATH} does not exist, so no payout may be signed")
+    except PermissionError:
+        die(f"cannot read {CONF_PATH}")
+    return out
+
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "riffle-sign/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        die(f"{url} answered HTTP {e.code}")
+    except Exception as e:
+        die(f"could not reach {url}: {e}")
+
+
+def glob_ok(pattern_csv, value):
+    import fnmatch
+    return any(fnmatch.fnmatch(value, p.strip())
+               for p in pattern_csv.split(",") if p.strip())
+
+
+# --------------------------------------------------------------------------
+# payout: the only subcommand that touches money, and the most constrained
+# --------------------------------------------------------------------------
+def cmd_payout(a):
+    c = conf()
+    for required in ("handle", "address", "max_amount_atomic", "allowed_rows"):
+        if not c.get(required):
+            die(f"{CONF_PATH} is missing {required!r}")
+
+    if not glob_ok(c["allowed_rows"], a.row):
+        die(f"row {a.row!r} does not match allowed_rows in {CONF_PATH}")
+
+    # The preimage is FETCHED, never accepted from the caller. This is the
+    # whole point: the agent chooses which row and when, and nothing else.
+    q = urllib.parse.urlencode({"handle": c["handle"], "row": a.row,
+                                "address": c["address"], "expiry": a.expiry})
+    body = fetch(f"{BASE}/api/payout-bindings/preimage?{q}")
+    pre = body.get("preimage") or body.get("bytes") or ""
+    if not isinstance(pre, str) or not pre:
+        die("the registry returned no preimage string")
+
+    # 1f916.payout.v1:<handle>:<row>:<amount>:<chain>:<token>:<address>:<expiry>
+    parts = pre.split(":")
+    if len(parts) != 8 or parts[0] != PAYOUT_PREFIX:
+        die(f"preimage is not a {PAYOUT_PREFIX} string with 8 fields: {pre[:120]!r}")
+    _, handle, row, amount, chain, token, address, expiry = parts
+
+    checks = [
+        (handle == c["handle"], f"handle {handle!r} is not ours"),
+        (row == a.row, f"row {row!r} is not the row we asked for"),
+        (chain == CHAIN_ID, f"chain {chain!r} is not Base ({CHAIN_ID})"),
+        (token.lower() == USDC, f"token {token!r} is not the USDC we know"),
+        (address.lower() == c["address"].lower(),
+         f"address {address!r} is not the address in {CONF_PATH}"),
+        (amount.isdigit(), f"amount {amount!r} is not a number"),
+    ]
+    for ok, why in checks:
+        if not ok:
+            die(why)
+    if int(amount) > int(c["max_amount_atomic"]):
+        die(f"amount {amount} is over the ceiling {c['max_amount_atomic']}")
+    if int(amount) <= 0:
+        die(f"amount {amount} is not positive")
+    try:
+        if int(expiry) <= dt.datetime.now(dt.timezone.utc).timestamp():
+            die(f"expiry {expiry} is already in the past")
+    except ValueError:
+        die(f"expiry {expiry!r} is not a unix timestamp")
+
+    sig = sign_bytes(load_seed(), pre.encode("utf-8"))
+    log("SIGNED", {"kind": "payout", "row": row, "amount_atomic": amount,
+                   "address": address, "expiry": expiry, "preimage": pre})
+    print(json.dumps({"preimage": pre, "signature": b64url(sig),
+                      "amount_atomic": amount, "address": address}))
+
+
+# --------------------------------------------------------------------------
+# seal / attest: no money, but still template-checked
+# --------------------------------------------------------------------------
+def cmd_seal(a):
+    c = conf()
+    if not re.fullmatch(r"[0-9a-f]{64}", a.hash or ""):
+        die("hash must be 64 lowercase hex characters (sha256)")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", a.label or ""):
+        die("label must be 1-64 chars of [A-Za-z0-9._-]")
+    pre = f"{SEAL_PREFIX}:{c['handle']}:{a.label}:{a.hash}"
+    sig = sign_bytes(load_seed(), pre.encode("utf-8"))
+    log("SIGNED", {"kind": "seal", "label": a.label, "hash": a.hash})
+    print(json.dumps({"preimage": pre, "signature": b64url(sig)}))
+
+
+def cmd_attest(a):
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", a.subject or ""):
+        die("subject must look like a handle")
+    if not (1 <= len(a.claim or "") <= 1000):
+        die("claim must be 1-1000 characters")
+    pre = json.dumps({"class": a.cls, "subject": a.subject, "claim": a.claim},
+                     sort_keys=True, separators=(",", ":"))
+    sig = sign_bytes(load_seed(), pre.encode("utf-8"))
+    log("SIGNED", {"kind": "attest", "subject": a.subject, "class": a.cls})
+    print(json.dumps({"preimage": pre, "signature": b64url(sig)}))
+
+
+# --------------------------------------------------------------------------
+# custom: bytes the agent composed. Approved by you, on the card, in full.
+# --------------------------------------------------------------------------
+def cmd_custom(a):
+    """Sign arbitrary bytes.
+
+    --approved is checked here so that running this by hand without it fails
+    loudly, but understand what it is: the dashboard executes an approved
+    action as the same user that proposed it, so this flag is a reminder, not
+    a boundary. The boundary is that `sign` is `queue` in the action policy,
+    so nothing reaches this path until you have read the bytes on the card and
+    pressed approve.
+
+    Refuses anything that looks like a protocol preimage: those have their own
+    subcommands with real checking, and letting them through here would route
+    a money path around every check above.
+    """
+    if not a.approved:
+        die("custom signing requires --approved; it is never unattended")
+    data = sys.stdin.buffer.read()
+    if not data:
+        die("nothing on stdin to sign")
+    if len(data) > 4096:
+        die(f"{len(data)} bytes is too much to have read on a card; limit 4096")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        die("refusing to sign bytes that are not UTF-8 text you could read")
+    for prefix in (PAYOUT_PREFIX, SEAL_PREFIX, BIND_PREFIX, REVOKE_PREFIX,
+                   "1f916.payout-funder.v1"):
+        if text.startswith(prefix):
+            die(f"{prefix} has its own subcommand with real validation; "
+                f"custom will not sign one")
+    sig = sign_bytes(load_seed(), data)
+    log("SIGNED", {"kind": "custom", "approved_by": "operator", "bytes": text})
+    print(json.dumps({"preimage": text, "signature": b64url(sig)}))
+
+
+# --------------------------------------------------------------------------
+# one-off subcommands: you run these by hand, the cycle never does
+# --------------------------------------------------------------------------
+def cmd_genkey(a):
+    if os.path.exists(SEED_PATH) and not a.force:
+        die(f"{SEED_PATH} already exists; --force to replace it "
+            f"(you will lose the identity bound to it)")
+    os.makedirs(os.path.dirname(SEED_PATH), exist_ok=True)
+    seed = os.urandom(32)
+    fd = os.open(SEED_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o400)
+    with os.fdopen(fd, "wb") as f:
+        f.write(seed)
+    log("GENKEY", {"public_key": b64url(public_key(seed))})
+    print(json.dumps({"public_key": b64url(public_key(seed)),
+                      "path": SEED_PATH,
+                      "back_this_up": "copy the file to something that is "
+                                      "not riffle and not ford, now"}))
+
+
+def cmd_pubkey(a):
+    print(b64url(public_key(load_seed())))
+
+
+def cmd_keybind(a):
+    c = conf()
+    pub = b64url(public_key(load_seed()))
+    pre = f"{BIND_PREFIX}:{c['handle']}:{pub}"
+    sig = sign_bytes(load_seed(), pre.encode("utf-8"))
+    log("SIGNED", {"kind": "key-bind", "public_key": pub})
+    print(json.dumps({"public_key": pub, "signature": b64url(sig),
+                      "preimage": pre}))
+
+
+def cmd_keyrevoke(a):
+    c = conf()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", a.thumbprint or ""):
+        die("thumbprint looks wrong")
+    pre = f"{REVOKE_PREFIX}:{c['handle']}:{a.thumbprint}"
+    sig = sign_bytes(load_seed(), pre.encode("utf-8"))
+    log("SIGNED", {"kind": "key-revoke", "thumbprint": a.thumbprint})
+    print(json.dumps({"preimage": pre, "signature": b64url(sig)}))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="riffle-sign", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("payout", help="sign a payout binding preimage "
+                                      "fetched from the registry")
+    p.add_argument("--row", required=True)
+    p.add_argument("--expiry", required=True)
+    p.set_defaults(fn=cmd_payout)
+
+    p = sub.add_parser("seal", help="sign a memory seal")
+    p.add_argument("--hash", required=True)
+    p.add_argument("--label", required=True)
+    p.set_defaults(fn=cmd_seal)
+
+    p = sub.add_parser("attest", help="sign an attestation")
+    p.add_argument("--subject", required=True)
+    p.add_argument("--claim", required=True)
+    p.add_argument("--cls", default="observation")
+    p.set_defaults(fn=cmd_attest)
+
+    p = sub.add_parser("custom", help="sign UTF-8 bytes from stdin; "
+                                      "requires --approved")
+    p.add_argument("--approved", action="store_true")
+    p.set_defaults(fn=cmd_custom)
+
+    p = sub.add_parser("genkey", help="create the key (run once, by hand)")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_genkey)
+
+    sub.add_parser("pubkey", help="print the public key").set_defaults(fn=cmd_pubkey)
+
+    sub.add_parser("keybind", help="sign the key-bind preimage").set_defaults(
+        fn=cmd_keybind)
+
+    p = sub.add_parser("keyrevoke", help="sign a key-revoke preimage")
+    p.add_argument("--thumbprint", required=True)
+    p.set_defaults(fn=cmd_keyrevoke)
+
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()
