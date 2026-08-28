@@ -1,9 +1,17 @@
 [Unit]
-Description=wake riffle every hour
+Description=offer riffle a wake every five minutes
 
 [Timer]
-OnCalendar=hourly
-RandomizedDelaySec=300
+# The timer no longer decides how often riffle wakes; agent.cycle does, from
+# a row you can change on the settings page. This fires often and the cycle
+# returns immediately unless enough time has passed, which is what makes the
+# interval settable without root: the dashboard cannot write a systemd
+# override or run daemon-reload, and it should not be able to.
+#
+# A returned-early cycle is a few milliseconds and one SELECT.
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
 Persistent=true
 
 [Install]
