@@ -136,13 +136,12 @@ button.go:active{background:var(--fg);color:var(--bg)}
 #menu a:active,#menu button:active{background:var(--sig);color:var(--bg)}
 
 /* --- composer ------------------------------------------------------------
-   On a phone the textarea, the toggle and two buttons shared one row, leaving
-   about 40% of the width for the thing you actually type into. */
+   The textarea gets its own full-width row; the two buttons share the row
+   below it evenly, with the auto toggle parked on the right. This used to be
+   a phone-only override of a one-row desktop layout, which meant two layouts
+   to keep working and only one of them ever looked at. It is now the layout
+   at every width. */
 @media (max-width:620px){
-  footer{flex-direction:column;align-items:stretch;gap:8px}
-  footer .btnrow{display:flex;gap:8px;align-items:center}
-  footer .btnrow #send,footer .btnrow #sendcyc{flex:1}
-  #autow{margin-right:auto}
   .brandwrap .sub{max-width:96px}
 }
 
@@ -190,8 +189,25 @@ button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:9px 16px;
 .go{background:var(--sig);color:#12140f}
 .no{background:transparent;color:var(--bad);border:1px solid var(--bad)}
 footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12px;
-  padding-bottom:max(10px,env(safe-area-inset-bottom));display:flex;gap:9px;align-items:flex-end}
-textarea{flex:1;resize:none;background:#0e100b;color:var(--fg);border:1px solid var(--line);
+  padding-bottom:max(10px,env(safe-area-inset-bottom));
+  display:flex;flex-direction:column;align-items:stretch;gap:8px}
+footer .btnrow{display:flex;gap:8px;align-items:center;width:100%}
+/* flex:1 1 0 rather than flex:1 — with `flex:1` the basis is the button's own
+   text width, so "send to cycle" would come out wider than "send". Zero basis
+   makes them genuinely equal. min-width:0 lets them shrink below their label
+   instead of pushing the row wider than the screen. */
+footer .btnrow #send,footer .btnrow #sendcyc{flex:1 1 0;min-width:0}
+#autow{flex:0 0 auto}
+/* What is left in today's caps. Its own line above the box rather than a
+   header pill: the header row is already competing for width on a phone,
+   and this is a thing you read, not a thing you glance at. */
+#capsline{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  color:var(--dim);letter-spacing:.03em;line-height:1.35}
+/* Four counters is about 45 characters, which fits a 412px screen and does
+   not fit a 360px one. Let it wrap to two lines rather than clip or widen
+   the footer. */
+@media (max-width:400px){#capsline{font-size:11px;letter-spacing:0}}
+textarea{width:100%;resize:none;background:#0e100b;color:var(--fg);border:1px solid var(--line);
   border-radius:11px;padding:11px 13px;font:inherit;max-height:150px;min-height:44px}
 textarea:focus{outline:0;border-color:var(--sig)}
 #send{background:var(--sig);color:#12140f;border-radius:11px;height:44px}
@@ -208,8 +224,8 @@ textarea:focus{outline:0;border-color:var(--sig)}
 @media (hover:hover){#sendcyc:hover{background:var(--sig);color:var(--bg)}}
 #sendcyc:active{background:var(--sig);color:var(--bg)}
 #sendcyc:disabled{opacity:.35}
-footer{gap:7px}
-@media (max-width:430px){#send,#sendcyc{padding:0 11px;font-size:13.5px}}
+@media (max-width:430px){#send,#sendcyc{padding:0 9px;font-size:13.5px}
+  #autow{font-size:11px}}
 .think{align-self:flex-start;color:var(--dim);font-size:13.5px;
   font-family:ui-monospace,monospace}
 .dot{animation:b 1.3s infinite}@keyframes b{0%,80%{opacity:.25}40%{opacity:1}}
@@ -228,7 +244,6 @@ footer{gap:7px}
       </div>
     </span>
     <span class=pill id=p-queue></span>
-    <span class=pill id=p-caps></span>
   </span>
   <span class=menuwrap>
     <button id=menubtn onclick="toggleMenu(event)" title="controls">&#9776;</button>
@@ -245,11 +260,12 @@ footer{gap:7px}
 </header>
 <div id=log></div>
 <footer>
+  <div id=capsline></div>
   <textarea id=box rows=1 placeholder="ask what it's been doing&hellip;"></textarea>
   <div class=btnrow>
-    <label id=autow title="follow new messages"><input type=checkbox id=autos checked> auto</label>
     <button id=send>send</button>
     <button id=sendcyc title="also carried into the next wake cycle as a standing instruction">send to cycle</button>
+    <label id=autow title="follow new messages"><input type=checkbox id=autos checked> auto</label>
   </div>
 </footer>
 <script>
@@ -409,7 +425,11 @@ async function poll(){
     const q = document.getElementById('p-queue');
     q.textContent = d.queued + ' waiting';
     q.className = 'pill' + (d.queued ? ' hot' : '');
-    document.getElementById('p-caps').textContent = d.caps;
+    const cl = d.caps_left || {};
+    const capnum = function(k){ return cl[k] === undefined ? '\u2013' : cl[k]; };
+    document.getElementById('capsline').textContent =
+      'Comments: ' + capnum('comment') + ' \u2022 Posts: ' + capnum('post') +
+      ' \u2022 Tags: ' + capnum('tag') + ' \u2022 Votes: ' + capnum('vote');
     renderAlarms(d.alarms_list);
     const st = document.getElementById('p-state');
     st.textContent = d.generating ? 'thinking'
