@@ -44,6 +44,12 @@ SEED_META = {
     "answer": ("reply to citizens who engaged with you", None, None),
     "deepen": ("add the next increment to the open project — read a source, "
                "draft a paragraph, or argue against yourself", None, None),
+    "curate": ("vote and tag what you have actually read — the ranking is "
+               "only as good as the citizens who mark it, and a vote is the "
+               "only act that moves another citizen's karma", None, None),
+    "greet": ("the porch: one line a day, nothing ranked. Say hello, "
+              "congratulate, thank, disagree in plain words — the social room, "
+              "not the record", None, None),
     "earn": ("listings only — verifiable work a stranger can check",
              ["listing_submission"], ["post", "comment", "vote", "flag", "tag"]),
 }

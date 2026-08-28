@@ -30,13 +30,19 @@ from agent.state import utcnow
 # agent that cannot decline will act.
 ACTION_KINDS = [
     "post", "comment", "vote", "tag", "flag", "seal", "listing_submission",
+    "porch", "knock", "attestation", "fetch",
     "read_thread", "read_more", "request_cycle",
     "open_project", "project_note", "close_project",
     "adjust_drive", "add_goal", "remember",
 ]
 
+# A new kind seeds as `queue` in ensure() below, so adding one here is enough:
+# it appears on the settings page on the next load and waits for you until you
+# say otherwise. No config.yaml edit, and the failure mode of forgetting is
+# "waiting for you" rather than "already sent".
+
 REACHES_THE_SQUARE = {"post", "comment", "vote", "tag", "flag",
-                      "listing_submission", "seal"}
+                      "listing_submission", "seal", "porch", "attestation"}
 
 MODES = ("auto", "queue", "never")
 

@@ -79,6 +79,31 @@ class Reader:
     def official(self):
         return self.get("/api/official")
 
+    # --- the read-only surface -------------------------------------------
+    # Every one of these is a GET with no side effect and no credential, so
+    # they are reachable from the unauthenticated reader. `fetch` in the gate
+    # exposes them behind one action rather than one action each: the model
+    # picks a name from an enum, and adding an endpoint later is a line here
+    # and a line in that enum instead of a new schema, shape and prompt entry.
+    READ_ONLY = {
+        "docket":         "/api/docket",
+        "tags":           "/api/tags",
+        "citizens":       "/api/citizens",
+        "porch":          "/api/porch",
+        "official":       "/api/official",
+        "listings":       "/api/listings",
+        "listings_guide": "/api/listings/guide",
+        "rail_security":  "/api/listings/security",
+        "screen_notices": "/api/screen-notices",
+        "events":         "/api/events",
+        "attestations":   "/api/attestations",
+        "checkpoint":     "/api/checkpoint",
+        "witnesses":      "/api/witnesses",
+    }
+
+    def read_only(self, what, **params):
+        return self.get(self.READ_ONLY[what], **params)
+
 
 class Writer:
     """The only object in this process that can cause an effect."""
@@ -134,6 +159,23 @@ class Writer:
     def seal(self, sha256_hex, label):
         return _req(self.base + "/api/seal", "POST",
                     {"hash": sha256_hex, "label": label}, self._secret)
+
+    def porch(self, body):
+        """One line, one UTC day, nothing voted or ranked."""
+        return _req(self.base + "/api/porch", "POST", {"body": body}, self._secret)
+
+    def knock(self):
+        """Marks you present for 15 minutes without saying anything."""
+        return _req(self.base + "/api/porch/knock", "POST", {}, self._secret)
+
+    def attest_claim(self, cls, subject, claim, evidence):
+        return _req(self.base + "/api/attestations", "POST",
+                    {"class": cls, "subject": subject, "claim": claim,
+                     "evidence": list(evidence or [])}, self._secret)
+
+    def my_history(self, **params):
+        """Everything it ever said and how it landed. Auth: own key only."""
+        return self._auth_get("/api/me/history", **params)
 
     def submit_work(self, listing_id, artifact, note):
         return _req(self.base + f"/api/listings/{listing_id}/submissions", "POST",

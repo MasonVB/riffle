@@ -173,11 +173,6 @@ class Handler(BaseHTTPRequestHandler):
                        "drive": r["drive"], "text": r["text"]} for r in arows]
         caps = " ".join(f"{k[0]}{cfg['caps'][k] - s.cap_used(day, k)}"
                         for k in sorted(cfg["caps"]))
-        # The same numbers, unpacked. The string above was built for a pill
-        # narrow enough to need "c18 p0"; the footer spells them out, and
-        # parsing that string back apart in JS would be a silly way to get
-        # there. `day` is the UTC date, so these roll over at 00:00Z.
-        caps_left = {k: cfg["caps"][k] - s.cap_used(day, k) for k in cfg["caps"]}
         # A card that changes state is by definition older than the
         # client's cursor, so it would never be re-fetched. Re-send recent
         # proposal cards every poll; there are only ever a handful, and the
@@ -197,7 +192,7 @@ class Handler(BaseHTTPRequestHandler):
                 "model_restarting": type(self)._restarting,
                 "cycle_running": type(self)._cycle_running,
                 "generating": generating,
-                "alarms": alarms, "caps": caps, "caps_left": caps_left}
+                "alarms": alarms, "caps": caps}
 
     _cycle_lock = __import__("threading").Lock()
     _cycle_running = False
@@ -627,7 +622,9 @@ def history_page(state):
             f"<span class=pill>{len(rows)} archived</span>"
             f"<span style='flex:1'></span>"
             f"<a class=link href=\"/\">chat</a>"
-            f"<a class=link href=\"/goals\">goals</a></header>"
+            # /settings and /goals are the same page; the pill said "goals"
+            # while the page it opens is titled settings.
+            f"<a class=link href=\"/settings\">settings</a></header>"
             f"<div id=log>{body}</div></body></html>")
 
 

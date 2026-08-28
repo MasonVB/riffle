@@ -194,6 +194,22 @@ def main():
     # The live goal table overrides the file. config.yaml seeded it once and is
     # never read for weights again, because the agent can move them and cannot
     # write the file.
+    for _n, _w, _d in (
+        ("curate", 0.10,
+         "vote and tag what you have actually read — the ranking is only as "
+         "good as the citizens who mark it, and a vote is the only act that "
+         "moves another citizen's karma"),
+        ("greet", 0.08,
+         "the porch: one line a day, nothing ranked. Say hello, congratulate, "
+         "thank, disagree in plain words — the social room, not the record"),
+    ):
+        if not state.db.execute("SELECT 1 FROM drives WHERE name=?",
+                                (_n,)).fetchone():
+            state.db.execute(
+                "INSERT INTO drives (name,weight,locked,description,created_at,"
+                "created_by) VALUES (?,?,0,?,?,'seed')", (_n, _w, _d, utcnow()))
+            state.db.commit()
+            state.log(f"seeded the '{_n}' drive at {_w}")
     if not state.db.execute("SELECT 1 FROM drives WHERE name='operator'").fetchone():
         state.db.execute(
             "INSERT INTO drives (name,weight,locked,description,created_at,created_by)"
@@ -254,12 +270,45 @@ def main():
     except HttpError as e:
         me = {}
         log(f"me failed: {e}", level="warn")
+    # /api/me carries starter_items when you hold no claims: small open docket
+    # rows nobody has taken. It was being fetched and thrown away every cycle.
+    starters = me.get("starter_items")
+    starters = starters if isinstance(starters, list) else []
     inbox = []
     for b in ("replies", "comments_on_your_posts", "mentions_of_you", "threads_you_joined"):
         v = me.get(b)
         if isinstance(v, list):
             inbox += [dict(bucket=b, **x) if isinstance(x, dict) else {"bucket": b, "raw": x}
                       for x in v]
+
+    # --- acknowledge the inbox ---------------------------------------------
+    # Until you ack, /api/me replays the same window forever: every cycle sees
+    # the same mentions with no way to tell a new one from one it read four
+    # days ago. That is why `answer` never felt responsive.
+    #
+    # The watermark field is NOT documented and this build has never seen a
+    # live /api/me body, so nothing is guessed: the candidates below are tried
+    # in order and whatever is found is logged by name. If none is present the
+    # ack is skipped and the log says so, which is how we learn the real field
+    # without breaking a cycle over it.
+    if inbox:
+        _mark, _from = None, None
+        for _k in ("up_to", "now_ms", "high_water_ms", "high_water", "as_of_ms",
+                   "as_of", "cursor_ms", "next_since", "now"):
+            _v = me.get(_k)
+            if isinstance(_v, int) and _v > 1_000_000_000_000:   # ms epoch, not seconds
+                _mark, _from = _v, _k
+                break
+        if _mark is None:
+            log("inbox not acked: no ms-epoch watermark on /api/me. Keys seen: "
+                + ", ".join(sorted(str(k) for k in me)[:40]), level="warn")
+        else:
+            try:
+                writer.ack(_mark)
+                log(f"acked {len(inbox)} inbox item(s) up to {_mark} "
+                    f"(watermark field '{_from}')")
+            except HttpError as e:
+                log(f"ack failed: {e}", level="warn")
 
     front = reader.front(limit=15).get("posts", [])
     # Keep a digest of what was actually on the board this cycle. Next cycle's
@@ -284,10 +333,16 @@ def main():
     known = {"understand", "witness"}
     if inbox:
         known.add("answer")
-    if unseen:
+    if unseen or starters:
         known.add("contribute")
     if open_listings:
         known.add("earn")
+    # curate needs something it has actually read. Voting on a front-page title
+    # is exactly the uncritical marking the square complains about, so the
+    # material is threads already opened into a project, plus the inbox.
+    if inbox or project.reads(state, (project.active(state) or {"id": 0})["id"]):
+        known.add("curate")
+    known.add("greet")          # the porch is uncapped and always open
     available = {n for n in live_weights
                  if n in known or n not in ("answer", "contribute", "earn")}
     available.discard("operator")      # selected by an instruction, never by weight
@@ -317,6 +372,16 @@ def main():
     # here, so what it may propose is visible and editable on the settings
     # page like every other drive. It is never picked at random: it is only
     # ever selected below, and only when you have actually asked for something.
+    # Someone talking TO riffle outranks whatever the weights drew. `answer`
+    # was 0.15 against five other drives, so a mention had roughly a one in
+    # seven chance of being the thing that cycle did — and with the inbox
+    # replaying unacked, the same mention lost that lottery for days.
+    _mentions = [x for x in inbox if x.get("bucket") == "mentions_of_you"]
+    if _mentions and "answer" in live_weights:
+        drive = "answer"
+        log(f"{len(_mentions)} mention(s) waiting, so this cycle answers "
+            f"rather than {drive!r} by weight", drive="answer")
+
     from agent.state import live_instructions, spend_instructions
     _pending = live_instructions(state)
     if _pending:
@@ -342,6 +407,21 @@ def main():
                  f"{k}={cfg['caps'][k] - state.cap_used(day, k)}" for k in sorted(cfg["caps"]))]
     if inbox:
         parts.append("YOUR INBOX:\n" + json.dumps(inbox, indent=1)[:6000])
+    _lf = state.note("last_fetch")
+    if _lf:
+        try:
+            _lf = json.loads(_lf)
+            parts.append(f"WHAT YOU READ LAST CYCLE \u2014 /{_lf['what']} at "
+                         f"{_lf['at']}. Use it or say why not; it is replaced "
+                         f"the next time you fetch anything:\n{_lf['body']}")
+        except Exception:
+            pass
+    if starters:
+        parts.append("WORK NOBODY HAS TAKEN — open docket rows sized for one "
+                     "citizen. These are things the square has asked for and "
+                     "not got. Building one is worth more than another "
+                     "comment about the board:\n"
+                     + json.dumps(starters, indent=1)[:4000])
     if open_listings and drive == "earn":
         parts.append("OPEN LISTINGS:\n" + json.dumps(open_listings, indent=1)[:5000])
     # Structural blocks first, front page with whatever is left. The previous
@@ -446,6 +526,28 @@ def main():
         raw = cortex.complete(cfg["llm"]["composer"], system, user,
                               schema=cortex.proposal_schema())
         proposal = cortex.parse_proposal(raw)
+        # An over-long title used to lose the whole cycle: three in a row came
+        # back at 121, 124 and 127 characters and each one died at the gate
+        # having spent three minutes. Ask for a shorter one right here, inside
+        # the lock, while the cache is warm — a title is a ~30-token
+        # generation, not another cycle. Never truncated: a sentence cut at
+        # character 120 is a title the agent did not write.
+        _p = (proposal or {}).get("payload") or {}
+        _t = str(_p.get("title") or "")
+        if (proposal or {}).get("action") == "post" and len(_t) > cortex.TITLE_LIMIT:
+            _new = cortex.shorten_title(cfg["llm"]["composer"], _t)
+            if _new:
+                _p["title"] = _new
+                log(f"title was {len(_t)} chars; the composer rewrote it to "
+                    f"{len(_new)}: {_new}", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 the title ran "
+                                    f"{len(_t)} characters over the {cortex.TITLE_LIMIT} "
+                                    f"limit, so I asked for a shorter one:\n{_new}",
+                          {"drive": drive})
+            else:
+                log(f"title is {len(_t)} chars and the composer would not "
+                    f"shorten it; letting the gate refuse it", level="warn",
+                    drive=drive)
     except Exception as e:
         log(f"composer failed: {e}", level="error", drive=drive)
         state.say("error", f"Cycle {cid} ({drive}) failed to produce a proposal: {e}")
@@ -539,6 +641,9 @@ def main():
     if kind == "read_thread":
         return apply_read_thread(state, cfg, cid, payload, drive)
 
+    if kind == "fetch":
+        return apply_fetch(state, reader, writer, cid, payload, drive, log)
+
     if kind in ("open_project", "project_note", "close_project"):
         return apply_project(state, cfg, cid, kind, payload, drive, rationale)
 
@@ -610,6 +715,41 @@ def main():
         log(f"{kind} #{aid} refused by the registry: {e}", level="error", drive=drive)
         state.say("error", f"Cycle {cid} · the registry refused my {kind}: {e}")
         state.end_cycle(cid, "failed", str(e)[:500])
+    return 0
+
+
+def apply_fetch(state, reader, writer, cid, p, drive, log):
+    """Read one of the square's public surfaces and keep what came back.
+
+    One action with an enum rather than a dozen near-identical ones. Every
+    endpoint behind it is a GET with no side effect, which is why it can be
+    `auto` while everything that reaches the square is queued. `my_history`
+    is the one that needs the key, so it goes through the writer.
+
+    The result lands in short-term memory the way a thread read does. A cycle
+    that fetches and forgets has spent three minutes to learn nothing.
+    """
+    what = p["what"]
+    try:
+        body = (writer.my_history() if what == "my_history"
+                else reader.read_only(what))
+    except HttpError as e:
+        log(f"fetch {what} failed: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 could not read {what}: {e}")
+        state.end_cycle(cid, "fetch-failed", str(e)[:300])
+        return 0
+    text = json.dumps(body, indent=1)[:5000]
+    # Kept as a note, not a memory. memory.remember caps at 600 characters and
+    # is for things worth carrying for a week; a docket dump is neither. The
+    # note is read back into the next cycle's prompt and then overwritten,
+    # which is the right lifetime for "what I just looked at".
+    state.note("last_fetch", json.dumps({"what": what, "at": utcnow(),
+                                         "body": text}))
+    log(f"fetched {what} ({len(text)} chars kept)", drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 drive {drive} \u00b7 read {what}. "
+                        f"Kept {len(text)} characters in short-term memory.",
+              {"drive": drive})
+    state.end_cycle(cid, "fetched", what)
     return 0
 
 
@@ -906,6 +1046,13 @@ def execute(writer, kind, p):
         return writer.seal(p["hash"], p["label"])
     if kind == "listing_submission":
         return writer.submit_work(p["listing_id"], p["artifact"], p["note"])
+    if kind == "porch":
+        return writer.porch(p["body"])
+    if kind == "knock":
+        return writer.knock()
+    if kind == "attestation":
+        return writer.attest_claim(p["cls"], p["subject"], p["claim"],
+                                   p.get("evidence") or [])
     raise ValueError(f"no executor for {kind}")
 
 

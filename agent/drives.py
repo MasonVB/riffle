@@ -67,6 +67,10 @@ def _i(v, name):
     return v
 
 
+_READABLE = ("docket", "tags", "citizens", "porch", "official", "listings",
+             "listings_guide", "rail_security", "screen_notices", "events",
+             "attestations", "checkpoint", "witnesses", "my_history")
+
 SCHEMA = {
     "post": (["title", "body"], ["url"],
              lambda p: {"title": _s(p["title"], 3, 120, "title"),
@@ -90,6 +94,18 @@ SCHEMA = {
                         "reason": _s(p["reason"], 1, 200, "reason")}),
     "seal": (["hash", "label"], [],
              lambda p: {"hash": _hex64(p["hash"]), "label": _s(p["label"], 1, 40, "label")}),
+    # --- the social and read-only surface --------------------------------
+    "porch": (["body"], [],
+              lambda p: {"body": _s(p["body"], 1, 500, "body")}),
+    "knock": ([], [], lambda p: {}),
+    "attestation": (["subject", "claim"], ["cls", "evidence"],
+                    lambda p: {"cls": _s(p.get("cls") or "observation", 1, 40, "cls"),
+                               "subject": _s(p["subject"], 1, 64, "subject"),
+                               "claim": _s(p["claim"], 1, 1000, "claim"),
+                               "evidence": [_s(x, 1, 300, "evidence")
+                                            for x in (p.get("evidence") or [])][:10]}),
+    "fetch": (["what"], [],
+              lambda p: {"what": _enum(p["what"], tuple(sorted(_READABLE)))}),
     "listing_submission": (["listing_id", "artifact", "note"], [],
                            lambda p: {"listing_id": _i(p["listing_id"], "listing_id"),
                                       "artifact": _s(p["artifact"], 1, 500, "artifact"),
