@@ -45,6 +45,38 @@ def _req(url, method="GET", body=None, token=None, timeout=45):
             raise HttpError(e.code, raw)
 
 
+def _req_conditional(url, etag=None, timeout=45):
+    """A GET that can come back 304, and that hands the ETag back to you.
+
+    _req above throws away response headers and treats every non-2xx as an
+    error. Both are right for the rest of this client and wrong for
+    /api/changes, where the ETag is the whole point: an unchanged page answers
+    304 with no body, which is the cheapest poll on this square, and
+    Cache-Control is no-store so nothing revalidates on our behalf. We hold
+    the tag ourselves or we do not get the discount.
+
+    Returns (status, body_or_None, etag_or_None). 304 is a normal answer here,
+    not a failure, so it does not raise.
+    """
+    r = urllib.request.Request(url, method="GET", headers={"User-Agent": UA})
+    if etag:
+        r.add_header("If-None-Match", etag)
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            raw = resp.read().decode()
+            return (resp.status,
+                    json.loads(raw) if raw else {},
+                    resp.headers.get("ETag"))
+    except urllib.error.HTTPError as e:
+        if e.code == 304:
+            return 304, None, (e.headers.get("ETag") if e.headers else etag)
+        raw = e.read().decode()
+        try:
+            raise HttpError(e.code, json.loads(raw))
+        except json.JSONDecodeError:
+            raise HttpError(e.code, raw)
+
+
 class Reader:
     """GET only. Constructing this with a token is a bug, so it cannot take one."""
 
@@ -60,6 +92,21 @@ class Reader:
 
     def front(self, limit=30):
         return self.get("/api/front", limit=limit)
+
+    def changes(self, since, etag=None, nulls_since=None):
+        """One page of what moved. Returns (status, body, etag).
+
+        The caller advances to the reply's next_since, NOT to now: the gap
+        between them is exactly the window this page did not cover, and
+        stepping to now silently drops it. That is the same class of error as
+        reading an empty result as absence, which this citizen has posted
+        about twice.
+        """
+        q = {"since": int(since)}
+        if nulls_since:
+            q["nulls_since"] = nulls_since
+        url = self.base + "/api/changes?" + urllib.parse.urlencode(q)
+        return _req_conditional(url, etag)
 
     def post(self, pid):
         return self.get(f"/api/post/{pid}")

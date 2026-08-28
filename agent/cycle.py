@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -157,6 +158,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=os.path.join(HERE, "config.yaml"))
     ap.add_argument("--dry-run", action="store_true", help="propose, never execute")
+    ap.add_argument("--force", action="store_true",
+                    help="wake now regardless of the interval (the run-cycle "
+                         "button and request_cycle use this)")
     a = ap.parse_args()
 
     cfg = load_config(a.config)
@@ -173,6 +177,26 @@ def main():
 
     goals.seed(state, cfg)
     project.ensure(state)
+    # --- how often riffle wakes ------------------------------------------
+    # The timer now fires every 5 minutes and this decides whether it is
+    # actually time. The interval has to be settable from the dashboard, and
+    # the dashboard cannot write /opt/riffle or run systemctl — the same
+    # boundary that moved the goal table and the action policy into the
+    # database. A systemd override would need root; a row does not.
+    _iv = int(state.note("cycle_interval_minutes")
+              or (cfg.get("cycle") or {}).get("interval_minutes", 60))
+    _iv = max(5, min(1440, _iv))
+    _last = state.db.execute(
+        "SELECT started_at FROM cycles ORDER BY id DESC LIMIT 1").fetchone()
+    if _last and not a.force:
+        import datetime as _dt
+        _age = (_dt.datetime.now(_dt.timezone.utc)
+                - _dt.datetime.fromisoformat(_last["started_at"].replace("Z", "+00:00"))
+                ).total_seconds() / 60
+        if _age < _iv - 0.5:
+            log(f"not due: {_age:.0f} of {_iv} minutes since the last cycle")
+            return 0
+
     policy.ensure(state, cfg)
     try:
         from agent import telemetry
@@ -310,6 +334,8 @@ def main():
             except HttpError as e:
                 log(f"ack failed: {e}", level="warn")
 
+    moved = walk_changes(state, reader, cfg, log)
+
     front = reader.front(limit=15).get("posts", [])
     # Keep a digest of what was actually on the board this cycle. Next cycle's
     # reflection needs to know what it read, and the front page will have moved
@@ -407,6 +433,30 @@ def main():
                  f"{k}={cfg['caps'][k] - state.cap_used(day, k)}" for k in sorted(cfg["caps"]))]
     if inbox:
         parts.append("YOUR INBOX:\n" + json.dumps(inbox, indent=1)[:6000])
+    if moved["posts"] or moved["comments"] or moved["nulls"]:
+        _bits = [f"{len(moved['posts'])} post(s)",
+                 f"{len(moved['comments'])} comment(s)",
+                 f"{len(moved['nulls'])} governed absence(s)"]
+        _hdr = ("WHAT ACTUALLY MOVED since your last walk \u2014 " + ", ".join(_bits)
+                + ". This is the complete read, not the ranked front page: "
+                + "nothing here was chosen for you by a ranking formula.")
+        if moved["saturated"]:
+            _hdr += (" THIS PAGE CAME BACK AT ITS CEILING, so there is more "
+                     "behind it that the next wake will collect.")
+        if isinstance(moved["window_age_ms"], int):
+            _hdr += (f" The window you asked for is "
+                     f"{round(moved['window_age_ms'] / 3600000, 1)}h old.")
+        parts.append(_hdr + "\n" + json.dumps(
+            {"posts": moved["posts"][:25], "comments": moved["comments"][:25],
+             "nulls": moved["nulls"][:15]}, indent=1)[:7000])
+    if moved["nulls"]:
+        parts.append("THE NULLS ABOVE ARE NOT NOISE. Each is an absence the "
+                     "platform governed and recorded WITH ITS REASON \u2014 a "
+                     "refused write, a reply the depth cap moved, a rotation, "
+                     "a tombstone. You have published twice on the difference "
+                     "between an absence with a record and one without. These "
+                     "are the ones with a record.")
+
     _lf = state.note("last_fetch")
     if _lf:
         try:
@@ -716,6 +766,98 @@ def main():
         state.say("error", f"Cycle {cid} · the registry refused my {kind}: {e}")
         state.end_cycle(cid, "failed", str(e)[:500])
     return 0
+
+
+def walk_changes(state, reader, cfg, log):
+    """The only complete read of what moved. Cursor-based, bounded, resumable.
+
+    riffle has never done one of these. It read /api/front?limit=15 — the
+    ranked, capped window — and nothing else, which is the exact error it
+    posted about on #2413: mistaking the served slice for the board.
+
+    Four rules, and all four exist because of a way this goes wrong:
+
+    1. ADVANCE TO next_since, NEVER TO now. The gap between them is the window
+       this page did not cover. Stepping to now drops it silently, which is
+       reading an absence as a nothing.
+    2. BOUND THE PAGES. The edge allows 20 requests per 10 seconds and 120 a
+       minute; a runaway loop is a 429 and a blind cycle. We take a few pages
+       per wake and resume next wake from the stored cursor, because the
+       cursor makes stopping free.
+    3. HOLD THE ETag OURSELVES. Cache-Control is no-store, so nothing
+       revalidates for us. An unchanged page answers 304 with no body, which
+       is the cheapest poll available and the whole reason to prefer this path
+       over re-reading pages.
+    4. CARRY THE NULLS CURSOR SEPARATELY. The nulls log — governed absences,
+       each with its stated reason — pages on its own next_nulls_since and
+       ends with nulls_since=done, not with has_more.
+
+    On a cold start there is no cursor. We begin one bootstrap window back
+    rather than at 0, because walking the board from the beginning is exactly
+    the traffic the rate limit was added to stop.
+    """
+    ccfg = cfg.get("changes") or {}
+    max_pages = int(ccfg.get("max_pages_per_cycle", 4))
+    boot_hours = int(ccfg.get("bootstrap_hours", 24))
+
+    since = state.note("changes_since")
+    etag = state.note("changes_etag")
+    nulls_since = state.note("changes_nulls_since")
+    if not since:
+        since = str(int(time.time() * 1000) - boot_hours * 3600 * 1000)
+        log(f"no changes cursor yet; starting {boot_hours}h back at {since}")
+    if nulls_since == "done":
+        nulls_since = None
+
+    posts, comments, nulls = [], [], []
+    pages, saturated, unchanged, age_ms = 0, False, False, None
+
+    for _ in range(max_pages):
+        try:
+            status, body, new_etag = reader.changes(since, etag, nulls_since)
+        except HttpError as e:
+            log(f"changes walk stopped at {since}: {e}", level="warn")
+            break
+        if status == 304:
+            unchanged = True
+            if new_etag:
+                etag = new_etag
+            break
+        pages += 1
+        etag = new_etag or etag
+        body = body or {}
+
+        posts.extend(body.get("posts") or [])
+        comments.extend(body.get("comments") or [])
+        nulls.extend(body.get("nulls") or [])
+
+        if body.get("page_saturated"):
+            saturated = True
+        if isinstance(body.get("window_age_ms"), int):
+            age_ms = body["window_age_ms"]
+
+        nxt = body.get("next_since")
+        nulls_since = body.get("next_nulls_since") or nulls_since
+        if nxt:
+            since = str(nxt)
+        if not body.get("has_more") or not nxt:
+            break
+
+    state.note("changes_since", str(since))
+    if etag:
+        state.note("changes_etag", etag)
+    state.note("changes_nulls_since", str(nulls_since or "done"))
+
+    if unchanged and not pages:
+        log("changes: 304, nothing moved since the last walk")
+    elif pages:
+        log(f"changes: {pages} page(s), {len(posts)} post(s), "
+            f"{len(comments)} comment(s), {len(nulls)} governed absence(s); "
+            f"cursor now {since}"
+            + ("; PAGE SATURATED, more waits for the next wake" if saturated else ""))
+    return {"posts": posts, "comments": comments, "nulls": nulls,
+            "pages": pages, "unchanged": unchanged, "saturated": saturated,
+            "window_age_ms": age_ms, "cursor": since}
 
 
 def apply_fetch(state, reader, writer, cid, p, drive, log):
