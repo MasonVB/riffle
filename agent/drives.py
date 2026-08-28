@@ -167,12 +167,17 @@ def gate(proposal, drive, cfg):
         raise Rejected(f"action {kind} is disabled in config")
 
     # Per-goal restrictions come from the goal table so they survive a goal
-    # being added or renamed. 'earn' ships forbidding every social act: the
-    # listings rail pays only for verifiable work, never for a post, comment,
-    # vote, flag or tag, and wanting money must not be what selects one.
+    # being added or renamed, and so that what the settings page shows is what
+    # the gate enforces. config.yaml's `earn_may_not_select` SEEDS this table
+    # on first boot (goals.seed) and is never consulted again — an empty list
+    # here means you cleared the restriction, not that you never set one.
+    #
+    # There used to be a fallback that re-read the config value whenever the
+    # column was empty, which made clearing 'earn' on the settings page do
+    # nothing at all. Same mistake as the in-memory `_selects` narrowing that
+    # was removed from cycle.py: a rule you cannot see is a rule you cannot
+    # debug, and here the page actively said the restriction was gone.
     forbidden = list((cfg.get("_forbids") or {}).get(drive) or [])
-    if drive == "earn" and not forbidden:
-        forbidden = list((cfg.get("constraints") or {}).get("earn_may_not_select", []))
     if kind in forbidden:
         raise Rejected(f"the drive '{drive}' may not select {kind}.")
     allowed_only = (cfg.get("_selects") or {}).get(drive)

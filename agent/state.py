@@ -319,11 +319,14 @@ def live_instructions(state):
 
 
 def spend_instructions(state):
-    """Charge every live instruction one cycle. Called when a cycle READS them.
+    """Charge every live instruction one cycle.
 
-    Deliberately not "when the cycle succeeds": a cycle that refuses itself
-    still spent the attention, and an instruction that survives every failure
-    would steer the agent long after you stopped watching.
+    Called once the composer has ANSWERED, not when the cycle reads them.
+    Still deliberately not "when the cycle succeeds": a cycle whose proposal
+    the gate refuses has spent the attention, and an instruction that survives
+    every refusal would steer the agent long after you stopped watching. But
+    a busy composer lock or a failed completion is not the model declining to
+    do the thing — it never saw it — and used to burn the instruction anyway.
     """
     rows = live_instructions(state)
     if not rows:

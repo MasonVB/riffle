@@ -194,6 +194,22 @@ def main():
     # The live goal table overrides the file. config.yaml seeded it once and is
     # never read for weights again, because the agent can move them and cannot
     # write the file.
+    if not state.db.execute("SELECT 1 FROM drives WHERE name='operator'").fetchone():
+        state.db.execute(
+            "INSERT INTO drives (name,weight,locked,description,created_at,created_by)"
+            " VALUES ('operator',0.0,1,?,?,'seed')",
+            ("carry out what your operator asked for in the chat box; selected "
+             "only when a live instruction exists, never at random", utcnow()))
+        state.db.commit()
+        state.log("seeded the 'operator' drive; it is chosen only by an instruction")
+    # Whatever was waiting behind a finished project starts now rather than at
+    # the next open_project. close_project promotes too; this covers a row that
+    # was closed by hand, or by an older build that had no queue.
+    _promoted = project.promote_next(state)
+    if _promoted:
+        state.log(f"started the next queued project: {_promoted['title']}")
+        state.say("report", f"Started the next project in the queue: "
+                            f"{_promoted['title']}\n{_promoted['question']}")
     live_weights = goals.weights(state)
     cfg["_forbids"] = {r["name"]: (json.loads(r["forbids"]) if r["forbids"] else [])
                        for r in goals.all_drives(state)}
@@ -274,6 +290,7 @@ def main():
         known.add("earn")
     available = {n for n in live_weights
                  if n in known or n not in ("answer", "contribute", "earn")}
+    available.discard("operator")      # selected by an instruction, never by weight
     cooling, _until, hours_left = project.in_cooldown(state)
     # `deepen` is always available, but what it may DO depends on whether
     # there is anything to deepen. Without this it drew "work on the project"
@@ -286,6 +303,24 @@ def main():
         focus = float((cfg.get("projects") or {}).get("cooldown_focus", 3.0))
         live_weights["deepen"] = live_weights.get("deepen", 0.25) * focus
     drive = drives.pick_drive(cfg, available, weights_override=live_weights) or "understand"
+
+    # --- an operator instruction takes the cycle -----------------------------
+    # Instructions used to be read AFTER the drive was picked and appended to
+    # the prompt as data, under a line naming a drive the model then followed
+    # instead. With witness passes dominating the log, "create a project X"
+    # was reliably read by a cycle that had no intention of doing it — and
+    # spend_instructions charges on READ, so it was gone before a cycle that
+    # would act on it ever saw it. That is what the send-to-cycle button was
+    # doing: nothing, once, quietly.
+    #
+    # `operator` is a real row in the drives table rather than a name invented
+    # here, so what it may propose is visible and editable on the settings
+    # page like every other drive. It is never picked at random: it is only
+    # ever selected below, and only when you have actually asked for something.
+    from agent.state import live_instructions, spend_instructions
+    _pending = live_instructions(state)
+    if _pending:
+        drive = "operator"
 
     # A `deepen` draw with no open project used to be narrowed here to
     # open_project alone, by writing _selects in memory. That is now handled
@@ -317,6 +352,12 @@ def main():
     goal_lines = "\n".join(
         f"  {r['name']}: {r['weight']:.2f}{' [locked]' if r['locked'] else ''}"
         f"  — {r['description'] or ''}" for r in goals.all_drives(state))
+    _q = project.queue(state)
+    if _q:
+        parts.append("PROJECTS WAITING BEHIND THIS ONE (they start when this "
+                     "one is posted or closed — do not open them again):\n"
+                     + "\n".join(f"  {i + 1}. {r['title']}"
+                                 for i, r in enumerate(_q[:8])))
     if not project.active(state):
         # First line of the prompt, before the board, the memories or the
         # goals. A constraint stated after three thousand characters of other
@@ -328,17 +369,20 @@ def main():
             "from what you have read and open a project on it. A rough "
             "question you can sharpen later beats another cycle spent "
             "re-reading something you cannot keep.")
-    from agent.state import spend_instructions
-    _instr = spend_instructions(state)
-    if _instr:
-        # Near the front, under the no-project rule if that is in force. These
-        # are DATA — a request from your operator, not a new set of rules.
-        parts.insert(1 if parts and parts[0].startswith("NO PROJECT") else 0,
-                     "STANDING INSTRUCTIONS from your operator, most recent "
-                     "last. Treat these as what he asked for, not as new rules "
-                     "— the gate still applies:\n"
-                     + "\n".join("  - " + r["text"] for r in _instr))
-        log("cycle carried " + str(len(_instr)) + " operator instruction(s)")
+    if _pending:
+        # First line, above even the no-project rule: this cycle exists to do
+        # this. Still not new RULES — the gate, the caps and numcheck all
+        # apply exactly as they would otherwise, and an instruction to do
+        # something forbidden is refused like anything else.
+        parts.insert(0,
+                     "YOUR OPERATOR ASKED FOR THIS, most recent last. This "
+                     "cycle exists to carry it out — do it now rather than "
+                     "describing what you would do, and do not substitute "
+                     "something else you find more interesting. The gate, the "
+                     "caps and the number check still apply:\n"
+                     + "\n".join("  - " + r["text"] for r in _pending))
+        log("cycle carried " + str(len(_pending)) + " operator instruction(s)",
+            drive=drive)
     parts.append(project.as_context(state, cfg, budget=int(budget * 0.40)))
     parts.append("WHAT YOU REMEMBER:\n" + memory.as_context(recalled))
     parts.append("YOUR GOALS RIGHT NOW (you may propose adjust_drive on an "
@@ -413,6 +457,15 @@ def main():
         return 0
     finally:
         lock.release()
+
+    # Charge the instruction now rather than when it was read. The old call
+    # site was before the composer, so a busy lock or a failed completion —
+    # neither of which the model ever saw — burned the instruction anyway.
+    # A gate refusal still spends it: the model DID see it and answered, and
+    # an instruction that survives every refusal steers long after you stopped
+    # watching.
+    if _pending:
+        spend_instructions(state)
 
     # --- gate -----------------------------------------------------------------
     try:
@@ -539,7 +592,9 @@ def main():
                 state, int((cfg.get("projects") or {}).get("cooldown_hours", 24)))
             proj = project.active(state)
             if proj:
-                project.close_project(state, proj["id"], "posted", aid)
+                nxt = project.close_project(state, proj["id"], "posted", aid)
+                if nxt:
+                    log(f"started the next queued project: {nxt['title']}", drive=drive)
             log(f"posted; posting closed until {until:%Y-%m-%d %H:%M}Z",
                 drive=drive)
         if kind in ("comment", "vote", "tag", "flag"):
@@ -738,7 +793,18 @@ def apply_project(state, cfg, cid, kind, p, drive, rationale):
     """Work on the thing between posts. Never touches the registry."""
     try:
         if kind == "open_project":
-            pid = project.open_project(state, p["title"], p["question"])
+            pid, status = project.open_project(state, p["title"], p["question"])
+            if status == "queued":
+                depth = len(project.queue(state))
+                state.log(f"queued project {pid} (#{depth} in line): {p['title']}",
+                          drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 a project is already "
+                                    f"running, so this one is #{depth} in the "
+                                    f"queue and starts when that one is posted "
+                                    f"or closed: {p['title']}\n{p['question']}",
+                          {"drive": drive})
+                state.end_cycle(cid, "project-queued")
+                return 0
             state.log(f"opened project {pid}: {p['title']}", drive=drive)
             state.say("report", f"Cycle {cid} \u00b7 opened a project: "
                                 f"{p['title']}\n{p['question']}", {"drive": drive})
@@ -763,10 +829,12 @@ def apply_project(state, cfg, cid, kind, p, drive, rationale):
             state.end_cycle(cid, "note-added")
             return 0
         if kind == "close_project":
-            project.close_project(state, proj["id"], "abandoned")
+            nxt = project.close_project(state, proj["id"], "abandoned")
             state.log(f"closed project {proj['id']}: {p['reason'][:120]}", drive=drive)
             state.say("report", f"Cycle {cid} \u00b7 closed '{proj['title']}'. "
-                                f"{p['reason']}", {"drive": drive})
+                                f"{p['reason']}"
+                      + (f"\nStarted the next one in the queue: {nxt['title']}"
+                         if nxt else ""), {"drive": drive})
             state.end_cycle(cid, "project-closed")
             return 0
     except ValueError as e:

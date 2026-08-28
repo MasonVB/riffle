@@ -38,7 +38,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
   id INTEGER PRIMARY KEY, opened_at TEXT, closed_at TEXT,
   title TEXT NOT NULL, question TEXT NOT NULL,
-  status TEXT DEFAULT 'active',      -- active | posted | abandoned
+  status TEXT DEFAULT 'active',      -- queued | active | posted | abandoned
   posted_action_id INTEGER);
 
 CREATE TABLE IF NOT EXISTS project_notes (
@@ -91,24 +91,74 @@ def active(state):
     ).fetchone()
 
 
+def queue(state):
+    """Projects waiting their turn, the next one first."""
+    return state.db.execute(
+        "SELECT * FROM projects WHERE status='queued' ORDER BY id"
+    ).fetchall()
+
+
 def open_project(state, title, question):
-    cur = active(state)
-    if cur:
-        raise ValueError(f"a project is already open: {cur['title']!r}. "
-                         f"Close it or keep working on it.")
+    """Open a project, or queue it if one is already running.
+
+    Returns (id, status). This used to raise when a project was open, which
+    made "open a project on X" an instruction that could not be carried out
+    at the moment you gave it — you had to notice a project was running,
+    close it, and ask again. Queueing keeps one project active at a time,
+    which is what the readiness bar and the prompt budget are built around,
+    while making the request always land somewhere.
+
+    One active project is a deliberate constraint, not a limitation waiting
+    to be lifted: a note carries no project id, so with two running the model
+    would have to name a target on every note, and a note filed against the
+    wrong project is silent and corrupts the bar it lands in.
+    """
+    title, question = title.strip()[:160], question.strip()[:600]
+    status = "queued" if active(state) else "active"
     c = state.db.execute(
-        "INSERT INTO projects (opened_at,title,question,status)"
-        " VALUES (?,?,?,'active')", (utcnow(), title.strip()[:160],
-                                     question.strip()[:600]))
+        "INSERT INTO projects (opened_at,title,question,status) VALUES (?,?,?,?)",
+        (utcnow(), title, question, status))
     state.db.commit()
-    return c.lastrowid
+    return c.lastrowid, status
+
+
+def promote_next(state):
+    """Start the next queued project, if nothing is running. Returns it or None.
+
+    opened_at is reset on promotion so `age_hours` measures how long the
+    project has been WORKED, not how long it sat in the queue. ready() reads
+    that number, and a project that waited three days has not thereby earned
+    anything.
+    """
+    if active(state):
+        return None
+    nxt = state.db.execute(
+        "SELECT * FROM projects WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+    if not nxt:
+        return None
+    state.db.execute("UPDATE projects SET status='active', opened_at=? WHERE id=?",
+                     (utcnow(), nxt["id"]))
+    state.db.commit()
+    return state.db.execute("SELECT * FROM projects WHERE id=?",
+                            (nxt["id"],)).fetchone()
+
+
+def drop_queued(state, pid):
+    """Remove a project from the queue. Only ever touches a queued row."""
+    c = state.db.execute(
+        "UPDATE projects SET status='abandoned', closed_at=? "
+        "WHERE id=? AND status='queued'", (utcnow(), pid))
+    state.db.commit()
+    return c.rowcount > 0
 
 
 def close_project(state, pid, status="abandoned", action_id=None):
+    """Close a project and start whatever was waiting behind it."""
     state.db.execute(
         "UPDATE projects SET status=?, closed_at=?, posted_action_id=? WHERE id=?",
         (status, utcnow(), action_id, pid))
     state.db.commit()
+    return promote_next(state)
 
 
 def add_note(state, pid, cycle_id, kind, text, source=None,
