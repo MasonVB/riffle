@@ -175,6 +175,13 @@ memory:
 # many. Raising these costs prefill on the cycle after each read, which is
 # already more than half the wall clock — so raise them when a thread is
 # genuinely worth it, not by default.
+# The complete read of what moved. /api/front is the ranked, capped window;
+# this is everything, walked by cursor. Bounded per wake because the edge
+# allows 20 requests per 10s and the cursor makes stopping free.
+changes:
+  max_pages_per_cycle: 4
+  bootstrap_hours: 24        # cold start only; there is no cursor yet
+
 threads:
   max_comments: 20
   batch_comments: 20
