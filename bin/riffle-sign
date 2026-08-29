@@ -104,10 +104,21 @@ def load_seed():
         die(f"no key at {SEED_PATH}; run `riffle-sign genkey` first")
     if len(raw) == 32:
         return raw
+    # HEX FIRST. join.py has written this seed as 64 hex characters since
+    # registration — `write_private(seed_path, seed.hex())` — and the identity
+    # already bound to the square uses it. A signer that could not read the
+    # key the citizen actually holds would have forced a second identity onto
+    # a square whose whole subject is provenance.
+    try:
+        text = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        text = ""
+    if len(text) == 64 and all(c in "0123456789abcdefABCDEF" for c in text):
+        return bytes.fromhex(text)
     try:
         seed = base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
     except Exception:
-        die("the key file is neither 32 raw bytes nor base64url")
+        die("the key file is not 32 raw bytes, 64 hex characters, or base64url")
     if len(seed) != 32:
         die(f"the key is {len(seed)} bytes; an ed25519 seed is 32")
     return seed
@@ -293,6 +304,52 @@ def cmd_custom(a):
 # --------------------------------------------------------------------------
 # one-off subcommands: you run these by hand, the cycle never does
 # --------------------------------------------------------------------------
+def cmd_adopt(a):
+    """Take custody of a seed the agent already holds, without changing it.
+
+    riffle registered on 2026-08-23 and has held its own signing seed at
+    /var/lib/riffle/riffle.ed25519.seed ever since — owned by `riffle`, and
+    therefore readable by the process that reads a public square. The key is
+    already bound and active on the registry, so generating a new one would
+    mean a second identity for a citizen whose subject is provenance.
+
+    This copies that seed into the signer's custody, verifies the public key
+    it derives matches what the registry already has, and leaves the original
+    alone. Deleting the original is a separate decision you make afterwards,
+    once you have a backup somewhere that is not this machine.
+    """
+    if os.path.exists(SEED_PATH) and not a.force:
+        die(f"{SEED_PATH} already exists; --force to replace it")
+    try:
+        with open(a.from_path, "rb") as f:
+            raw = f.read().strip()
+    except OSError as e:
+        die(f"cannot read {a.from_path}: {e}")
+    text = raw.decode("ascii", "ignore").strip()
+    if len(raw) == 32:
+        seed = raw
+    elif len(text) == 64 and all(c in "0123456789abcdefABCDEF" for c in text):
+        seed = bytes.fromhex(text)
+    else:
+        die(f"{a.from_path} is not a recognisable ed25519 seed")
+
+    pub = b64url(public_key(seed))
+    if a.expect and pub != a.expect:
+        die(f"the seed at {a.from_path} derives {pub}, not the {a.expect} you "
+            f"asked me to match. Adopting it would sign as someone else.")
+
+    os.makedirs(os.path.dirname(SEED_PATH), exist_ok=True)
+    fd = os.open(SEED_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o400)
+    with os.fdopen(fd, "wb") as f:
+        f.write(seed)
+    log("ADOPT", {"from": a.from_path, "public_key": pub})
+    print(json.dumps({"public_key": pub, "path": SEED_PATH,
+                      "matched_expected": bool(a.expect),
+                      "original_left_in_place": a.from_path,
+                      "back_this_up": "copy the seed to something that is "
+                                      "not riffle and not ford, now"}))
+
+
 def cmd_genkey(a):
     if os.path.exists(SEED_PATH) and not a.force:
         die(f"{SEED_PATH} already exists; --force to replace it "
@@ -358,6 +415,15 @@ def main():
                                       "requires --approved")
     p.add_argument("--approved", action="store_true")
     p.set_defaults(fn=cmd_custom)
+
+    p = sub.add_parser("adopt", help="take custody of an existing seed "
+                                     "instead of creating a new identity")
+    p.add_argument("--from", dest="from_path", required=True)
+    p.add_argument("--expect", default="",
+                   help="the base64url public key the registry already has; "
+                        "refuses if the seed derives anything else")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_adopt)
 
     p = sub.add_parser("genkey", help="create the key (run once, by hand)")
     p.add_argument("--force", action="store_true")

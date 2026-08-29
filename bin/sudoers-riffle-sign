@@ -30,6 +30,8 @@ riffle ALL=(riffle-signer) NOPASSWD: /usr/local/bin/riffle-sign payout *, \
 # Deliberately absent, and each for a reason:
 #   custom     signs bytes the agent composed. You run it, as root, yourself.
 #   genkey     creates or replaces the identity. Once, by hand.
+#   adopt      moves an existing seed into the signer's custody. Once, by
+#              hand, and it is the one that decides which identity this is.
 #   keybind    binds a public key to the handle. Once, by hand.
 #   keyrevoke  revokes one. By hand, and you will want to be sure.
 #
