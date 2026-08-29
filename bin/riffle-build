@@ -5,17 +5,17 @@
     /var/lib/riffle/build/           0750 riffle-build:riffle-build
     /etc/sudoers.d/riffle-build      riffle -> (root) NOPASSWD, this file only
 
-Reads a JSON spec on stdin, writes the files, runs ONE of them under
-systemd-run, and prints what happened. Nothing else.
+Reads a JSON spec on stdin, writes the files, runs ONE of them as a transient
+systemd service, and prints what happened. Nothing else.
 
     {"run_id": "c412", "entry": "solve.py",
      "files": {"solve.py": "print(6*7)"}}
 
 WHY IT RUNS AS ROOT
 
-systemd-run --scope needs privilege to set a uid and a private network, and
-polkit will not grant it non-interactively. So sudo hands this program root
-and the FIRST thing it does with that is drop to riffle-build. Nothing from
+systemd-run needs privilege to set a uid and a private network, and polkit
+will not grant it non-interactively. So sudo hands this program root and the
+FIRST thing it does with that is drop to riffle-build. Nothing from
 stdin is ever passed to a shell, interpolated into a command line, or used as
 a path component without passing the whitelist in _safe_name. The command is
 always literally `python3 <entry>`; there is no argument the agent can supply
@@ -157,9 +157,27 @@ def main():
             os.chown(os.path.join(root, n), uid, gid)
     os.chown(work, uid, gid)
 
+    # A TRANSIENT SERVICE, NOT A SCOPE.
+    #
+    # --scope attaches an already-running process to a cgroup, so it can carry
+    # resource limits and nothing else. Every namespace property — the ones
+    # doing the actual containment here — is rejected outright:
+    #
+    #   Unknown assignment: PrivateNetwork=yes
+    #
+    # and the run went ahead WITHOUT the network isolation it was supposed to
+    # have. That is the worst possible shape for this failure: the sandbox
+    # would have looked broken while quietly being open. It failed loudly only
+    # because systemd refuses the whole invocation, which is luck rather than
+    # design.
+    #
+    # Without --scope, systemd-run starts a transient service that systemd
+    # itself forks, so the full sandboxing set applies. --pipe hands back the
+    # child's stdout and stderr; --wait blocks and propagates its exit status.
     cmd = [
-        "systemd-run", "--scope", "--quiet", "--collect",
+        "systemd-run", "--pipe", "--wait", "--quiet", "--collect",
         f"--uid={RUN_USER}", f"--gid={RUN_USER}",
+        f"--property=RuntimeMaxSec={TIMEOUT}",
         "--property=MemoryMax=1G",
         "--property=MemorySwapMax=0",
         "--property=CPUQuota=150%",
