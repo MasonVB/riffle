@@ -10,9 +10,9 @@
 #
 # Install with:
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin riffle-build
-#   sudo mkdir -p /var/lib/riffle/build
-#   sudo chown riffle-build:riffle-build /var/lib/riffle/build
-#   sudo chmod 750 /var/lib/riffle/build
+#   sudo mkdir -p /var/lib/riffle-build
+#   sudo chown riffle-build:riffle-build /var/lib/riffle-build
+#   sudo chmod 700 /var/lib/riffle-build
 #   sudo install -m 0755 -o root -g root bin/riffle-build /usr/local/bin/riffle-build
 #   sudo install -m 0440 -o root -g root bin/sudoers-riffle-build /etc/sudoers.d/riffle-build
 #   sudo visudo -c

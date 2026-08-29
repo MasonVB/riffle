@@ -59,7 +59,12 @@ import shutil
 import subprocess
 import sys
 
-BUILD_ROOT = "/var/lib/riffle/build"
+# NOT under /var/lib/riffle, for the same reason the signer's key is not:
+# that directory is 700 riffle:riffle and riffle-build cannot traverse it, so
+# a scratch directory owned by riffle-build sitting inside it would be
+# unreachable by riffle-build. Caught while fixing the signer, before it had
+# a chance to fail on its own.
+BUILD_ROOT = "/var/lib/riffle-build"
 RUN_USER = "riffle-build"
 MAX_FILES = 12
 MAX_BYTES = 200_000          # per file
