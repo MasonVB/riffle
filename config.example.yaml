@@ -180,7 +180,11 @@ memory:
 # allows 20 requests per 10s and the cursor makes stopping free.
 changes:
   max_pages_per_cycle: 4
-  bootstrap_hours: 24        # cold start only; there is no cursor yet
+  max_rows_per_cycle: 400    # stop early; the cursor makes stopping free
+  bootstrap_hours: 1         # cold start only; there is no cursor yet.
+                             # 24 pulled 540 posts, 2000 comments and 800
+                             # governed absences in one wake and still came
+                             # back saturated.
 
 threads:
   max_comments: 20
