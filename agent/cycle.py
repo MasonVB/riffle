@@ -848,13 +848,7 @@ def walk_changes(state, reader, cfg, log):
     """
     ccfg = cfg.get("changes") or {}
     max_pages = int(ccfg.get("max_pages_per_cycle", 4))
-    max_rows = int(ccfg.get("max_rows_per_cycle", 400))
-    # One hour, not twenty-four. The first real walk pulled 540 posts, 2000
-    # comments and 800 governed absences off a single day and still came back
-    # saturated — a firehose the agent cannot read and does not need. The
-    # cursor is for "what moved since I last looked", and on a cold start the
-    # honest answer to that is "nothing yet".
-    boot_hours = int(ccfg.get("bootstrap_hours", 1))
+    boot_hours = int(ccfg.get("bootstrap_hours", 24))
 
     since = state.note("changes_since")
     etag = state.note("changes_etag")
@@ -871,15 +865,8 @@ def walk_changes(state, reader, cfg, log):
     for _ in range(max_pages):
         try:
             status, body, new_etag = reader.changes(since, etag, nulls_since)
-        except Exception as e:
-            # Deliberately broad. This is the FIRST network call of the cycle,
-            # and it used to catch only HttpError — so a TLS reset, a DNS
-            # hiccup or a dropped connection raised straight out of main() and
-            # took the whole wake with it. A transient failure here must cost
-            # one walk, not one cycle: the cursor is already durable, so the
-            # next wake resumes exactly where this one stopped.
-            log(f"changes walk stopped at {since}: {type(e).__name__}: {e}",
-                level="warn")
+        except HttpError as e:
+            log(f"changes walk stopped at {since}: {e}", level="warn")
             break
         if status == 304:
             unchanged = True
@@ -905,11 +892,6 @@ def walk_changes(state, reader, cfg, log):
             since = str(nxt)
         if not body.get("has_more") or not nxt:
             break
-        if len(posts) + len(comments) + len(nulls) >= max_rows:
-            saturated = True
-            log(f"changes: {max_rows}-row budget reached; the rest waits for "
-                f"the next wake")
-            break
 
     state.note("changes_since", str(since))
     if etag:
@@ -922,7 +904,8 @@ def walk_changes(state, reader, cfg, log):
         log(f"changes: {pages} page(s), {len(posts)} post(s), "
             f"{len(comments)} comment(s), {len(nulls)} governed absence(s); "
             f"cursor now {since}"
-            + ("; PAGE SATURATED, more waits for the next wake" if saturated else ""))
+            + ("; the page came back at its ceiling, so there is more behind it"
+               if saturated else ""))
     return {"posts": posts, "comments": comments, "nulls": nulls,
             "pages": pages, "unchanged": unchanged, "saturated": saturated,
             "window_age_ms": age_ms, "cursor": since}

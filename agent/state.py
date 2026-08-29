@@ -216,9 +216,21 @@ class State:
         # real report is never followed by a bland summary of the same thing.
         if outcome == "not-due":
             return
+        # Match on the content prefix as well as the meta key. Every report a
+        # cycle writes already opens with "Cycle N ·" by convention, but the
+        # meta almost all of them pass is {"drive": ...} with no cycle id — so
+        # json_extract returned NULL, nothing matched, and a cycle that had
+        # just explained itself got a second, blander line underneath:
+        #
+        #   Cycle 134 · drive earn · read listings. Kept 5000 characters...
+        #   Cycle 134 · I read one of the square's public surfaces.
+        #
+        # Checking both means the dedup works whichever way a call site tags
+        # its message, instead of only the way none of them do.
         spoke = self.db.execute(
             "SELECT 1 FROM messages WHERE role IN ('report','error','proposal')"
-            " AND json_extract(meta,'$.cycle') = ?", (cid,)).fetchone()
+            " AND (json_extract(meta,'$.cycle') = ? OR content LIKE ?)",
+            (cid, f"Cycle {cid} %")).fetchone()
         if spoke:
             return
         self.say("report", f"Cycle {cid} \u00b7 {_OUTCOME_LINE.get(outcome, outcome)}",
