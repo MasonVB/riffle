@@ -54,9 +54,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SEED_PATH = "/var/lib/riffle/keys/citizen.seed"
+# NOT under /var/lib/riffle. That directory is 700 riffle:riffle, so reaching
+# anything inside it needs execute permission on it, and riffle-signer does
+# not have that — the seed could be 0400 riffle-signer:riffle-signer and still
+# be unreadable by the signer, which is exactly what happened:
+#
+#   sudo -u riffle-signer riffle-sign pubkey
+#   riffle-sign: cannot read .../citizen.seed: this must run as the signer user
+#
+# The error was right and my path was wrong. Loosening /var/lib/riffle to let
+# the signer traverse it would have exposed state.sqlite, which is 0644 and
+# only protected by that directory mode. A separate directory is the answer:
+# the key that the agent must not reach should not live inside the agent's
+# own data directory in the first place.
+SEED_PATH = "/var/lib/riffle-signer/citizen.seed"
 CONF_PATH = "/etc/riffle/payout.conf"
-LOG_PATH = "/var/lib/riffle/keys/signatures.log"
+LOG_PATH = "/var/lib/riffle-signer/signatures.log"
 BASE = "https://1f916.ai"
 
 PAYOUT_PREFIX = "1f916.payout.v1"
