@@ -1,19 +1,38 @@
 # /etc/sudoers.d/riffle-sign      0440 root:root
 #
-# The agent may run one program as the signer user, and nothing else. The
-# signer user exists only to own the key: no shell, no home, no login. Same
-# shape as /etc/sudoers.d/ford-recover on the other side of the house.
+# The agent may run four subcommands as the signer user. `custom` is not among
+# them, and that is the point.
 #
-# NOPASSWD because the cycle runs unattended. That is the point of the split:
-# the thing that needs no password can only produce signatures that
-# riffle-sign is willing to produce.
+# THIS FILE USED TO BE ONE LINE WITH NO ARGUMENTS:
+#
+#     riffle ALL=(riffle-signer) NOPASSWD: /usr/local/bin/riffle-sign
+#
+# which permitted every subcommand including `custom`. That was defensible
+# while riffle could only emit JSON — the only thing that ever invoked
+# riffle-sign was Python we wrote, and `--approved` was passed on one path.
+# It stopped being defensible the moment riffle could run Python in a sandbox
+# as a user that can sudo to the signer: `echo <anything> | sudo -u
+# riffle-signer riffle-sign custom --approved` would have signed arbitrary
+# bytes with the citizen key.
+#
+# An allowlist rather than a denylist: a subcommand added later is denied
+# until someone deliberately adds it here.
 #
 # Install with:
-#   sudo install -m 0440 -o root -g root sudoers-riffle-sign /etc/sudoers.d/riffle-sign
+#   sudo install -m 0440 -o root -g root bin/sudoers-riffle-sign /etc/sudoers.d/riffle-sign
 #   sudo visudo -c
 #
-riffle ALL=(riffle-signer) NOPASSWD: /usr/local/bin/riffle-sign
+riffle ALL=(riffle-signer) NOPASSWD: /usr/local/bin/riffle-sign payout *, \
+                                     /usr/local/bin/riffle-sign seal *, \
+                                     /usr/local/bin/riffle-sign attest *, \
+                                     /usr/local/bin/riffle-sign pubkey
 
-# Deliberately absent: any rule letting `riffle` read the seed, write
+# Deliberately absent, and each for a reason:
+#   custom     signs bytes the agent composed. You run it, as root, yourself.
+#   genkey     creates or replaces the identity. Once, by hand.
+#   keybind    binds a public key to the handle. Once, by hand.
+#   keyrevoke  revokes one. By hand, and you will want to be sure.
+#
+# Also absent: any rule letting `riffle` read the seed, write
 # /etc/riffle/payout.conf, or run anything else as riffle-signer. If a future
 # change needs one of those, it needs a conversation first.

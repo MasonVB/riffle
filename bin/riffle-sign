@@ -22,15 +22,18 @@ payout to an address in /etc/riffle/payout.conf, under a ceiling in the same
 file, on a row matching a pattern in the same file. The agent cannot write
 that file.
 
-`custom` DOES sign bytes the agent composed. It is gated on --approved, and
-that gate is enforced by the action policy in agent/policy.py, NOT by this
-program: the dashboard executes an approved action as the same user that
-proposes it, so a flag is not a privilege boundary. Say that plainly rather
-than implying a strength this does not have. What --approved buys is that a
-`sign` action sits in the queue until a human presses approve, and the bytes
-are shown in full on the card before that happens. The containment for
-unattended signing is the template checking below; the containment for custom
-signing is you reading it.
+`custom` DOES sign bytes the agent composed, and it is NOT REACHABLE FROM THE
+AGENT. Two things stop it: `custom` is absent from the sudoers allowlist, so
+`riffle` cannot invoke it through sudo; and this program refuses outright when
+SUDO_USER is riffle or riffle-build. You run it yourself, as root, after
+reading the bytes on the approval card.
+
+That is stricter than the first version of this file, which relied on an
+--approved flag. A flag was fine while the agent could only emit JSON. It
+stopped being fine the moment riffle could run Python: code execution as the
+`riffle` user plus a wildcard sudo rule is a way to sign anything at all. The
+flag was never a privilege boundary and this comment used to say so; now the
+boundary is real.
 
 EVERYTHING IS LOGGED
 
@@ -257,6 +260,15 @@ def cmd_custom(a):
     subcommands with real checking, and letting them through here would route
     a money path around every check above.
     """
+    # Belt and braces, and the braces are the sudoers rule. `custom` is not in
+    # the allowlist there, so `riffle` cannot reach this function through sudo
+    # at all. This check exists because riffle can run Python now: if the
+    # sudoers file is ever loosened, or a future rule is written with a
+    # trailing wildcard, the sandbox becomes a way to sign arbitrary bytes.
+    # A flag would not stop that. Refusing by identity does.
+    if os.environ.get("SUDO_USER") in ("riffle", "riffle-build"):
+        die("custom signing is not reachable from the agent. Run it yourself, "
+            "as root, after reading the bytes on the card.")
     if not a.approved:
         die("custom signing requires --approved; it is never unattended")
     data = sys.stdin.buffer.read()
