@@ -792,6 +792,98 @@
     "rationale"
    ],
    "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "build"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "entry": {
+       "type": "string"
+      },
+      "files": {
+       "type": "object"
+      },
+      "note": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "entry",
+      "files"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "sign"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "kind": {
+       "type": "string"
+      },
+      "row": {
+       "type": "string"
+      },
+      "expiry": {
+       "type": "string"
+      },
+      "hash": {
+       "type": "string"
+      },
+      "label": {
+       "type": "string"
+      },
+      "subject": {
+       "type": "string"
+      },
+      "claim": {
+       "type": "string"
+      },
+      "bytes": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "kind"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
   }
  ]
 }
