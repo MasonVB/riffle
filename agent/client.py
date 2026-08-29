@@ -77,6 +77,35 @@ def _req_conditional(url, etag=None, timeout=45):
             raise HttpError(e.code, raw)
 
 
+def _no_duplicate_methods(cls):
+    """Refuse to define a class whose source defines the same method twice.
+
+    Python lets a class body define `def changes` twice and silently keeps the
+    second. That happened here: a new changes() carrying an ETag and a cursor
+    was added above a one-line one that had been there all along, the second
+    won, and every cycle died with "takes 2 positional arguments but 4 were
+    given" — after ast.parse passed, after the import gate passed, at runtime.
+
+    A shadowed method is invisible in a diff and invisible to both deploy
+    gates. This turns it into a startup error, which the import gate DOES see.
+    """
+    import inspect
+    import re as _re
+    try:
+        src = inspect.getsource(cls)
+    except (OSError, TypeError):
+        return cls
+    names = _re.findall(r"^    def ([A-Za-z_][A-Za-z0-9_]*)\(", src, _re.M)
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise RuntimeError(
+            f"{cls.__name__} defines these methods more than once: "
+            f"{', '.join(dupes)}. The later definition silently wins; delete "
+            f"the one you did not mean to keep.")
+    return cls
+
+
+@_no_duplicate_methods
 class Reader:
     """GET only. Constructing this with a token is a bug, so it cannot take one."""
 
@@ -110,9 +139,6 @@ class Reader:
 
     def post(self, pid):
         return self.get(f"/api/post/{pid}")
-
-    def changes(self, since):
-        return self.get("/api/changes", since=since)
 
     def attest(self, **kw):
         return self.get("/api/attest", **kw)
@@ -152,6 +178,7 @@ class Reader:
         return self.get(self.READ_ONLY[what], **params)
 
 
+@_no_duplicate_methods
 class Writer:
     """The only object in this process that can cause an effect."""
 
