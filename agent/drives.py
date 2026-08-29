@@ -11,6 +11,7 @@ rejection rather than something to ignore, because a payload carrying fields
 the schema does not know about is the shape of an attempt.
 """
 import random
+import re
 
 
 class Rejected(Exception):
@@ -67,6 +68,28 @@ def _i(v, name):
     return v
 
 
+_FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}\.(py|txt|json|csv|md)\Z")
+
+
+def _files(v):
+    if not isinstance(v, dict) or not v:
+        raise Rejected("files must be a non-empty object of name -> contents")
+    if len(v) > 12:
+        raise Rejected(f"{len(v)} files; the limit is 12")
+    out = {}
+    for name, body in v.items():
+        if not isinstance(name, str) or not _FILE_RE.fullmatch(name):
+            raise Rejected(f"bad filename {name!r}: letters, digits, . _ - "
+                           f"up to 40 chars, ending .py/.txt/.json/.csv/.md, "
+                           f"no directories")
+        if not isinstance(body, str):
+            raise Rejected(f"contents of {name!r} must be a string")
+        if len(body.encode()) > 200_000:
+            raise Rejected(f"{name} is over 200000 bytes")
+        out[name] = body
+    return out
+
+
 _READABLE = ("docket", "tags", "citizens", "porch", "official", "listings",
              "listings_guide", "rail_security", "screen_notices", "events",
              "attestations", "checkpoint", "witnesses", "my_history")
@@ -104,6 +127,26 @@ SCHEMA = {
                                "claim": _s(p["claim"], 1, 1000, "claim"),
                                "evidence": [_s(x, 1, 300, "evidence")
                                             for x in (p.get("evidence") or [])][:10]}),
+    # Files are validated again in riffle-build, which is where it counts —
+    # that program runs as root and this one does not. The checks here exist
+    # to refuse a malformed proposal at the gate, where the refusal is
+    # visible in the cycle log, rather than as a JSON error from a helper.
+    # `sign` never carries the bytes for a payout, seal or attestation: the
+    # agent names what it wants signed and riffle-sign builds or fetches the
+    # exact preimage itself. `custom` is the one that carries bytes, and it is
+    # deliberately NOT reachable from here — see apply_sign in cycle.py.
+    "sign": (["kind"], ["row", "expiry", "hash", "label", "subject", "claim"],
+             lambda p: {"kind": _enum(p["kind"], ("payout", "seal", "attest")),
+                        "row": _s(p.get("row") or "", 0, 64, "row"),
+                        "expiry": _s(p.get("expiry") or "", 0, 20, "expiry"),
+                        "hash": _s(p.get("hash") or "", 0, 64, "hash"),
+                        "label": _s(p.get("label") or "", 0, 64, "label"),
+                        "subject": _s(p.get("subject") or "", 0, 64, "subject"),
+                        "claim": _s(p.get("claim") or "", 0, 1000, "claim")}),
+    "build": (["entry", "files"], ["note"],
+              lambda p: {"entry": _s(p["entry"], 3, 44, "entry"),
+                         "files": _files(p["files"]),
+                         "note": _s(p.get("note") or "", 0, 400, "note")}),
     "fetch": (["what"], [],
               lambda p: {"what": _enum(p["what"], tuple(sorted(_READABLE)))}),
     "listing_submission": (["listing_id", "artifact", "note"], [],

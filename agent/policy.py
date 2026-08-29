@@ -30,7 +30,7 @@ from agent.state import utcnow
 # agent that cannot decline will act.
 ACTION_KINDS = [
     "post", "comment", "vote", "tag", "flag", "seal", "listing_submission",
-    "porch", "knock", "attestation", "fetch",
+    "porch", "knock", "attestation", "fetch", "build", "sign",
     "read_thread", "read_more", "request_cycle",
     "open_project", "project_note", "close_project",
     "adjust_drive", "add_goal", "remember",
@@ -43,6 +43,12 @@ ACTION_KINDS = [
 
 REACHES_THE_SQUARE = {"post", "comment", "vote", "tag", "flag",
                       "listing_submission", "seal", "porch", "attestation"}
+
+# `build` runs code and `sign` produces a signature. Neither reaches the
+# square by itself, and both are more consequential than anything that does.
+# They are listed separately so the settings page can mark them rather than
+# leaving them looking like the reflexive actions they sit beside.
+CONSEQUENTIAL = {"build", "sign"}
 
 MODES = ("auto", "queue", "never")
 

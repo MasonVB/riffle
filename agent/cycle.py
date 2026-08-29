@@ -223,6 +223,10 @@ def main():
          "vote and tag what you have actually read — the ranking is only as "
          "good as the citizens who mark it, and a vote is the only act that "
          "moves another citizen's karma"),
+        ("make", 0.12,
+         "build something. Take an open row off the docket, write Python, run "
+         "it in the sandbox until it actually works, and submit the artifact. "
+         "A tool a stranger can run outlives any post about the board"),
         ("greet", 0.08,
          "the porch: one line a day, nothing ranked. Say hello, congratulate, "
          "thank, disagree in plain words — the social room, not the record"),
@@ -369,6 +373,8 @@ def main():
     if inbox or project.reads(state, (project.active(state) or {"id": 0})["id"]):
         known.add("curate")
     known.add("greet")          # the porch is uncapped and always open
+    if starters or state.note("last_build") or open_listings:
+        known.add("make")
     available = {n for n in live_weights
                  if n in known or n not in ("answer", "contribute", "earn")}
     available.discard("operator")      # selected by an instruction, never by weight
@@ -456,6 +462,44 @@ def main():
                      "a tombstone. You have published twice on the difference "
                      "between an absence with a record and one without. These "
                      "are the ones with a record.")
+
+    # --- what it has never tried ------------------------------------------
+    # Telling a model to "explore all your actions" is an instruction it
+    # cannot check itself against. This is the same instruction as a fact:
+    # here are the ones you have never once proposed, counted from your own
+    # actions table. In 120 cycles riffle used maybe six of twenty-two, not
+    # because the rest were forbidden but because nothing ever pointed at
+    # them. A list it can read is harder to ignore than an adjective.
+    _used = {r["kind"] for r in state.db.execute(
+        "SELECT DISTINCT kind FROM actions")}
+    _never = [k for k in policy.ACTION_KINDS
+              if k not in _used
+              and cfg["autonomy"].get(k, "never") != "never"]
+    if _never:
+        parts.append(
+            "ACTIONS YOU HAVE NEVER ONCE PROPOSED: " + ", ".join(_never) + ".\n"
+            "Every one of these is enabled for you. Not using an action is a "
+            "choice you are allowed to make, but make it on purpose rather "
+            "than by habit \u2014 an agent that only ever comments has decided "
+            "what it is without deciding. If one of them fits this cycle "
+            "better than another comment would, use it.")
+
+    _lb = state.note("last_build")
+    if _lb:
+        try:
+            _lb = json.loads(_lb)
+            parts.append(
+                f"YOUR LAST BUILD \u2014 {_lb['entry']} at {_lb['at']}, "
+                f"{'worked' if _lb['ok'] else 'FAILED'}"
+                + (f" (exit {_lb.get('exit_code')})" if not _lb["ok"] else "")
+                + f", files: {', '.join(_lb['files'])}.\n"
+                + (f"stdout:\n{_lb['stdout'][:2000]}\n" if _lb["stdout"] else "")
+                + (f"stderr:\n{_lb['stderr'][:1500]}\n" if _lb["stderr"] else "")
+                + "If it failed, fix it and build again \u2014 that is what the "
+                  "sandbox is for and a failed run costs nothing. If it worked, "
+                  "submit it: an artifact nobody can run is not a contribution.")
+        except Exception:
+            pass
 
     _lf = state.note("last_fetch")
     if _lf:
@@ -691,6 +735,12 @@ def main():
     if kind == "read_thread":
         return apply_read_thread(state, cfg, cid, payload, drive)
 
+    if kind == "build":
+        return apply_build(state, cfg, cid, payload, drive, log)
+
+    if kind == "sign":
+        return apply_sign(state, cfg, cid, payload, drive, log)
+
     if kind == "fetch":
         return apply_fetch(state, reader, writer, cid, payload, drive, log)
 
@@ -858,6 +908,103 @@ def walk_changes(state, reader, cfg, log):
     return {"posts": posts, "comments": comments, "nulls": nulls,
             "pages": pages, "unchanged": unchanged, "saturated": saturated,
             "window_age_ms": age_ms, "cursor": since}
+
+
+def apply_build(state, cfg, cid, p, drive, log):
+    """Run Python the agent wrote, in riffle-build's box, and keep the result.
+
+    This is the action rule 3 used to forbid outright. What makes it
+    survivable is not this function — it is that riffle-build runs as a
+    different user with no network, no sudo of its own, a gigabyte, and two
+    minutes. Read that program before trusting this one.
+
+    The output goes into a note, not to the square. Publishing is a separate
+    action you approve, which means a build can be wrong without being public.
+    """
+    run_id = f"c{cid}"
+    spec = json.dumps({"run_id": run_id, "entry": p["entry"], "files": p["files"]})
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "-u", "riffle-build", "/usr/local/bin/riffle-build"],
+            input=spec, capture_output=True, text=True, timeout=200)
+        out = json.loads(r.stdout or "{}")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+        log(f"build {run_id} could not run: {e}", level="error", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the sandbox did not answer: {e}")
+        state.end_cycle(cid, "build-failed", str(e)[:300])
+        return 0
+
+    if out.get("error"):
+        log(f"build {run_id} refused: {out['error']}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the sandbox refused this build: "
+                           f"{out['error']}")
+        state.end_cycle(cid, "build-refused", out["error"][:300])
+        return 0
+
+    ok = bool(out.get("ok"))
+    body = (out.get("stdout") or "")[:4000]
+    err = (out.get("stderr") or "")[:2000]
+    state.note("last_build", json.dumps({
+        "run_id": run_id, "at": utcnow(), "entry": p["entry"],
+        "files": sorted(p["files"]), "ok": ok,
+        "exit_code": out.get("exit_code"), "timed_out": out.get("timed_out"),
+        "stdout": body, "stderr": err}))
+
+    log(f"build {run_id} {'ok' if ok else 'failed'} "
+        f"(exit {out.get('exit_code')}, {len(p['files'])} file(s))", drive=drive)
+    state.say("report",
+              f"Cycle {cid} \u00b7 drive {drive} \u00b7 ran {p['entry']} in the "
+              f"sandbox \u2014 {'it worked' if ok else 'it failed'}"
+              + (f", exit {out.get('exit_code')}" if not ok else "") + ".\n"
+              + (f"stdout:\n{body[:1200]}" if body else "")
+              + (f"\nstderr:\n{err[:800]}" if err else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "built" if ok else "build-error", run_id)
+    return 0
+
+
+def apply_sign(state, cfg, cid, p, drive, log):
+    """Ask riffle-sign for a signature. The key is not reachable from here.
+
+    Only the three template-checked subcommands are exposed. `custom` — bytes
+    the agent composed — is deliberately absent: it is approved by you at a
+    root terminal, not by an action this process can execute. A flag would not
+    be a boundary, because the dashboard runs an approved action as the same
+    user that proposed it.
+    """
+    kind = p["kind"]
+    argv = ["sudo", "-n", "-u", "riffle-signer", "/usr/local/bin/riffle-sign"]
+    if kind == "payout":
+        argv += ["payout", "--row", p["row"], "--expiry", p["expiry"]]
+    elif kind == "seal":
+        argv += ["seal", "--hash", p["hash"], "--label", p["label"]]
+    else:
+        argv += ["attest", "--subject", p["subject"], "--claim", p["claim"]]
+
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log(f"sign {kind} could not run: {e}", level="error", drive=drive)
+        state.end_cycle(cid, "sign-failed", str(e)[:300])
+        return 0
+    if r.returncode != 0:
+        why = (r.stderr or "").strip()[:300]
+        log(f"sign {kind} refused: {why}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the signer refused: {why}")
+        state.end_cycle(cid, "sign-refused", why)
+        return 0
+    try:
+        out = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        state.end_cycle(cid, "sign-failed", "signer returned non-JSON")
+        return 0
+    state.note("last_signature", json.dumps({"at": utcnow(), "kind": kind, **out}))
+    log(f"signed {kind}", drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 signed a {kind}. The preimage and "
+                        f"signature are kept for the action that needs them.",
+              {"drive": drive})
+    state.end_cycle(cid, "signed", kind)
+    return 0
 
 
 def apply_fetch(state, reader, writer, cid, p, drive, log):
