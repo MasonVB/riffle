@@ -1,0 +1,220 @@
+#!/usr/bin/python3
+"""Run Python the agent wrote, in a box it cannot get out of.
+
+    /usr/local/bin/riffle-build      0755 root:root
+    /var/lib/riffle/build/           0750 riffle-build:riffle-build
+    /etc/sudoers.d/riffle-build      riffle -> (root) NOPASSWD, this file only
+
+Reads a JSON spec on stdin, writes the files, runs ONE of them under
+systemd-run, and prints what happened. Nothing else.
+
+    {"run_id": "c412", "entry": "solve.py",
+     "files": {"solve.py": "print(6*7)"}}
+
+WHY IT RUNS AS ROOT
+
+systemd-run --scope needs privilege to set a uid and a private network, and
+polkit will not grant it non-interactively. So sudo hands this program root
+and the FIRST thing it does with that is drop to riffle-build. Nothing from
+stdin is ever passed to a shell, interpolated into a command line, or used as
+a path component without passing the whitelist in _safe_name. The command is
+always literally `python3 <entry>`; there is no argument the agent can supply
+that changes what runs.
+
+That is the same bargain as ford-recover: a small fixed program holds the
+privilege so the caller never needs it. It is also the reason this file is
+worth reading properly before it is installed.
+
+WHAT THE BOX IS
+
+  uid/gid          riffle-build, which has no sudoers entry of any kind
+  network          none. PrivateNetwork=yes.
+  memory           1 GiB hard, swap 0
+  cpu              150% of one core
+  wall clock       120 seconds, killed
+  processes        64
+  filesystem       read-only except one scratch dir, /tmp private
+  privileges       NoNewPrivileges, so setuid binaries cannot help
+
+THE MEMORY LIMIT IS NOT A FORMALITY. riffle has ~4 GiB of headroom with both
+models mlocked and it already stalls the whole box when a chat message
+arrives. An unbounded compile here would not fail politely; it would take the
+machine down and look like the freeze we are still trying to explain.
+
+WHAT IT DOES NOT DO
+
+No network, so no pip, no fetching, no dependency the agent chose. Standard
+library only. If a docket row genuinely needs a package, that is a request you
+fulfil by hand, not something an autonomous loop resolves at 3am from a URL a
+stranger posted.
+
+It also does not publish. The artifact leaves this directory by being READ,
+as text, and going through the normal action queue where you see it.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+BUILD_ROOT = "/var/lib/riffle/build"
+RUN_USER = "riffle-build"
+MAX_FILES = 12
+MAX_BYTES = 200_000          # per file
+MAX_OUTPUT = 20_000          # returned to the agent, per stream
+TIMEOUT = 120
+
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}\.(py|txt|json|csv|md)\Z")
+
+
+def die(msg, code=2):
+    print(json.dumps({"ok": False, "error": msg}))
+    sys.exit(code)
+
+
+def safe_name(name):
+    """No directories, no traversal, no dotfiles, known extensions only.
+
+    Flat namespace on purpose. A package layout would need directory
+    creation, and every directory is another chance to get path handling
+    wrong in a program running as root.
+    """
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        die(f"bad filename {name!r}: need [A-Za-z0-9._-] up to 40 chars "
+            f"ending .py/.txt/.json/.csv/.md, no directories")
+    if name.startswith(".") or "/" in name or "\\" in name or ".." in name:
+        die(f"bad filename {name!r}")
+    return name
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="riffle-build", description=__doc__)
+    ap.add_argument("--keep", action="store_true",
+                    help="leave the scratch directory in place afterwards")
+    a = ap.parse_args()
+
+    if os.geteuid() != 0:
+        die("riffle-build must be invoked through sudo; it drops to "
+            f"{RUN_USER} itself")
+
+    try:
+        spec = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError as e:
+        die(f"stdin is not JSON: {e}")
+
+    run_id = str(spec.get("run_id") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", run_id):
+        die("run_id must be 1-32 chars of [A-Za-z0-9_-]")
+
+    files = spec.get("files")
+    if not isinstance(files, dict) or not files:
+        die("files must be a non-empty object of name -> contents")
+    if len(files) > MAX_FILES:
+        die(f"{len(files)} files; the limit is {MAX_FILES}")
+
+    entry = safe_name(spec.get("entry") or "")
+    if not entry.endswith(".py"):
+        die("entry must be a .py file")
+    if entry not in files:
+        die(f"entry {entry!r} is not among the files provided")
+
+    work = os.path.join(BUILD_ROOT, run_id)
+    # run_id is already regex-checked, but this program runs as root and
+    # deletes a tree, so the path gets confirmed to be under BUILD_ROOT by
+    # construction rather than by trusting the regex twice.
+    if os.path.dirname(os.path.abspath(work)) != os.path.abspath(BUILD_ROOT):
+        die("refusing to work outside the build root")
+    if os.path.exists(work):
+        shutil.rmtree(work)
+    os.makedirs(work, mode=0o750)
+
+    for name, body in files.items():
+        name = safe_name(name)
+        if not isinstance(body, str):
+            die(f"contents of {name!r} must be a string")
+        if len(body.encode()) > MAX_BYTES:
+            die(f"{name} is over {MAX_BYTES} bytes")
+        with open(os.path.join(work, name), "w") as f:
+            f.write(body)
+
+    import pwd
+    import grp
+    try:
+        uid = pwd.getpwnam(RUN_USER).pw_uid
+        gid = grp.getgrnam(RUN_USER).gr_gid
+    except KeyError:
+        die(f"user {RUN_USER!r} does not exist; create it before installing "
+            f"this (see the install block in the commit message)")
+    for root, dirs, names in os.walk(work):
+        for n in dirs + names:
+            os.chown(os.path.join(root, n), uid, gid)
+    os.chown(work, uid, gid)
+
+    cmd = [
+        "systemd-run", "--scope", "--quiet", "--collect",
+        f"--uid={RUN_USER}", f"--gid={RUN_USER}",
+        "--property=MemoryMax=1G",
+        "--property=MemorySwapMax=0",
+        "--property=CPUQuota=150%",
+        "--property=TasksMax=64",
+        "--property=PrivateNetwork=yes",
+        "--property=PrivateTmp=yes",
+        "--property=ProtectSystem=strict",
+        "--property=ProtectHome=yes",
+        "--property=ProtectKernelTunables=yes",
+        "--property=ProtectKernelModules=yes",
+        "--property=ProtectControlGroups=yes",
+        "--property=RestrictSUIDSGID=yes",
+        "--property=RestrictRealtime=yes",
+        "--property=LockPersonality=yes",
+        "--property=NoNewPrivileges=yes",
+        f"--property=ReadWritePaths={work}",
+        f"--property=WorkingDirectory={work}",
+        "--",
+        # -E -s, deliberately NOT -I. Since 3.11 -I implies -P, which drops
+        # the script's own directory from sys.path — so a solution split
+        # across files could not import its own siblings, which is most of
+        # the reason for allowing more than one file. -E ignores PYTHON* env
+        # and -s skips user site-packages; the isolation that matters here is
+        # the uid, the private network and the read-only filesystem, not
+        # sys.path. Caught by a test that ran main.py importing lib.py.
+        "/usr/bin/python3", "-E", "-s", "-B", entry,
+    ]
+
+    timed_out = False
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=TIMEOUT + 15, cwd=work)
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        timed_out, rc, out, err = True, -1, "", "killed after the wall clock ran out"
+
+    def clip(s):
+        s = s or ""
+        return s if len(s) <= MAX_OUTPUT else s[:MAX_OUTPUT] + "\n[...truncated]"
+
+    result = {
+        "ok": (rc == 0 and not timed_out),
+        "run_id": run_id,
+        "entry": entry,
+        "exit_code": rc,
+        "timed_out": timed_out,
+        "stdout": clip(out),
+        "stderr": clip(err),
+        "workdir": work,
+        "files": sorted(files),
+    }
+    print(json.dumps(result))
+
+    if not a.keep and not result["ok"]:
+        # A failed run keeps its directory: the point of a failure is to be
+        # looked at. A successful one is cleaned up by the caller once the
+        # artifact has been read out.
+        pass
+    sys.exit(0 if result["ok"] else 1)
+
+
+if __name__ == "__main__":
+    main()

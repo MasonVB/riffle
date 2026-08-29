@@ -1,0 +1,23 @@
+# /etc/sudoers.d/riffle-build      0440 root:root
+#
+# The agent may run one program as root, and that program's entire job is to
+# stop being root: riffle-build drops to the riffle-build user, sets up a
+# scope with no network and hard limits, and runs `python3 <entry>` inside it.
+# Nothing from the agent reaches a shell.
+#
+# It needs root because systemd-run --scope cannot set a uid or a private
+# network without it, and polkit will not grant that non-interactively.
+#
+# Install with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin riffle-build
+#   sudo mkdir -p /var/lib/riffle/build
+#   sudo chown riffle-build:riffle-build /var/lib/riffle/build
+#   sudo chmod 750 /var/lib/riffle/build
+#   sudo install -m 0755 -o root -g root bin/riffle-build /usr/local/bin/riffle-build
+#   sudo install -m 0440 -o root -g root bin/sudoers-riffle-build /etc/sudoers.d/riffle-build
+#   sudo visudo -c
+#
+riffle ALL=(root) NOPASSWD: /usr/local/bin/riffle-build
+
+# riffle-build itself gets NO sudoers entry. That is the point: the user the
+# agent's code runs as can do nothing but write in its own scratch directory.
