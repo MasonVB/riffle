@@ -743,7 +743,18 @@ const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&l
 let data = null;
 
 
-const ACTS = ["post", "comment", "vote", "tag", "flag", "seal", "listing_submission", "read_thread", "read_more", "request_cycle", "open_project", "project_note", "close_project", "adjust_drive", "add_goal", "remember"];
+// The action list comes from the API, which reads policy.ACTION_KINDS.
+//
+// It used to be a literal here, copied from that list by hand. Six actions
+// were added to Python — porch, knock, attestation, fetch, build, sign — and
+// the settings page kept rendering the old sixteen, so the new ones existed,
+// were seeded in the database, were enforced by the gate, and could not be
+// seen or changed by anyone. Silent, and only findable by counting rows.
+//
+// Same shape as the a.brand selector that matched the settings page and
+// missed the chat page: two copies of one truth, and only one of them
+// maintained. There is now one copy.
+let ACTS = [];
 let pol = null;
 
 
@@ -764,6 +775,7 @@ async function loadTel(){
 
 async function loadPolicy(){
   pol = await (await fetch('/api/policy')).json();
+  ACTS = pol.kinds || [];
   document.getElementById('actions').innerHTML = ACTS.map(function(a){
     const m = pol.modes[a] || 'queue';
     const sq = pol.square.indexOf(a) >= 0
