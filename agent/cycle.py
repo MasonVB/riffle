@@ -837,15 +837,9 @@ def main():
         state.set_status(aid, "executed", resp)
         state.cap_bump(day, kind)
         if kind == "post":
-            until = project.start_cooldown(
-                state, int((cfg.get("projects") or {}).get("cooldown_hours", 24)))
-            proj = project.active(state)
-            if proj:
-                nxt = project.close_project(state, proj["id"], "posted", aid)
-                if nxt:
-                    log(f"started the next queued project: {nxt['title']}", drive=drive)
-            log(f"posted; posting closed until {until:%Y-%m-%d %H:%M}Z",
-                drive=drive)
+            # Shared with the dashboard's approval path — see project.on_posted.
+            project.on_posted(state, cfg, aid,
+                              log=lambda m: log(m, drive=drive))
         if kind in ("comment", "vote", "tag", "flag"):
             state.mark_seen("post", payload.get("post_id") or payload.get("target_id"))
         log(f"executed {kind} #{aid}: {rationale[:200]}", drive=drive)

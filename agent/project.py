@@ -152,6 +152,40 @@ def drop_queued(state, pid):
     return c.rowcount > 0
 
 
+def on_posted(state, cfg, action_id, log=None):
+    """A post went out. Close the project it came from and start the next one.
+
+    Called from BOTH paths that can send a post: the cycle's own execute, and
+    the dashboard when you approve a queued one. It used to live only in the
+    cycle — and `post` is `queue`, so the cycle path never runs. Every post
+    riffle has ever made was approved by hand, which meant no project was ever
+    marked `posted`, the cooldown never started, and the queue never promoted.
+    Two projects sit in the database as `abandoned` because they were closed
+    by hand afterwards, having each produced a post.
+
+    A project that produced a post is finished, and it should not matter which
+    button sent it.
+    """
+    until = start_cooldown(state, int((cfg.get("projects") or {})
+                                      .get("cooldown_hours", 24)))
+    proj = active(state)
+    nxt = close_project(state, proj["id"], "posted", action_id) if proj else None
+    if log:
+        if proj:
+            log(f"closed '{proj['title']}' as posted")
+        log(f"posted; posting closed until {until:%Y-%m-%d %H:%M}Z")
+        if nxt:
+            log(f"started the next queued project: {nxt['title']}")
+    if nxt:
+        state.say("report", f"'{proj['title']}' produced its post and is closed. "
+                            f"Started the next one in the queue: {nxt['title']}\n"
+                            f"{nxt['question']}")
+    elif proj:
+        state.say("report", f"'{proj['title']}' produced its post and is closed. "
+                            f"Nothing is queued behind it.")
+    return until, proj, nxt
+
+
 def close_project(state, pid, status="abandoned", action_id=None):
     """Close a project and start whatever was waiting behind it."""
     state.db.execute(
@@ -352,6 +386,38 @@ def as_context(state, cfg, budget=5000):
                 f"The question: {proj['question']}\n"
                 f"{s['notes']} note(s), {s['sources']} source(s), "
                 f"{s['age_hours']}h old. {'READY' if ok else 'NOT READY'} — {why}")
+
+    # ENDING one. The prompt has always said, every cycle and in a whole
+    # sentence, when a project is ready to POST. It has never once said what a
+    # finished project looks like — so `close_project` existed as a payload
+    # shape and nothing else, projects stayed open indefinitely, and this one
+    # has reached 17 notes from 15 sources while the same post gets refused
+    # again and again. A question you can no longer answer is not a question
+    # you should keep answering.
+    _q = int((cfg.get("projects") or {}).get("close_after_notes", 24))
+    _h = float((cfg.get("projects") or {}).get("close_after_hours", 96))
+    _stale = s["notes"] >= _q or s["age_hours"] >= _h
+    close_note = (
+        "CLOSING IT IS A MOVE YOU HAVE. `close_project` takes a reason and it "
+        "is kept. Close when:\n"
+        "  - the question is answered, whether by you or by someone else on "
+        "the board — say who answered it;\n"
+        "  - the question turned out to be the wrong one, and you can say what "
+        "the right one is. Close this and open that;\n"
+        "  - you have posted what it was for. Then it is done, even if you "
+        "could keep reading.\n"
+        "Closing is not failure and an abandoned project is not a wasted one: "
+        "the notes and the reads are kept either way. Leaving a question open "
+        "that you have stopped being able to move is worse than ending it, "
+        "because it takes every cycle you would have spent on the next one.")
+    if _stale:
+        close_note = (
+            f"THIS PROJECT IS OVERDUE A DECISION: {s['notes']} note(s) over "
+            f"{s['age_hours']}h. Either post it or close it this cycle. "
+            "Reading one more thread is the answer that has already been "
+            "given " + str(len(reads(state, proj["id"]))) + " time(s).\n"
+            + close_note)
+    head.append(close_note)
 
     rs = reads(state, proj["id"])
     if rs:

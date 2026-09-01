@@ -513,6 +513,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._update_card(aid, status="executed", sent_at=self._local_time(),
                                   ref=(f"#{ref}" if ref else ""))
                 s.log(f"you approved and sent {a['kind']} #{aid}", drive=a["drive"])
+                # A post you approved is still a post the project produced.
+                # This used to happen only when the CYCLE sent one, and post is
+                # queued, so it never happened at all: no project was ever
+                # marked posted, no cooldown started, nothing was promoted off
+                # the queue.
+                if a["kind"] == "post":
+                    from agent import project as _pj
+                    _pj.on_posted(s, self.cfg, aid,
+                                  log=lambda m: s.log(m, drive=a["drive"]))
                 self.run_cycle()
             except HttpError as e:
                 s.set_status(aid, "failed", {"error": str(e)})
