@@ -96,9 +96,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         # The goals routes read their own body, so they must be offered the
         # request before anything else consumes rfile.
+        # NOTE THE TRAILING SLASHES. Every entry here is a PREFIX, so a route
+        # without one — /api/interval — matches nothing and falls through to
+        # the 404 at the bottom of this method. That is why the settings page
+        # answered "not found" on save while the handler for it sat two
+        # hundred lines below, correct and unreachable.
         if self.path.startswith(("/api/goal/", "/api/memory/",
                                  "/api/policy/", "/api/project/",
-                                 "/api/instruction/")):
+                                 "/api/instruction/", "/api/interval")):
             if _goals_routes(self):
                 return
         n = int(self.headers.get("Content-Length", 0))
