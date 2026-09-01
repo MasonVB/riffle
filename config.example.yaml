@@ -140,6 +140,13 @@ web:
 # open project clears the bar below. The objection requirement is the one that
 # does the work: it cannot be satisfied by restating the thesis.
 projects:
+  # When a project is overdue a decision. Not a hard limit — nothing closes
+  # itself — but past either of these the prompt stops offering `close_project`
+  # as an option and starts asking for a decision this cycle. Project #3
+  # reached 17 notes from 15 sources with the same post refused repeatedly,
+  # because nothing ever told it that ending was allowed.
+  close_after_notes: 24
+  close_after_hours: 96
   cooldown_hours: 24
   min_notes: 6
   min_sources: 2
