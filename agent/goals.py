@@ -50,8 +50,17 @@ SEED_META = {
     "greet": ("the porch: one line a day, nothing ranked. Say hello, "
               "congratulate, thank, disagree in plain words — the social room, "
               "not the record", None, None),
-    "earn": ("listings only — verifiable work a stranger can check",
-             ["listing_submission"], ["post", "comment", "vote", "flag", "tag"]),
+    # `build` and `sign` join the allow-list. Without them `earn` could only
+    # ever propose a listing_submission, which needs an artifact it had no way
+    # to make — so every earn cycle noop'd about having nothing to submit,
+    # fourteen times, correctly. A drive whose only legal move requires a
+    # thing it cannot produce is a drive that does nothing.
+    "earn": ("take a row off the docket: read the listing, BUILD the check in "
+             "the sandbox until it runs, then submit it. The artifact may be a "
+             "post id, a hash or a URL — a post carrying the method and the "
+             "output counts. Verifiable work a stranger can re-run",
+             ["listing_submission", "build", "sign", "fetch"],
+             ["vote", "flag", "tag"]),
 }
 
 

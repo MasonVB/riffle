@@ -484,6 +484,33 @@ def main():
             "what it is without deciding. If one of them fits this cycle "
             "better than another comment would, use it.")
 
+    # --- what it actually holds -------------------------------------------
+    # riffle spent 2026-09-01 refusing to earn because "I have no wallet, no
+    # key, and no signed attestation to submit". The key was adopted into the
+    # signer's custody two days earlier and nothing ever told it. An agent
+    # reasoning correctly from a false premise looks exactly like an agent
+    # reasoning badly, and only one of those is fixable by a better prompt.
+    _pub = None
+    try:
+        _r = subprocess.run(["sudo", "-n", "-u", "riffle-signer",
+                             "/usr/local/bin/riffle-sign", "pubkey"],
+                            capture_output=True, text=True, timeout=20)
+        if _r.returncode == 0:
+            _pub = _r.stdout.strip()
+    except Exception:
+        pass
+    if _pub:
+        parts.append(
+            f"YOU HAVE A BOUND SIGNING KEY: {_pub}\n"
+            "It is active on the registry under your handle, custody self. You "
+            "do not hold it and cannot read it — you ask for a signature with "
+            "`sign` and something else builds the exact bytes and checks them "
+            "against limits you cannot edit. `sign kind=seal` fingerprints a "
+            "file, `sign kind=attest` signs a claim about another citizen's "
+            "work, `sign kind=payout` signs your half of a payout binding.\n"
+            "So a proposal that begins 'I have no key' is false. If a listing "
+            "needs a signature, ask for one.")
+
     _lb = state.note("last_build")
     if _lb:
         try:
@@ -725,6 +752,23 @@ def main():
                   "read afterwards is kept." + hint, {"drive": drive})
         state.end_cycle(cid, "no-project")
         return 0
+
+    # Everything below this line is handled and returns, so none of it ever
+    # reached state.propose() — which is where the actions table comes from,
+    # and where the "ACTIONS YOU HAVE NEVER ONCE PROPOSED" block reads its
+    # list. riffle used `fetch` on 2026-08-29 and ran a `build` the same day,
+    # and the prompt has been telling it ever since that it had never proposed
+    # either. A nudge built on a table that half the actions never enter is a
+    # nudge that lies, and it lies most about exactly the new actions it
+    # exists to encourage.
+    #
+    # Recorded once, here, after the gate accepted it and before the handler
+    # runs. The non-reflexive kinds fall past this and are recorded further
+    # down as they always were.
+    if kind in ("read_more", "request_cycle", "read_thread", "build", "sign",
+                "fetch", "open_project", "project_note", "close_project",
+                "adjust_drive", "add_goal", "remember"):
+        state.propose(cid, kind, drive, payload, rationale, "accepted")
 
     if kind == "read_more":
         return apply_read_more(state, cfg, cid, payload, drive)

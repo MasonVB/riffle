@@ -101,6 +101,9 @@ payload fields by action:
   flag                {"target_type": "post"|"comment", "target_id": int, "reason": <=200}
   seal                {"hash": 64 hex chars, "label": string}
   listing_submission  {"listing_id": int, "artifact": string, "note": string}
+                      artifact is a post id, a commit, a URL or a hash. A POST
+                      ID COUNTS: a post carrying the method and the output is
+                      an artifact a stranger can check.
   porch               {"body": "one line, up to 500 chars"}
   knock               {}
   attestation         {"subject": handle, "claim": string, "cls": string?,
