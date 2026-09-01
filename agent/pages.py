@@ -81,12 +81,20 @@ button.go:active{background:var(--fg);color:var(--bg)}
 .spin{display:inline-block;animation:sp 1.1s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 .alarmwrap{position:relative;display:inline-block}
-.alarmpanel{display:none;position:absolute;top:26px;left:0;z-index:40;
+/* position:FIXED, not absolute, and placed by JS from the pill's rect.
+   #pills has overflow-x:auto so the pills can scroll on a phone, and a
+   scroll container clips absolutely-positioned descendants on BOTH axes —
+   so the panel was rendering correctly and being cut off by its own parent.
+   Fixed positioning escapes every clipping ancestor. Hover-open is gone with
+   it: hover cannot place a panel whose coordinates are computed on open, and
+   this is a control that mostly gets used on a phone, where there is no
+   hover anyway. */
+.alarmpanel{display:none;position:fixed;z-index:400;
   min-width:min(78vw,440px);max-width:min(92vw,520px);max-height:min(56vh,340px);
   overflow-y:auto;background:var(--panel);border:1px solid var(--bad);
   border-radius:9px;padding:0;box-shadow:0 10px 34px rgba(0,0,0,.6);
   -webkit-overflow-scrolling:touch}
-.alarmwrap:hover .alarmpanel,.alarmwrap.pinned .alarmpanel{display:block}
+.alarmwrap.pinned .alarmpanel{display:block}
 .pill.bad.pinned{background:var(--bad);color:var(--bg);font-weight:600}
 .alarmrow{padding:9px 12px;border-bottom:1px solid var(--line);font-size:13px;
   line-height:1.5;word-break:break-word}
@@ -299,14 +307,40 @@ document.addEventListener('click', function(e){
   if(w && !w.contains(e.target)) closeMenu();
 });
 
+function placeAlarmPanel(){
+  // The panel is position:fixed, so it needs viewport coordinates. Anchor it
+  // under the pill, then pull it back inside the right edge if it would hang
+  // off — on a 412px screen a 440px panel anchored at x=200 goes off-screen,
+  // which looks exactly like not opening at all.
+  const pill = document.getElementById('p-state');
+  const panel = document.getElementById('alarmpanel');
+  if(!pill || !panel) return;
+  const r = pill.getBoundingClientRect();
+  panel.style.top = (r.bottom + 6) + 'px';
+  panel.style.left = '0px';
+  panel.style.visibility = 'hidden';
+  panel.style.display = 'block';
+  const w = panel.getBoundingClientRect().width;
+  panel.style.display = '';
+  panel.style.visibility = '';
+  panel.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+}
 function toggleAlarms(e){
   e.stopPropagation();
   const w = document.getElementById('alarmwrap');
   if(!w.dataset.has) return;              // nothing to show, nothing to pin
+  const opening = !w.classList.contains('pinned');
+  if(opening) placeAlarmPanel();
   w.classList.toggle('pinned');
   document.getElementById('p-state').classList.toggle('pinned',
     w.classList.contains('pinned'));
 }
+// A fixed panel does not move with its anchor, so reposition it if the
+// viewport changes underneath it rather than leaving it stranded.
+window.addEventListener('resize', function(){
+  const w = document.getElementById('alarmwrap');
+  if(w && w.classList.contains('pinned')) placeAlarmPanel();
+});
 document.addEventListener('click', function(e){
   const w = document.getElementById('alarmwrap');
   if(w && w.classList.contains('pinned') && !w.contains(e.target)){
