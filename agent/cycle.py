@@ -31,7 +31,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import (chat, consolidate, cortex, desk, drives, goals, memory,
+from agent import (chat, consolidate, cortex, desk, drives, goals, library,
+                   memory,
                    notify, policy, project)  # noqa: E402  # noqa: E402
 from agent.client import HttpError, Reader, Writer  # noqa: E402
 from agent.state import State, utcnow  # noqa: E402
@@ -198,6 +199,7 @@ def main():
             return 0
 
     desk.ensure(state)
+    library.ensure(state, (cfg.get("library") or {}).get("root", library.ROOT))
     policy.ensure(state, cfg)
     try:
         from agent import telemetry
@@ -557,6 +559,13 @@ def main():
             "needs a signature, ask for one.")
 
     parts.append(desk.as_context(state))
+    parts.append(library.as_context(
+        state, int((cfg.get("library") or {}).get("max_bytes", library.MAX_BYTES))))
+    _lf2 = state.note("last_library_read")
+    if _lf2:
+        parts.append("THE DOCUMENT YOU OPENED LAST CYCLE (it is replaced the "
+                     "next time you open one; shelve or note anything you want "
+                     "to keep):\n" + _lf2[:9000])
 
     _lb = state.note("last_build")
     if _lb:
@@ -831,7 +840,8 @@ def main():
     if kind in ("read_more", "request_cycle", "read_thread", "build", "sign",
                 "fetch", "open_project", "project_note", "close_project",
                 "adjust_drive", "add_goal", "remember",
-                "desk_put", "desk_clear"):
+                "desk_put", "desk_clear",
+                "library_put", "library_find", "library_read"):
         state.propose(cid, kind, drive, payload, rationale, "accepted")
 
     if kind == "read_more":
@@ -845,6 +855,9 @@ def main():
 
     if kind in ("desk_put", "desk_clear"):
         return apply_desk(state, cid, kind, payload, drive, log)
+
+    if kind in ("library_put", "library_find", "library_read"):
+        return apply_library(state, cfg, cid, kind, payload, drive, log)
 
     if kind == "build":
         return apply_build(state, cfg, cid, payload, drive, log)
@@ -1014,6 +1027,77 @@ def walk_changes(state, reader, cfg, log):
     return {"posts": posts, "comments": comments, "nulls": nulls,
             "pages": pages, "unchanged": unchanged, "saturated": saturated,
             "window_age_ms": age_ms, "cursor": since}
+
+
+def apply_library(state, cfg, cid, kind, p, drive, log):
+    """Shelve, search or open a document.
+
+    Reflexive, like the desk: nothing here reaches the square. The library is
+    on this machine and arranging it needs no approval.
+    """
+    lcfg = cfg.get("library") or {}
+    root = lcfg.get("root", library.ROOT)
+    cap = int(lcfg.get("max_bytes", library.MAX_BYTES))
+
+    if kind == "library_find":
+        hits = library.find(state, p["query"])
+        if not hits:
+            body = (f"Nothing in the library matches {p['query']!r}. Search "
+                    f"looks at titles, tags, summaries and sources — not the "
+                    f"text of the documents — so try the words you would have "
+                    f"written when you shelved it.")
+        else:
+            body = "\n".join(
+                f"  #{h['id']}  [{h['kind']}] {h['title']}"
+                + (f"\n      tags: {h['tags']}" if h["tags"] else "")
+                + (f"\n      {h['summary']}" if h["summary"] else "")
+                + f"\n      {h['bytes']} bytes, shelved {h['created_at'][:10]}, "
+                  f"read {h['reads']}x" for h in hits)
+            body = (f"{len(hits)} match(es) for {p['query']!r}. "
+                    f"`library_read` with an id opens one:\n" + body)
+        state.note("last_library_read", body)
+        log(f"library: searched {p['query']!r}, {len(hits)} hit(s)", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 searched the library for "
+                            f"{p['query']!r}: {len(hits)} match(es).",
+                  {"drive": drive})
+        state.end_cycle(cid, "library-searched", p["query"][:80])
+        return 0
+
+    if kind == "library_read":
+        row, text = library.read(state, p["id"], root=root)
+        if not row:
+            log(f"library: no document #{p['id']}", level="warn", drive=drive)
+            state.end_cycle(cid, "library-missing", str(p["id"]))
+            return 0
+        state.note("last_library_read",
+                   f"#{row['id']} [{row['kind']}] {row['title']}\n"
+                   + (f"tags: {row['tags']}\n" if row["tags"] else "")
+                   + f"\n{text}")
+        log(f"library: opened #{row['id']} {row['title'][:60]}", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 opened '{row['title']}' from "
+                            f"the library ({row['bytes']} bytes).",
+                  {"drive": drive})
+        state.end_cycle(cid, "library-read", str(row["id"]))
+        return 0
+
+    try:
+        did, dropped = library.put(
+            state, p["title"], p["body"], kind=p.get("kind") or "note",
+            tags=p.get("tags") or "", summary=p.get("summary") or "",
+            source=p.get("source") or "", root=root, cap=cap)
+    except (ValueError, OSError) as e:
+        log(f"library refused: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the library refused that: {e}")
+        state.end_cycle(cid, "library-refused", str(e)[:200])
+        return 0
+    log(f"library: shelved #{did} {p['title'][:60]} ({len(p['body'])} chars)"
+        + (f"; pruned {len(dropped)}" if dropped else ""), drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 shelved '{p['title']}' as #{did}."
+              + (f"\nThe library was over its cap, so these were dropped: "
+                 f"{', '.join(dropped[:5])}" if dropped else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "library-shelved", str(did))
+    return 0
 
 
 def apply_desk(state, cid, kind, p, drive, log):

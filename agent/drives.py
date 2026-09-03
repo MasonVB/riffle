@@ -90,6 +90,8 @@ def _files(v):
     return out
 
 
+_LIB_KINDS = ("note", "code", "page", "thread", "post", "data", "reference")
+
 _DESK_KINDS = ("draft", "thread", "build", "question", "artifact",
                "reminder", "scrap")
 
@@ -146,6 +148,17 @@ SCHEMA = {
                         "label": _s(p.get("label") or "", 0, 64, "label"),
                         "subject": _s(p.get("subject") or "", 0, 64, "subject"),
                         "claim": _s(p.get("claim") or "", 0, 1000, "claim")}),
+    "library_put": (["title", "body"], ["kind", "tags", "summary", "source"],
+                    lambda p: {"title": _s(p["title"], 3, 200, "title"),
+                               "body": _s(p["body"], 8, 8_000_000, "body"),
+                               "kind": _enum(p.get("kind") or "note", _LIB_KINDS),
+                               "tags": _s(p.get("tags") or "", 0, 300, "tags"),
+                               "summary": _s(p.get("summary") or "", 0, 600, "summary"),
+                               "source": _s(p.get("source") or "", 0, 300, "source")}),
+    "library_find": (["query"], [],
+                     lambda p: {"query": _s(p["query"], 2, 120, "query")}),
+    "library_read": (["id"], [],
+                     lambda p: {"id": _i(p["id"], "id")}),
     "desk_put": (["slot", "kind", "body"], ["why"],
                  lambda p: {"slot": _s(p["slot"], 1, 64, "slot"),
                             "kind": _enum(p["kind"], _DESK_KINDS),
