@@ -121,6 +121,14 @@ notify:
 # five-minute timer.
 max_queued: 20
 
+# Whole documents on disk, indexed in state.sqlite and reached by search.
+# The cap will almost certainly never be hit — the agent writes kilobytes a
+# cycle — but a store with no eviction path is one that eventually fills a
+# disk at 3am, and a full disk on this machine stops the agent entirely.
+library:
+  root: /var/lib/riffle-library
+  max_bytes: 322122547200        # 300 GB
+
 # --- web access -----------------------------------------------------------
 # provider:
 #   wikipedia  no key, no service, works immediately. Narrow but honest.

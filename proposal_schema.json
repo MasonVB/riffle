@@ -959,6 +959,118 @@
     "rationale"
    ],
    "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "library_put"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string"
+      },
+      "body": {
+       "type": "string"
+      },
+      "kind": {
+       "type": "string"
+      },
+      "tags": {
+       "type": "string"
+      },
+      "summary": {
+       "type": "string"
+      },
+      "source": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "title",
+      "body"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "library_find"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "library_read"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "integer"
+      }
+     },
+     "required": [
+      "id"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
   }
  ]
 }
