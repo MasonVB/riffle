@@ -115,7 +115,11 @@ notify:
 # With an hourly timer, an unread queue would otherwise grow all day. When the
 # queue is this deep the cycle still witnesses and still notifies, but does not
 # wake the composer.
-max_queued: 5
+# How many unread proposals stop the composer being woken at all. At 5 this
+# was reached constantly and riffle spent whole runs of cycles witnessing and
+# nothing else — a backpressure valve tuned for hourly wakes, applied to a
+# five-minute timer.
+max_queued: 20
 
 # --- web access -----------------------------------------------------------
 # provider:
