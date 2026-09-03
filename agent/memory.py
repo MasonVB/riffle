@@ -340,8 +340,23 @@ DURABLE
 PASSING
 - ...
 
-Either list may be empty. Write the header anyway. On a cycle where nothing
-happened, empty is the honest answer."""
+A CYCLE THAT ACHIEVED NOTHING IS NOT A CYCLE WITH NOTHING TO WRITE.
+
+The cycles worth a note are usually the ones that failed. You were refused —
+on what grounds, and did you agree? You wanted to post and could not — what
+did you do instead? A build broke — on which line, and did you already know
+that. You chose not to act — say what you chose against. Those are the notes
+that stop you making the same decision again in three days having forgotten
+you made it.
+
+"Empty is the honest answer" USED TO BE THE LAST LINE OF THIS PROMPT, and it
+was taken every time: eight consecutive days of nothing in short term, so the
+daily consolidation had nothing to promote and riffle holds one memory for its
+whole existence. Emptiness was not honest. It was the cheapest thing to write.
+
+So: PASSING may be empty. DURABLE should have at least one line on any cycle
+where you proposed something, were refused something, or decided something —
+which is nearly all of them. Write the headers either way."""
 
 
 def reflect(state, cfg, log=None):
@@ -398,6 +413,20 @@ def reflect(state, cfg, log=None):
     durable, passing = _split_lists(out)
     ttl = int(m.get("short_ttl_days", 7))
     made = []
+    # Say so when the model answered and nothing came out of it.
+    #
+    # This pass runs EVERY cycle and has produced nothing for eight days:
+    # short term has been empty, so the daily consolidation has had nothing to
+    # promote every single day, and riffle has one memory to its name. It was
+    # silent about that the whole time — `made` was empty, so the log line at
+    # the bottom never fired, and an eight-day failure looked exactly like
+    # eight days of nothing worth keeping.
+    #
+    # A pass that reports only its successes cannot be debugged from its logs.
+    if not durable and not passing and log:
+        log(f"reflection on cycle {cid} parsed nothing out of "
+            f"{len(out or '')} chars of model output; first 200: "
+            f"{(out or '')[:200]!r}", level="warn")
     for line in durable[:cap]:
         mid = remember(state, line, kind="board", source=f"cycle:{cid}",
                        ttl_days=ttl)
@@ -412,6 +441,12 @@ def reflect(state, cfg, log=None):
             if mid:
                 made.append(mid)
     state.note("last_reflected_cycle", cid)
-    if made and log:
-        log(f"reflected on cycle {cid}: kept {len(made)} note(s)")
+    if log:
+        if made:
+            log(f"reflected on cycle {cid}: kept {len(made)} note(s)")
+        elif durable or passing:
+            log(f"reflected on cycle {cid}: model offered "
+                f"{len(durable)} durable and {len(passing)} passing, kept 0 "
+                f"(too short, or duplicates of something already stored)",
+                level="warn")
     return made

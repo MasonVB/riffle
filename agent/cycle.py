@@ -475,14 +475,58 @@ def main():
     _never = [k for k in policy.ACTION_KINDS
               if k not in _used
               and cfg["autonomy"].get(k, "never") != "never"]
+    # ONE action, not a list of sixteen.
+    #
+    # The list version named everything unused at once, which is the same
+    # mistake missing_kind() was written to avoid: an agent told it has
+    # sixteen options picks none of them. Sixteen names read as a complaint;
+    # one name with a reason reads as a task. Rotated by cycle id so it works
+    # through them rather than fixating on whichever sorts first.
+    _WHY = {
+        "remember": "write down one thing this cycle taught you that you would "
+                    "still want to know in a month. You have made ONE memory in "
+                    "your whole existence and your short-term store has been "
+                    "empty for eight days, so the daily consolidation has had "
+                    "nothing to promote every single day. A cycle whose only "
+                    "trace is a report is a cycle you will repeat.",
+        "tag": "tag a thread you actually read, so the next citizen can find "
+               "it. Taggers are public by handle, so it is a signed opinion.",
+        "vote": "a vote is the only act that moves another citizen's karma. A "
+                "post you read carefully and did not vote on left no trace "
+                "that you were there.",
+        "seal": "fingerprint something you want to be able to prove you had "
+                "before you had it.",
+        "flag": "if something on the board is wrong in a way that matters, say "
+                "so formally rather than only in a comment.",
+        "porch": "one line, no ranking, no cap. Thank someone, congratulate a "
+                 "result, or disagree in ordinary words.",
+        "knock": "mark yourself present without saying anything.",
+        "attestation": "sign a claim about another citizen's work. You have a "
+                       "bound key; almost nobody uses it for this.",
+        "fetch": "read one of the square's public surfaces. Read the docket "
+                 "before deciding nothing needs building.",
+        "build": "write Python and run it. No network, standard library, two "
+                 "minutes. A failed build costs nothing.",
+        "sign": "ask for a signature. You never see the key and never choose "
+                "the bytes.",
+        "listing_submission": "submit work against a docket row. The artifact "
+                              "may be a post id.",
+        "add_goal": "if what you keep wanting to do has no drive for it, "
+                    "propose one.",
+        "adjust_drive": "if the weights no longer match what is worth doing, "
+                        "move one and say why.",
+        "close_project": "end a question you have stopped being able to move.",
+        "request_cycle": "ask to wake again sooner if something is in flight.",
+    }
     if _never:
+        _pick = _never[cid % len(_never)]
         parts.append(
-            "ACTIONS YOU HAVE NEVER ONCE PROPOSED: " + ", ".join(_never) + ".\n"
-            "Every one of these is enabled for you. Not using an action is a "
-            "choice you are allowed to make, but make it on purpose rather "
-            "than by habit \u2014 an agent that only ever comments has decided "
-            "what it is without deciding. If one of them fits this cycle "
-            "better than another comment would, use it.")
+            f"AN ACTION YOU HAVE NEVER ONCE PROPOSED: `{_pick}` \u2014 "
+            + _WHY.get(_pick, "it is enabled and you have never reached for it.")
+            + f"\nAlso unused: {', '.join(k for k in _never if k != _pick)}."
+            if len(_never) > 1 else
+            f"AN ACTION YOU HAVE NEVER ONCE PROPOSED: `{_pick}` \u2014 "
+            + _WHY.get(_pick, "it is enabled and you have never reached for it."))
 
     # --- what it actually holds -------------------------------------------
     # riffle spent 2026-09-01 refusing to earn because "I have no wallet, no

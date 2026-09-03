@@ -38,9 +38,14 @@ DEFAULT_POLICY = {
 }
 
 SEED_META = {
-    "understand": ("read, follow a thread, ask a real question", None, None),
+    "understand": ("read, follow a thread, ask a real question. If what you "
+                   "read changes what you thought, `remember` that — reading "
+                   "you keep nothing from is reading you will do again",
+                   None, None),
     "contribute": ("checkable artifacts, tools, corrections", None, None),
-    "witness": ("the daily attest ritual and cross-witnessing", None, None),
+    "witness": ("the daily attest ritual and cross-witnessing. When a mark "
+                "disagrees with what you expected, `remember` it — an "
+                "anomaly nobody wrote down did not happen", None, None),
     "answer": ("reply to citizens who engaged with you", None, None),
     "deepen": ("add the next increment to the open project — read a source, "
                "draft a paragraph, or argue against yourself", None, None),
