@@ -31,7 +31,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import (chat, consolidate, cortex, drives, goals, memory,
+from agent import (chat, consolidate, cortex, desk, drives, goals, memory,
                    notify, policy, project)  # noqa: E402  # noqa: E402
 from agent.client import HttpError, Reader, Writer  # noqa: E402
 from agent.state import State, utcnow  # noqa: E402
@@ -197,6 +197,7 @@ def main():
             log(f"not due: {_age:.0f} of {_iv} minutes since the last cycle")
             return 0
 
+    desk.ensure(state)
     policy.ensure(state, cfg)
     try:
         from agent import telemetry
@@ -555,6 +556,8 @@ def main():
             "So a proposal that begins 'I have no key' is false. If a listing "
             "needs a signature, ask for one.")
 
+    parts.append(desk.as_context(state))
+
     _lb = state.note("last_build")
     if _lb:
         try:
@@ -680,7 +683,12 @@ def main():
 
     # With hourly wakes an unread queue would grow all day and stop being read.
     depth = len(state.queued())
-    cap = int(cfg.get("max_queued", 5))
+    # The default is the fallback for a config that never named it; yours
+    # does. 5 was chosen when a cycle was hourly, so five unread proposals
+    # meant five hours of your inattention. At a five-minute timer it is
+    # twenty-five minutes, and riffle spent whole runs of cycles refusing to
+    # think because you had not clicked anything since breakfast.
+    cap = int(cfg.get("max_queued", 20))
     if depth >= cap:
         log(f"queue holds {depth} unread proposal(s) (cap {cap}); witnessing only, "
             f"not waking the composer", drive=drive)
@@ -822,7 +830,8 @@ def main():
     # down as they always were.
     if kind in ("read_more", "request_cycle", "read_thread", "build", "sign",
                 "fetch", "open_project", "project_note", "close_project",
-                "adjust_drive", "add_goal", "remember"):
+                "adjust_drive", "add_goal", "remember",
+                "desk_put", "desk_clear"):
         state.propose(cid, kind, drive, payload, rationale, "accepted")
 
     if kind == "read_more":
@@ -833,6 +842,9 @@ def main():
 
     if kind == "read_thread":
         return apply_read_thread(state, cfg, cid, payload, drive)
+
+    if kind in ("desk_put", "desk_clear"):
+        return apply_desk(state, cid, kind, payload, drive, log)
 
     if kind == "build":
         return apply_build(state, cfg, cid, payload, drive, log)
@@ -1002,6 +1014,46 @@ def walk_changes(state, reader, cfg, log):
     return {"posts": posts, "comments": comments, "nulls": nulls,
             "pages": pages, "unchanged": unchanged, "saturated": saturated,
             "window_age_ms": age_ms, "cursor": since}
+
+
+def apply_desk(state, cid, kind, p, drive, log):
+    """Put something on the desk or take it off.
+
+    Reflexive: it touches nothing outside this machine, so there is no reason
+    to queue it for approval. The desk is the agent's own working surface and
+    the whole point is that it can arrange it without asking.
+    """
+    if kind == "desk_clear":
+        gone = desk.clear(state, p["slot"])
+        log(f"desk: {'cleared' if gone else 'nothing at'} {p['slot']}", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 "
+                            + (f"cleared '{p['slot']}' off the desk."
+                               if gone else
+                               f"there was nothing at '{p['slot']}' to clear."),
+                  {"drive": drive})
+        state.end_cycle(cid, "desk-cleared" if gone else "desk-empty-slot",
+                        p["slot"])
+        return 0
+
+    try:
+        dropped, updated = desk.put(state, p["slot"], p["kind"], p["body"],
+                                    p.get("why") or "")
+    except ValueError as e:
+        log(f"desk refused: {e}", level="warn", drive=drive)
+        state.end_cycle(cid, "desk-refused", str(e)[:200])
+        return 0
+    log(f"desk: {'updated' if updated else 'placed'} {p['slot']} "
+        f"({p['kind']}, {len(p['body'])} chars)"
+        + (f"; evicted {', '.join(dropped)}" if dropped else ""), drive=drive)
+    state.say("report",
+              f"Cycle {cid} \u00b7 {'updated' if updated else 'put'} "
+              f"'{p['slot']}' [{p['kind']}] on the desk."
+              + (f" {p['why']}" if p.get("why") else "")
+              + (f"\nThe desk was full, so this fell off: "
+                 f"{', '.join(dropped)}" if dropped else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "desk-updated" if updated else "desk-placed", p["slot"])
+    return 0
 
 
 def apply_build(state, cfg, cid, p, drive, log):

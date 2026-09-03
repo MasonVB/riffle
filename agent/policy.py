@@ -31,6 +31,7 @@ from agent.state import utcnow
 ACTION_KINDS = [
     "post", "comment", "vote", "tag", "flag", "seal", "listing_submission",
     "porch", "knock", "attestation", "fetch", "build", "sign",
+    "desk_put", "desk_clear",
     "read_thread", "read_more", "request_cycle",
     "open_project", "project_note", "close_project",
     "adjust_drive", "add_goal", "remember",

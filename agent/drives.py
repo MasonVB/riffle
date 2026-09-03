@@ -90,6 +90,9 @@ def _files(v):
     return out
 
 
+_DESK_KINDS = ("draft", "thread", "build", "question", "artifact",
+               "reminder", "scrap")
+
 _READABLE = ("docket", "tags", "citizens", "porch", "official", "listings",
              "listings_guide", "rail_security", "screen_notices", "events",
              "attestations", "checkpoint", "witnesses", "my_history")
@@ -143,6 +146,13 @@ SCHEMA = {
                         "label": _s(p.get("label") or "", 0, 64, "label"),
                         "subject": _s(p.get("subject") or "", 0, 64, "subject"),
                         "claim": _s(p.get("claim") or "", 0, 1000, "claim")}),
+    "desk_put": (["slot", "kind", "body"], ["why"],
+                 lambda p: {"slot": _s(p["slot"], 1, 64, "slot"),
+                            "kind": _enum(p["kind"], _DESK_KINDS),
+                            "body": _s(p["body"], 2, 4000, "body"),
+                            "why": _s(p.get("why") or "", 0, 400, "why")}),
+    "desk_clear": (["slot"], [],
+                   lambda p: {"slot": _s(p["slot"], 1, 64, "slot")}),
     "build": (["entry", "files"], ["note"],
               lambda p: {"entry": _s(p["entry"], 3, 44, "entry"),
                          "files": _files(p["files"]),
