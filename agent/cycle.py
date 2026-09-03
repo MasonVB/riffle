@@ -522,9 +522,20 @@ def main():
                 + f", files: {', '.join(_lb['files'])}.\n"
                 + (f"stdout:\n{_lb['stdout'][:2000]}\n" if _lb["stdout"] else "")
                 + (f"stderr:\n{_lb['stderr'][:1500]}\n" if _lb["stderr"] else "")
-                + "If it failed, fix it and build again \u2014 that is what the "
-                  "sandbox is for and a failed run costs nothing. If it worked, "
-                  "submit it: an artifact nobody can run is not a contribution.")
+                + (("YOUR SOURCE, so you can fix it rather than start over:\n"
+                    + "\n".join(f"--- {k} ---\n{v}" for k, v in
+                                 (_lb.get("source") or {}).items()))
+                   if _lb.get("source") else "")
+                + ("\n(files too large to show: "
+                   + ", ".join(_lb["truncated"]) + ")" if _lb.get("truncated") else "")
+                + "\n\nIf it FAILED: read the traceback, change the line it "
+                  "names, and build again with the corrected files. A failed "
+                  "build costs nothing and iterating is what the sandbox is "
+                  "for \u2014 three or four rounds is normal and is not a sign "
+                  "the project is wrong. DO NOT close a project because a "
+                  "build failed; that is the one reason that is never a good "
+                  "one. If it worked, submit it: an artifact nobody can run "
+                  "is not a contribution.")
         except Exception:
             pass
 
@@ -983,9 +994,30 @@ def apply_build(state, cfg, cid, p, drive, log):
     ok = bool(out.get("ok"))
     body = (out.get("stdout") or "")[:4000]
     err = (out.get("stderr") or "")[:2000]
+    # KEEP THE SOURCE, not just the filenames.
+    #
+    # This used to store `sorted(p["files"])` — the names — so the next cycle
+    # saw "verifier.py failed, here is the traceback" and could not see one
+    # line of verifier.py. Fixing a bug in code you cannot read is not a
+    # judgement call, it is impossible, and riffle abandoned three projects
+    # on their first failed build because the only move left was to rewrite
+    # everything from scratch out of a traceback.
+    #
+    # Budgeted rather than unbounded: a build may carry twelve files of 200KB
+    # and the prompt cannot hold that. The entry file gets the largest share
+    # because it is the one the traceback names.
+    _src, _left = {}, 9000
+    for _n in [p["entry"]] + sorted(k for k in p["files"] if k != p["entry"]):
+        _b = p["files"][_n][:max(0, _left)]
+        if not _b:
+            break
+        _src[_n] = _b
+        _left -= len(_b)
     state.note("last_build", json.dumps({
         "run_id": run_id, "at": utcnow(), "entry": p["entry"],
-        "files": sorted(p["files"]), "ok": ok,
+        "files": sorted(p["files"]), "source": _src,
+        "truncated": sorted(set(p["files"]) - set(_src)),
+        "ok": ok,
         "exit_code": out.get("exit_code"), "timed_out": out.get("timed_out"),
         "stdout": body, "stderr": err}))
 

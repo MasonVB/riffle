@@ -382,10 +382,34 @@ def as_context(state, cfg, budget=5000):
 
     s = stats(state, proj["id"])
     ok, why = ready(state, cfg)
-    head.append(f"YOUR PROJECT: {proj['title']}\n"
-                f"The question: {proj['question']}\n"
-                f"{s['notes']} note(s), {s['sources']} source(s), "
-                f"{s['age_hours']}h old. {'READY' if ok else 'NOT READY'} — {why}")
+    # DO NOT SAY "READY" WHILE POSTING IS CLOSED.
+    #
+    # The cooldown line said posting was shut for another 13 hours and then,
+    # four lines later, the same prompt said "It is ready" and the next-step
+    # block said "STOP ADDING NOTES AND WRITE THE POST". riffle spent hours
+    # trying to post every cycle and refusing to do anything else, which is
+    # not obsession — it is a prompt that gives one instruction and forbids
+    # it in the same breath. Same shape as the very first bug in this file,
+    # where ready() and missing_kind() disagreed.
+    #
+    # While cooling, `ready` is true but IRRELEVANT, and the prompt should say
+    # so plainly rather than leaving the model to reconcile it.
+    if cooling and ok:
+        head.append(f"YOUR PROJECT: {proj['title']}\n"
+                    f"The question: {proj['question']}\n"
+                    f"{s['notes']} note(s), {s['sources']} source(s), "
+                    f"{s['age_hours']}h old.\n"
+                    f"It clears the bar, AND YOU CANNOT POST IT FOR ANOTHER "
+                    f"{left:.1f}h. Do not propose a post this cycle; it will be "
+                    f"refused and the cycle wasted. The draft keeps. Spend this "
+                    f"cycle on something that is not this post: read a thread, "
+                    f"answer someone, vote on work you have actually read, say "
+                    f"something on the porch, or build.")
+    else:
+        head.append(f"YOUR PROJECT: {proj['title']}\n"
+                    f"The question: {proj['question']}\n"
+                    f"{s['notes']} note(s), {s['sources']} source(s), "
+                    f"{s['age_hours']}h old. {'READY' if ok else 'NOT READY'} — {why}")
 
     # ENDING one. The prompt has always said, every cycle and in a whole
     # sentence, when a project is ready to POST. It has never once said what a
@@ -410,7 +434,7 @@ def as_context(state, cfg, budget=5000):
         "the notes and the reads are kept either way. Leaving a question open "
         "that you have stopped being able to move is worse than ending it, "
         "because it takes every cycle you would have spent on the next one.")
-    if _stale:
+    if _stale and not cooling:
         close_note = (
             f"THIS PROJECT IS OVERDUE A DECISION: {s['notes']} note(s) over "
             f"{s['age_hours']}h. Either post it or close it this cycle. "
@@ -441,14 +465,25 @@ def as_context(state, cfg, budget=5000):
         lines.append(line)
         used += len(line)
     head.append("WHAT YOU HAVE SO FAR:\n" + "\n".join(lines))
-    _next = missing_kind(state, cfg, proj["id"])
+    # Muted while cooling. missing_kind returns "STOP ADDING NOTES AND WRITE
+    # THE POST" once a project clears the bar, and that is exactly the thing
+    # that cannot be done during a cooldown. Printing it under a line saying
+    # posting is closed is how riffle came to spend a whole afternoon
+    # proposing a post it was forbidden to make.
+    _next = None if cooling and ok else missing_kind(state, cfg, proj["id"])
     if _next:
         head.append("THE ONE THING TO DO NEXT ON THIS PROJECT: "
                     + _next + ".")
-    head.append("Add the NEXT increment. Not a restatement of the above — read "
-                "a source you have not read, draft a paragraph, or find the "
-                "strongest objection to what you have written. If the project "
-                "is ready and posting is open, promote it.")
+    if cooling and ok:
+        head.append("The project is finished and waiting on the clock. It "
+                    "needs nothing more from you today. Anything you add to it "
+                    "now is padding, and a cycle spent on a post you cannot "
+                    "send is a cycle the square never sees.")
+    else:
+        head.append("Add the NEXT increment. Not a restatement of the above — "
+                    "read a source you have not read, draft a paragraph, or "
+                    "find the strongest objection to what you have written. If "
+                    "the project is ready and posting is open, promote it.")
     return "\n\n".join(head)
 
 
