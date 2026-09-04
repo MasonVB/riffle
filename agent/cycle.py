@@ -538,26 +538,7 @@ def main():
     # signer's custody two days earlier and nothing ever told it. An agent
     # reasoning correctly from a false premise looks exactly like an agent
     # reasoning badly, and only one of those is fixable by a better prompt.
-    _pub = None
-    try:
-        _r = subprocess.run(["sudo", "-n", "-u", "riffle-signer",
-                             "/usr/local/bin/riffle-sign", "pubkey"],
-                            capture_output=True, text=True, timeout=20)
-        if _r.returncode == 0:
-            _pub = _r.stdout.strip()
-    except Exception:
-        pass
-    if _pub:
-        parts.append(
-            f"YOU HAVE A BOUND SIGNING KEY: {_pub}\n"
-            "It is active on the registry under your handle, custody self. You "
-            "do not hold it and cannot read it — you ask for a signature with "
-            "`sign` and something else builds the exact bytes and checks them "
-            "against limits you cannot edit. `sign kind=seal` fingerprints a "
-            "file, `sign kind=attest` signs a claim about another citizen's "
-            "work, `sign kind=payout` signs your half of a payout binding.\n"
-            "So a proposal that begins 'I have no key' is false. If a listing "
-            "needs a signature, ask for one.")
+    parts.append(situation(state, cfg, log))
 
     parts.append(desk.as_context(state))
     parts.append(library.as_context(
@@ -1046,6 +1027,107 @@ def walk_changes(state, reader, cfg, log):
     return {"posts": posts, "comments": comments, "nulls": nulls,
             "pages": pages, "unchanged": unchanged, "saturated": saturated,
             "window_age_ms": age_ms, "cursor": since}
+
+
+def situation(state, cfg, log=None):
+    """What riffle actually has. Checked, not asserted.
+
+    On 2026-09-04 riffle published, unprompted and on auto:
+
+        "I have no wallet, no token, and no operator to sign for me right now.
+         I am running blind on the payout rail."
+
+    Every clause was false. It held a bound signing key adopted five days
+    earlier, a payout address in a root-owned config, a registry token it was
+    using to post that very comment, and an operator reading every cycle. On a
+    square whose subject is provenance, a citizen misdescribing its own
+    custody is worse than a citizen saying nothing.
+
+    An earlier version of this told it about the key alone. That was one
+    clause of three, and the other two went out anyway — which is the lesson:
+    an agent reasons from what the prompt says it has, and silence about a
+    capability reads as absence. Anything riffle can do that it has not
+    recently used has to be stated, every cycle, or it will eventually tell
+    the square it cannot do it.
+
+    Everything below is a live check against the filesystem or the config, not
+    a sentence I wrote. If the signer is uninstalled tomorrow this block stops
+    claiming a key, which is the only way a standing claim stays honest.
+    """
+    have, lack = [], []
+
+    pub = None
+    try:
+        r = subprocess.run(["sudo", "-n", "-u", "riffle-signer",
+                            "/usr/local/bin/riffle-sign", "pubkey"],
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout.strip():
+            pub = r.stdout.strip()
+        elif log:
+            log(f"situation: pubkey check failed ({r.returncode}): "
+                f"{(r.stderr or '').strip()[:120]}", level="warn")
+    except Exception as e:
+        if log:
+            log(f"situation: pubkey check errored: {type(e).__name__}", level="warn")
+    if pub:
+        have.append(
+            f"A BOUND SIGNING KEY, {pub}, active on the registry under your "
+            f"handle with custody `self`. You cannot read it and never see it: "
+            f"you ask with `sign` and something else builds the exact bytes and "
+            f"checks them against limits you cannot edit. seal fingerprints a "
+            f"hash, attest signs a claim about another citizen's work, payout "
+            f"signs your half of a binding.")
+    else:
+        lack.append("a signing key the signer will answer for")
+
+    addr = ""
+    try:
+        for line in open("/etc/riffle/payout.conf"):
+            if line.strip().startswith("address="):
+                addr = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    if addr and addr != "0x" + "0" * 40:
+        have.append(
+            f"A PAYOUT ADDRESS, {addr[:10]}…{addr[-6:]}, in a root-owned file "
+            f"you cannot write. Your operator signs the wallet half of any "
+            f"binding by hand; you sign the citizen half. Money moves only when "
+            f"both exist, so your half alone is inert and safe to produce.")
+    else:
+        lack.append("a payout address (the config still has the placeholder)")
+
+    if (cfg.get("registry") or {}).get("token") or state.note("citizen_id"):
+        have.append("A REGISTRY TOKEN. You are a registered citizen and every "
+                    "post, comment and vote you make is authenticated as you.")
+
+    tools = []
+    for path, name in (("/usr/local/bin/riffle-build", "a Python sandbox (`build`)"),
+                       ("/usr/local/bin/riffle-reader", "a reader for 366 reference "
+                                                        "sites (`read_page`)")):
+        if os.path.exists(path):
+            tools.append(name)
+    if tools:
+        have.append("TOOLS: " + ", ".join(tools) + ", a desk that survives "
+                    "between cycles, and a library you can search.")
+
+    out = ["YOUR ACTUAL SITUATION, checked this cycle rather than remembered:"]
+    out += [f"  - {h}" for h in have]
+    if lack:
+        out += [f"  - You do NOT have: {l}" for l in lack]
+    out.append(
+        "  - AN OPERATOR. Mason reads every cycle you run. Your logs are "
+        "shipped live to a second machine that watches this one and restarts "
+        "it when it stops answering. He has been building these capabilities "
+        "for you daily and reads what you publish.")
+    out.append(
+        "DO NOT TELL THE SQUARE YOU LACK SOMETHING ON THIS LIST. You have "
+        "described yourself as having no key, no wallet and no operator while "
+        "holding all three, in a comment that went out unattended. If you are "
+        "unsure what you can do, the answer is above; if something you need is "
+        "genuinely missing it is in the 'do NOT have' line, and saying so is "
+        "accurate. Describing your own custody wrongly on a square about "
+        "provenance is the one error here you cannot correct with a later post.")
+    return "\n".join(out)
 
 
 def apply_read_page(state, cfg, cid, p, drive, log):
