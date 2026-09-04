@@ -540,6 +540,35 @@ def main():
     # reasoning badly, and only one of those is fixable by a better prompt.
     parts.append(situation(state, cfg, log))
 
+    from agent.state import open_questions, answered_questions
+    _open, _answered = open_questions(state), answered_questions(state)
+    if _answered:
+        parts.append(
+            "ANSWERS FROM YOUR OPERATOR. These are first-hand and you may cite "
+            "them as a source — `operator:<id>` — the same way you would cite "
+            "a thread. They stay here; you do not have to act on one the cycle "
+            "you first see it:\n"
+            + "\n".join(f"  #{q['id']} you asked: {q['question']}\n"
+                        f"      he answered ({q['answered_at'][:16]}): {q['answer']}"
+                        for q in _answered))
+    if _open:
+        parts.append(
+            "QUESTIONS YOU HAVE ASKED AND HE HAS NOT ANSWERED YET:\n"
+            + "\n".join(f"  #{q['id']} ({q['asked_at'][:16]}) {q['question']}"
+                        for q in _open)
+            + "\nDo not ask these again and do not wait on them. Carry on with "
+              "something else; the answer will be here when it comes.")
+    elif not _answered:
+        parts.append(
+            "YOU CAN ASK YOUR OPERATOR A QUESTION. `ask_operator` puts one in "
+            "his chat and his answer comes back here, permanently, as a source "
+            "you can cite. Use it when the answer would change what you do and "
+            "you cannot get it from the square, the docket, a reference page or "
+            "your own library: what he intends, whether something is worth "
+            "building, what a constraint of yours is actually for. You have "
+            "reasoned from guesses about your own situation before and "
+            "published one of them.")
+
     parts.append(desk.as_context(state))
     parts.append(library.as_context(
         state, int((cfg.get("library") or {}).get("max_bytes", library.MAX_BYTES))))
@@ -823,7 +852,8 @@ def main():
                 "fetch", "open_project", "project_note", "close_project",
                 "adjust_drive", "add_goal", "remember",
                 "desk_put", "desk_clear",
-                "library_put", "library_find", "library_read", "read_page"):
+                "library_put", "library_find", "library_read", "read_page",
+                "ask_operator"):
         state.propose(cid, kind, drive, payload, rationale, "accepted")
 
     if kind == "read_more":
@@ -843,6 +873,9 @@ def main():
 
     if kind == "read_page":
         return apply_read_page(state, cfg, cid, payload, drive, log)
+
+    if kind == "ask_operator":
+        return apply_ask(state, cid, payload, drive, log)
 
     if kind == "build":
         return apply_build(state, cfg, cid, payload, drive, log)
@@ -1128,6 +1161,24 @@ def situation(state, cfg, log=None):
         "accurate. Describing your own custody wrongly on a square about "
         "provenance is the one error here you cannot correct with a later post.")
     return "\n".join(out)
+
+
+def apply_ask(state, cid, p, drive, log):
+    """Put a question to the operator. Reflexive — it reaches nobody else."""
+    from agent.state import ask_operator
+    qid, why = ask_operator(state, p["question"], p.get("why") or "", cid)
+    if not qid:
+        log(f"question refused: {why}", level="warn", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 I did not ask that: {why}",
+                  {"drive": drive})
+        state.end_cycle(cid, "ask-refused", why[:200])
+        return 0
+    log(f"asked the operator #{qid}: {p['question'][:120]}", drive=drive)
+    state.say("question", p["question"],
+              {"drive": drive, "qid": qid, "why": p.get("why") or "",
+               "status": "open"})
+    state.end_cycle(cid, "asked", str(qid))
+    return 0
 
 
 def apply_read_page(state, cfg, cid, p, drive, log):

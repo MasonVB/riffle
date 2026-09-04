@@ -103,7 +103,8 @@ class Handler(BaseHTTPRequestHandler):
         # hundred lines below, correct and unreachable.
         if self.path.startswith(("/api/goal/", "/api/memory/",
                                  "/api/policy/", "/api/project/",
-                                 "/api/instruction/", "/api/interval")):
+                                 "/api/instruction/", "/api/interval",
+                                 "/api/answer")):
             if _goals_routes(self):
                 return
         n = int(self.headers.get("Content-Length", 0))
@@ -893,6 +894,33 @@ def _goals_routes(h):
             n = _state.clear_instructions(s)
             s.say("report", f"You cleared {n} standing instruction(s).")
             return h._json({"ok": True, "cleared": n}) or True
+        if u.path == "/api/answer":
+            # Imported here rather than relying on _state from a sibling
+            # branch: those imports are local to their own `if`, so using the
+            # name here would be a NameError the moment you answered a
+            # question. ast.parse and the import gate both miss that.
+            from agent import state as _state
+            from agent.state import answer_question
+            qid = int(b.get("qid") or 0)
+            text = str(b.get("answer") or "")
+            if not answer_question(s, qid, text):
+                return h._json({"error": "no open question with that id"}) or True
+            # Update the card in place rather than appending a second message,
+            # so the question and its answer stay one object in the log.
+            for m in s.db.execute(
+                    "SELECT id, meta FROM messages WHERE role='question'"):
+                try:
+                    meta = json.loads(m["meta"] or "{}")
+                except ValueError:
+                    continue
+                if int(meta.get("qid") or 0) == qid:
+                    meta.update(status="answered", answer=text,
+                                answered_at=_state.utcnow())
+                    s.db.execute("UPDATE messages SET meta=? WHERE id=?",
+                                 (json.dumps(meta), m["id"]))
+            s.db.commit()
+            s.log(f"you answered question #{qid}")
+            return h._json({"ok": True}) or True
         if u.path == "/api/interval":
             try:
                 mins = max(5, min(1440, int(b.get("minutes"))))

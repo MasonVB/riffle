@@ -134,6 +134,8 @@ _OUTCOME_LINE = {
     "page-refused":     "That page is not on my reading allowlist, or it "
                         "refused me.",
     "page-failed":      "The reader did not answer.",
+    "asked":            "I asked my operator a question.",
+    "ask-refused":      "I tried to ask a question and it was refused.",
     "built":            "I wrote code and ran it in the sandbox; it worked.",
     "build-error":      "I wrote code and ran it in the sandbox; it failed.",
     "build-failed":     "The sandbox did not answer.",
@@ -379,6 +381,88 @@ class State:
 
 
 INSTR_SCHEMA = '\nCREATE TABLE IF NOT EXISTS instructions (\n  id INTEGER PRIMARY KEY, ts TEXT, text TEXT NOT NULL,\n  cycles_left INTEGER NOT NULL DEFAULT 1,\n  cycles_total INTEGER NOT NULL DEFAULT 1,\n  spent_at TEXT, source TEXT);\n'
+
+
+ASK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS questions (
+  id          INTEGER PRIMARY KEY,
+  asked_at    TEXT NOT NULL,
+  question    TEXT NOT NULL,
+  why         TEXT DEFAULT '',
+  cycle_id    INTEGER,
+  answered_at TEXT,
+  answer      TEXT,
+  seen        INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS questions_open ON questions(answered_at);
+"""
+
+MAX_OPEN_QUESTIONS = 3
+
+
+# ----------------------------------------------------------------- questions
+# Riffle could talk to a public square full of strangers and had no way to ask
+# the one person who reads everything it does. It has spent cycles reasoning
+# from guesses about its own situation — what it holds, what its operator
+# intends, whether a thing is worth doing — when the answer was one question
+# away and nothing existed to ask through.
+#
+# Bounded at three open at once. A question nobody has answered is not a
+# resource, and an agent that can ask freely will ask instead of thinking.
+
+def ask_operator(state, question, why="", cycle_id=None):
+    """Pose a question. Returns (id, None) or (None, refusal)."""
+    question = " ".join((question or "").split())[:600]
+    if len(question) < 8:
+        return None, "a question needs to be a question"
+    state.db.executescript(ASK_SCHEMA)
+    n = state.db.execute(
+        "SELECT COUNT(*) c FROM questions WHERE answered_at IS NULL").fetchone()["c"]
+    if n >= MAX_OPEN_QUESTIONS:
+        return None, (f"you already have {n} unanswered question(s). Wait for "
+                      f"an answer rather than asking a fourth — an unanswered "
+                      f"question is not a resource.")
+    dupe = state.db.execute(
+        "SELECT id FROM questions WHERE question=? AND answered_at IS NULL",
+        (question,)).fetchone()
+    if dupe:
+        return None, f"you already asked exactly that; it is question #{dupe['id']}"
+    cur = state.db.execute(
+        "INSERT INTO questions (asked_at,question,why,cycle_id) VALUES (?,?,?,?)",
+        (utcnow(), question, str(why)[:400], cycle_id))
+    state.db.commit()
+    return cur.lastrowid, None
+
+
+def open_questions(state):
+    state.db.executescript(ASK_SCHEMA)
+    return state.db.execute(
+        "SELECT * FROM questions WHERE answered_at IS NULL ORDER BY id").fetchall()
+
+
+def answered_questions(state, limit=6):
+    """Answers stay visible after they are read.
+
+    Not consumed on first sight, unlike an instruction. An instruction is a
+    thing to do once; an answer is a fact, and a fact riffle can only see once
+    is a fact it will ask for again.
+    """
+    state.db.executescript(ASK_SCHEMA)
+    return state.db.execute(
+        "SELECT * FROM questions WHERE answered_at IS NOT NULL"
+        " ORDER BY answered_at DESC LIMIT ?", (limit,)).fetchall()
+
+
+def answer_question(state, qid, answer):
+    state.db.executescript(ASK_SCHEMA)
+    answer = str(answer or "").strip()[:4000]
+    if len(answer) < 1:
+        return False
+    c = state.db.execute(
+        "UPDATE questions SET answer=?, answered_at=? WHERE id=? AND answered_at IS NULL",
+        (answer, utcnow(), int(qid)))
+    state.db.commit()
+    return c.rowcount > 0
 
 
 # --------------------------------------------------------------- instructions

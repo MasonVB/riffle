@@ -188,6 +188,15 @@ a.link{color:var(--sig);text-decoration:none;border-color:var(--sig)}
 .card{align-self:stretch;max-width:100%;background:var(--panel);
   border:1px solid var(--line);border-left:3px solid var(--sig);
   border-radius:9px;padding:13px}
+/* A question riffle asked, not an action it took. Different accent so the two
+   do not read the same in scrollback. */
+.card.ask{border-left-color:#9ecbff}
+.card.ask h4{color:#9ecbff}
+.ansbox{width:100%;margin-top:8px;background:#0e100b;color:var(--fg);
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;
+  resize:vertical}
+.answered{margin-top:8px;padding:8px 10px;border-left:2px solid var(--sig);
+  white-space:pre-wrap}
 .card h4{margin:0 0 4px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;
   color:var(--sig);font-family:ui-monospace,monospace}
 .card .why{color:var(--dim);font-size:14px;margin:6px 0 10px}
@@ -405,6 +414,24 @@ document.getElementById('log').addEventListener('click', function(e){
 function render(m){
   let el = document.getElementById('m'+m.id);
   if(!el){ el = document.createElement('div'); el.id = 'm'+m.id; log.appendChild(el); }
+  if(m.role === 'question'){
+    const p = m.meta || {};
+    const _qsig = JSON.stringify([p.status, p.answer, m.content.length]);
+    if(el.dataset.sig === _qsig) return;
+    el.dataset.sig = _qsig;
+    el.className = 'card ask';
+    el.innerHTML = '<h4>riffle is asking you &middot; drive ' + esc(p.drive||'') +
+      '</h4><div class=why>' + esc(m.content) + '</div>' +
+      (p.why ? '<div class=when>' + esc(p.why) + '</div>' : '') +
+      (p.status === 'answered'
+        ? '<div class=answered>' + esc(p.answer||'') + '</div>' +
+          '<div class=sentline>&#10003; answered ' + esc(p.answered_at||'') + '</div>'
+        : '<textarea class=ansbox id="a'+p.qid+'" rows=2 ' +
+          'placeholder="your answer becomes a source it can cite"></textarea>' +
+          '<div class=btns><button class=go onclick="sendAnswer('+p.qid+
+          ',this)">answer</button></div>');
+    return;
+  }
   if(m.role === 'proposal'){
     const p = m.meta || {};
     const _csig = JSON.stringify([p.status, p.sent_at, p.ref, p.error,
@@ -490,6 +517,15 @@ async function submit(instruct){
   await fetch('/api/send', {method:'POST', headers:{'Content-Type':'application/json'},
                             body: JSON.stringify({q:q, instruct: !!instruct})});
   log.scrollTop = log.scrollHeight;
+}
+async function sendAnswer(qid, btn){
+  const box = document.getElementById('a' + qid);
+  const text = (box && box.value || '').trim();
+  if(!text){ box && box.focus(); return; }
+  btn.disabled = true; btn.textContent = 'sending\u2026';
+  await fetch('/api/answer', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({qid: qid, answer: text})});
 }
 async function decide(id, verdict, btn){
   // Swap the buttons out immediately. The round trip includes an HTTPS call to
