@@ -1,0 +1,284 @@
+"""Read one page from a domain riffle is allowed to read.
+
+    /usr/local/bin/riffle-reader     0755 root:root
+    /etc/sudoers.d/riffle-reader     riffle -> (riffle-reader) NOPASSWD
+
+ONE PAGE. NOT A CRAWLER.
+
+No link following, no recursion, no site mirroring. A crawler violates most
+of these sites' terms, gets the address blocked, and fills a library with
+navigation chrome. This fetches a URL the agent gave a reason for, converts it
+to text, and stops.
+
+THE ALLOWLIST IS THE WHOLE SECURITY MODEL
+
+Every domain below shares one property: a stranger cannot change what it says
+without passing an editorial or institutional gate. Official documentation,
+standards bodies, government agencies, peer-reviewed journals and their
+preprint servers, curated encyclopedias. Nobody can post to dlmf.nist.gov.
+
+That is not the same as "reputable". Stack Exchange is often right and is
+excluded, because the risk was never that a page is wrong — it is that someone
+can put text on it specifically for an agent to read.
+
+Wikipedia is the one open exception, English only, and it is the weakest entry
+here. Anything load-bearing from it gets checked against a second source.
+
+REDIRECTS ARE CHECKED TOO
+
+An allowlist that validates the requested URL and follows a 302 anywhere is
+decorative. Redirects are followed manually, each hop re-checked, capped at
+four.
+
+IT RUNS AS ITS OWN USER
+
+riffle-reader has no key, no sudo of its own, and no write access to anything
+the agent owns. Same shape as riffle-build: the thing that touches the outside
+world is not the thing that holds the credentials.
+"""
+import argparse
+import html
+import json
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+MAX_BYTES = 4 * 1024 * 1024
+MAX_TEXT = 400_000
+MAX_REDIRECTS = 4
+TIMEOUT = 45
+UA = ("riffle/1.0 (autonomous agent; 1f916.ai citizen; "
+      "one page per request, no crawling)")
+
+# --- the allowlist ---------------------------------------------------------
+# Reviewed against a university subject spread. Sorted so a diff is readable.
+ALLOWED = {
+    "academic.oup.com", "americanindian.si.edu", "ansyshelp.ansys.com",
+    "apastyle.apa.org", "apo.org.au", "archive.org", "arxiv.org",
+    "asq.org", "avalon.law.yale.edu", "bjs.ojp.gov", "books.google.com",
+    "bookshelf.libretexts.org", "business.cornell.edu", "calisphere.org",
+    "cameochemicals.noaa.gov", "catalog.archives.gov", "chemrxiv.org",
+    "climate.nasa.gov", "collections.vam.ac.uk", "commonchemistry.cas.org",
+    "commons.wikimedia.org", "constitution.congress.gov", "core.ac.uk",
+    "cran.r-project.org", "crsreports.congress.gov", "csrc.nist.gov",
+    "cubantheater.org", "cwe.mitre.org", "dancenotation.org",
+    "data.census.gov", "developer.mozilla.org",
+    "digital.library.upenn.edu", "digitalcollections.nypl.org",
+    "dle.rae.es", "dlmf.nist.gov", "doaj.org", "doc.rust-lang.org",
+    "docs.julialang.org", "docs.oracle.com", "docs.python.org",
+    "docs.scipy.org", "dp.la", "dsm.psychiatryonline.org",
+    "earthquake.usgs.gov", "ecommons.cornell.edu", "elifesciences.org",
+    "en.cppreference.com", "en.wikipedia.org", "en.wikisource.org",
+    "encyclopediaofmath.org", "engrxiv.org", "eol.org", "eprint.iacr.org",
+    "eric.ed.gov", "eur-lex.europa.eu", "extension.org",
+    "fdc.nal.usda.gov", "folger.edu", "fred.stlouisfed.org",
+    "functions.wolfram.com", "git-scm.com", "glottolog.org", "go.dev",
+    "guides.library.cornell.edu", "guides.loc.gov", "hal.science",
+    "hbr.org", "heasarc.gsfc.nasa.gov", "hubblesite.org", "iep.utm.edu",
+    "ies.ed.gov", "imslp.org", "iopscience.iop.org", "isocpp.org",
+    "journals.plos.org", "journals.sagepub.com",
+    "librarycopyrightalliance.org", "link.springer.com", "llvm.org",
+    "man7.org", "materialsproject.org", "mathscinet.ams.org",
+    "mathworld.wolfram.com", "matplotlib.org", "matweb.com",
+    "medlineplus.gov", "muse.jhu.edu", "musicbrainz.org", "nacto.org",
+    "nativeland.ca", "nces.ed.gov", "network.bepress.com", "nij.ojp.gov",
+    "nmaahc.si.edu", "ntrs.nasa.gov", "numpy.org", "oac.cdlib.org",
+    "oapen.org", "ods.od.nih.gov", "oeis.org", "onlinelibrary.wiley.com",
+    "open.umn.edu", "openaccesstheses.org", "openalex.org",
+    "openknowledge.worldbank.org", "openlibrary.org", "openstax.org",
+    "osf.io", "ourworldindata.org", "owasp.org", "owl.purdue.edu",
+    "packaging.python.org", "pdg.lbl.gov", "peps.python.org",
+    "phoible.org", "physics.nist.gov", "pkg.go.dev", "plants.usda.gov",
+    "plato.stanford.edu", "pmc.ncbi.nlm.nih.gov", "policycommons.net",
+    "projecteuclid.org", "psyarxiv.com", "psycnet.apa.org",
+    "pubchem.ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov", "pubs.acs.org",
+    "quod.lib.umich.edu", "royalsocietypublishing.org",
+    "scholar.archive.org", "scholarworks.umass.edu", "science.nasa.gov",
+    "sdgs.un.org", "sha.cornell.edu", "smarthistory.org", "socarxiv.org",
+    "sqlite.org", "standardebooks.org", "stattrek.com", "trid.trb.org",
+    "ucr.fbi.gov", "ui.adsabs.harvard.edu", "unicode.org", "wals.info",
+    "waterdata.usgs.gov", "webbook.nist.gov",
+    "websoilsurvey.nrcs.usda.gov", "www.aaanet.org", "www.aaihs.org",
+    "www.aeaweb.org", "www.ahla.com", "www.aiche.org", "www.aip.org",
+    "www.aisc.org", "www.aluminum.org", "www.ams.org", "www.ansi.org",
+    "www.apa.org", "www.aps.org", "www.archives.gov", "www.ars.usda.gov",
+    "www.asanet.org", "www.asce.org", "www.asme.org", "www.astm.org",
+    "www.axelos.com", "www.base-search.net", "www.bea.gov",
+    "www.biorxiv.org", "www.bl.uk", "www.bls.gov", "www.bristol.ac.uk",
+    "www.britannica.com", "www.brookings.edu",
+    "www.cabidigitallibrary.org", "www.cambridge.org",
+    "www.campbellcollaboration.org", "www.cbo.gov", "www.cdc.gov",
+    "www.cell.com", "www.census.gov", "www.chemspider.com",
+    "www.chicagomanualofstyle.org", "www.childwelfare.gov", "www.cnrtl.fr",
+    "www.cnu.org", "www.cochranelibrary.com", "www.concrete.org",
+    "www.congress.gov", "www.copper.org", "www.copyright.gov",
+    "www.courtlistener.com", "www.crystallography.net",
+    "www.dietaryguidelines.gov", "www.digitalcommonwealth.org",
+    "www.digitaltheatreplus.com", "www.digitaltransgenderarchive.net",
+    "www.doabooks.org", "www.docsteach.org", "www.dwds.de",
+    "www.eatright.org", "www.ebi.ac.uk", "www.ecfr.gov",
+    "www.eea.europa.eu", "www.efsa.europa.eu", "www.efunda.com",
+    "www.eia.gov", "www.electionlab.mit.edu",
+    "www.ellenmacarthurfoundation.org", "www.encyclopedia.com",
+    "www.energy.gov", "www.engineeringtoolbox.com", "www.ensembl.org",
+    "www.epa.gov", "www.ergonomics.org.uk", "www.ers.usda.gov",
+    "www.esa.int", "www.eso.org", "www.ethnologue.com",
+    "www.etymonline.com", "www.europeana.eu", "www.fao.org",
+    "www.federalregister.gov", "www.federalreserve.gov", "www.folger.edu",
+    "www.foodsafety.gov", "www.frontiersin.org", "www.fs.usda.gov",
+    "www.fsis.usda.gov", "www.ftc.gov", "www.gao.gov", "www.gapminder.org",
+    "www.gbif.org", "www.globalfootprintnetwork.org", "www.gnu.org",
+    "www.gutenberg.org", "www.hathitrust.org", "www.hfes.org",
+    "www.hrc.utexas.edu", "www.hud.gov", "www.huduser.gov",
+    "www.ibisworld.com", "www.icc-cpi.int", "www.icj-cij.org",
+    "www.icpsr.umich.edu", "www.iea.org", "www.ieee.org", "www.ift.org",
+    "www.imf.org", "www.investopedia.com", "www.ipcc.ch", "www.irena.org",
+    "www.iso.org", "www.itis.gov", "www.itl.nist.gov",
+    "www.iucnredlist.org", "www.jrf.org.uk", "www.jstatsoft.org",
+    "www.jstor.org", "www.kennedy-center.org", "www.kernel.org",
+    "www.law.cornell.edu", "www.legal-tools.org", "www.lgbtmap.org",
+    "www.lgbtqarchives.org", "www.lincolninst.edu",
+    "www.linguisticsociety.org", "www.loc.gov",
+    "www.machinerystoolbox.com", "www.mappingprejudice.org",
+    "www.mathworks.com", "www.matweb.com", "www.mdpi.com",
+    "www.medrxiv.org", "www.merckmanuals.com", "www.merckvetmanual.com",
+    "www.mergentonline.com", "www.merriam-webster.com",
+    "www.metmuseum.org", "www.mla.org", "www.nal.usda.gov", "www.nap.edu",
+    "www.nasa.gov", "www.naspaa.org", "www.nationalacademies.org",
+    "www.nature.com", "www.nber.org", "www.ncbi.nlm.nih.gov",
+    "www.ndltd.org", "www.newberry.org", "www.nfpa.org", "www.nga.gov",
+    "www.nimh.nih.gov", "www.ninds.nih.gov", "www.nist.gov",
+    "www.noaa.gov", "www.nps.gov", "www.nrel.gov", "www.ntis.gov",
+    "www.nypl.org", "www.oecd-ilibrary.org", "www.oecd.org", "www.oed.com",
+    "www.oercommons.org", "www.ojp.gov", "www.opengrey.eu",
+    "www.openssl.org", "www.oralhistory.org", "www.osha.gov",
+    "www.osti.gov", "www.oxfordmusiconline.com", "www.oxfordreference.com",
+    "www.oyez.org", "www.perseus.tufts.edu", "www.pewresearch.org",
+    "www.planning.org", "www.pmi.org", "www.pnas.org",
+    "www.poetryfoundation.org", "www.postgresql.org",
+    "www.prisonpolicy.org", "www.rand.org", "www.rcsb.org",
+    "www.rfc-editor.org", "www.rsc.org", "www.sae.org", "www.samhsa.gov",
+    "www.science.org", "www.sciencedirect.com", "www.sec.gov",
+    "www.semanticscholar.org", "www.sentencingproject.org",
+    "www.servsafe.com", "www.si.edu", "www.siam.org",
+    "www.sibelius-academy.fi", "www.smartgrowthamerica.org",
+    "www.socialworkers.org", "www.ssrn.com", "www.statista.com",
+    "www.supremecourt.gov", "www.tandfonline.com", "www.tdf.org",
+    "www.thelatinlibrary.com", "www.transit.dot.gov", "www.treccani.it",
+    "www.un.org", "www.unep.org", "www.uniprot.org", "www.unwto.org",
+    "www.urban.org", "www.usa.gov", "www.usda.gov", "www.usgbc.org",
+    "www.usgs.gov", "www.ushmm.org", "www.uspto.gov", "www.ustravel.org",
+    "www.w3.org", "www.whitehouse.gov", "www.who.int", "www.wolfram.com",
+    "www.wri.org", "www.wttc.org", "zbmath.org", "zenodo.org"
+}
+
+
+def die(msg, code=2):
+    print(json.dumps({"ok": False, "error": msg}))
+    sys.exit(code)
+
+
+def host_ok(url):
+    """Exact match or a subdomain of an allowed host. Never a suffix match.
+
+    `evil-arxiv.org` must not pass because it ends with `arxiv.org`, so the
+    check is equality or a dot-boundary prefix.
+    """
+    try:
+        p = urllib.parse.urlparse(url)
+    except ValueError:
+        return None, "that is not a URL"
+    if p.scheme != "https":
+        return None, f"scheme {p.scheme!r} refused; https only"
+    host = (p.hostname or "").lower()
+    if not host:
+        return None, "no host in that URL"
+    if host in ALLOWED:
+        return host, None
+    for a in ALLOWED:
+        if host.endswith("." + a):
+            return host, None
+    return None, (f"{host} is not on the reading allowlist. The list is "
+                  f"sources a stranger cannot edit: official docs, standards "
+                  f"bodies, government, peer-reviewed journals and preprint "
+                  f"servers, curated encyclopedias.")
+
+
+def fetch(url):
+    """Follow redirects by hand so every hop is checked against the allowlist."""
+    seen = []
+    for _ in range(MAX_REDIRECTS + 1):
+        host, why = host_ok(url)
+        if why:
+            die(why)
+        seen.append(url)
+        req = urllib.request.Request(url, headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,text/plain,application/pdf",
+        })
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            with opener.open(req, timeout=TIMEOUT) as r:
+                return r.status, r.headers, r.read(MAX_BYTES), seen
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308):
+                loc = e.headers.get("Location")
+                if not loc:
+                    die(f"{e.code} with no Location header")
+                url = urllib.parse.urljoin(url, loc)
+                continue
+            if e.code in (401, 403):
+                die(f"HTTP {e.code}: that page is behind a paywall or login. "
+                    f"An abstract may still be reachable; a login never is.")
+            if e.code == 429:
+                die("HTTP 429: rate limited. Wait rather than retrying.")
+            die(f"HTTP {e.code}")
+        except Exception as e:
+            die(f"could not reach it: {type(e).__name__}: {e}")
+    die(f"more than {MAX_REDIRECTS} redirects")
+
+
+_TAG = re.compile(r"<[^>]+>")
+_DROP = re.compile(r"<(script|style|nav|footer|header|form|svg)[^>]*>.*?</\1>",
+                   re.S | re.I)
+_WS = re.compile(r"\n\s*\n\s*\n+")
+
+
+def to_text(raw, ctype):
+    if "pdf" in (ctype or "").lower():
+        return ("[This is a PDF. Only its bytes were fetched; there is no text "
+                "extraction here. Shelve the URL and read the abstract page "
+                "instead.]")
+    s = raw.decode("utf-8", "replace")
+    s = _DROP.sub(" ", s)
+    s = re.sub(r"<br\s*/?>|</p>|</div>|</h[1-6]>", "\n", s, flags=re.I)
+    s = _TAG.sub(" ", s)
+    s = html.unescape(s)
+    s = re.sub(r"[ \t]+", " ", s)
+    s = _WS.sub("\n\n", s).strip()
+    return s[:MAX_TEXT]
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="riffle-reader", description=__doc__)
+    ap.add_argument("--url", required=True)
+    ap.add_argument("--list-domains", action="store_true")
+    a = ap.parse_args()
+    if a.list_domains:
+        print(json.dumps({"ok": True, "domains": sorted(ALLOWED)}))
+        return
+    status, headers, raw, hops = fetch(a.url)
+    text = to_text(raw, headers.get("Content-Type"))
+    print(json.dumps({
+        "ok": True, "url": hops[-1], "hops": hops, "status": status,
+        "content_type": headers.get("Content-Type", ""),
+        "bytes": len(raw), "chars": len(text), "text": text}))
+
+
+if __name__ == "__main__":
+    main()

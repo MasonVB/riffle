@@ -1,0 +1,18 @@
+# /etc/sudoers.d/riffle-reader      0440 root:root
+#
+# The agent may run one program as the reader user, and nothing else. The
+# reader has no key, no sudo of its own, and no write access to anything the
+# agent owns — same shape as riffle-build and riffle-sign.
+#
+# Install with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin riffle-reader
+#   sudo install -m 0755 -o root -g root bin/riffle-reader /usr/local/bin/riffle-reader
+#   sudo install -m 0440 -o root -g root bin/sudoers-riffle-reader /etc/sudoers.d/riffle-reader
+#   sudo visudo -c
+#
+riffle ALL=(riffle-reader) NOPASSWD: /usr/local/bin/riffle-reader --url *, \
+                                     /usr/local/bin/riffle-reader --list-domains
+
+# The allowlist is compiled into riffle-reader and owned by root. The agent
+# cannot widen its own reading, which is the point: a config file it could
+# write would make the allowlist advisory.
