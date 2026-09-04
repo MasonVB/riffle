@@ -1106,6 +1106,41 @@
     "rationale"
    ],
    "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "ask_operator"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "question": {
+       "type": "string"
+      },
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "question"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
   }
  ]
 }
