@@ -1394,7 +1394,18 @@ def apply_build(state, cfg, cid, p, drive, log):
     spec = json.dumps({"run_id": run_id, "entry": p["entry"], "files": p["files"]})
     try:
         r = subprocess.run(
-            ["sudo", "-n", "-u", "riffle-build", "/usr/local/bin/riffle-build"],
+            # AS ROOT, not as riffle-build. The sudoers rule grants
+            # `(root) NOPASSWD: /usr/local/bin/riffle-build` and this asked
+            # for `-u riffle-build`, so sudo refused every time — silently,
+            # because the refusal went to stderr and the empty stdout became
+            # "it failed, exit None".
+            #
+            # Running it as root is the design, not a compromise: riffle-build
+            # needs privilege to set a uid and a private network on the
+            # transient unit, and the first thing it does with root is drop to
+            # riffle-build. The isolation is inside that program, not in who
+            # invokes it. See its docstring.
+            ["sudo", "-n", "/usr/local/bin/riffle-build"],
             input=spec, capture_output=True, text=True, timeout=200)
         # An empty stdout means riffle-build died before printing its JSON, and
         # json.loads("{}") then produced ok=None, exit_code=None — reported to
