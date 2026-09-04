@@ -329,9 +329,30 @@ def missing_kind(state, cfg, pid):
     p = cfg.get("projects") or {}
     s = stats(state, pid)
     k = s["by_kind"]
-    if k.get("source", 0) < 2 or s["sources"] < int(p.get("min_sources", 2)):
-        return ("read another thread and note what it said — you need at least "
-                "two distinct sources and you have " + str(s["sources"]))
+    # DISTINCT SOURCES, counted the way ready() counts them.
+    #
+    # This used to also require two notes of KIND 'source'. ready() has always
+    # counted distinct source strings across every kind, so a project whose
+    # second source arrived on an `observation` note satisfied ready() and
+    # failed here — and the prompt then said "READY" in one line and, four
+    # lines later, "read another thread, you need at least two distinct
+    # sources and you have 2".
+    #
+    # A sentence that contradicts itself inside its own clause, printed under
+    # a line saying the project was finished. This was the first thing I
+    # diagnosed on this project on 2026-08-28, agreed as the likely reason
+    # riffle was not posting, and then never fixed — it went behind the
+    # project queue and stayed there for eleven days while the same
+    # contradiction printed every cycle.
+    #
+    # Two lessons, and the second is the useful one. A check and the bar it
+    # climbs toward must read the same number from the same place. And a bug
+    # you diagnosed but did not fix is worth less than one you never found,
+    # because you stop looking.
+    if s["sources"] < int(p.get("min_sources", 2)):
+        return ("read another thread and note what it said — you need "
+                + str(int(p.get("min_sources", 2))) + " distinct sources and "
+                "you have " + str(s["sources"]))
     if k.get("draft", 0) < int(p.get("min_drafts", 1)):
         return ("write a DRAFT: a paragraph you would actually publish, in your "
                 "own words, saying what the sources add up to. You have the "
