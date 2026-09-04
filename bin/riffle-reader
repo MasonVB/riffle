@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """Read one page from a domain riffle is allowed to read.
 
     /usr/local/bin/riffle-reader     0755 root:root
@@ -233,8 +234,15 @@ def fetch(url):
                 url = urllib.parse.urljoin(url, loc)
                 continue
             if e.code in (401, 403):
-                die(f"HTTP {e.code}: that page is behind a paywall or login. "
-                    f"An abstract may still be reachable; a login never is.")
+                # 403 is not only paywalls: a proxy, a bot filter or a
+                # geo-block returns it too, and telling the agent "paywall"
+                # when it was actually blocked sends it looking for an
+                # abstract that does not exist. Say what is known.
+                die(f"HTTP {e.code}: refused. That is usually a paywall or "
+                    f"login, but a bot filter or a proxy returns it too. If "
+                    f"this is a journal, the abstract page may still be "
+                    f"readable; if it is documentation, something is blocking "
+                    f"the request rather than the content being restricted.")
             if e.code == 429:
                 die("HTTP 429: rate limited. Wait rather than retrying.")
             die(f"HTTP {e.code}")
@@ -266,12 +274,18 @@ def to_text(raw, ctype):
 
 def main():
     ap = argparse.ArgumentParser(prog="riffle-reader", description=__doc__)
-    ap.add_argument("--url", required=True)
+    # --url is NOT required=True: that made --list-domains unrunnable, since
+    # argparse rejected the call before main() could check the flag. The one
+    # subcommand whose whole job is "tell me what I am allowed to read" could
+    # not be used without naming something to read.
+    ap.add_argument("--url", default="")
     ap.add_argument("--list-domains", action="store_true")
     a = ap.parse_args()
     if a.list_domains:
         print(json.dumps({"ok": True, "domains": sorted(ALLOWED)}))
         return
+    if not a.url:
+        die("give me --url, or --list-domains to see what is allowed")
     status, headers, raw, hops = fetch(a.url)
     text = to_text(raw, headers.get("Content-Type"))
     print(json.dumps({
