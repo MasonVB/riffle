@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -841,7 +842,7 @@ def main():
                 "fetch", "open_project", "project_note", "close_project",
                 "adjust_drive", "add_goal", "remember",
                 "desk_put", "desk_clear",
-                "library_put", "library_find", "library_read"):
+                "library_put", "library_find", "library_read", "read_page"):
         state.propose(cid, kind, drive, payload, rationale, "accepted")
 
     if kind == "read_more":
@@ -858,6 +859,9 @@ def main():
 
     if kind in ("library_put", "library_find", "library_read"):
         return apply_library(state, cfg, cid, kind, payload, drive, log)
+
+    if kind == "read_page":
+        return apply_read_page(state, cfg, cid, payload, drive, log)
 
     if kind == "build":
         return apply_build(state, cfg, cid, payload, drive, log)
@@ -1027,6 +1031,65 @@ def walk_changes(state, reader, cfg, log):
     return {"posts": posts, "comments": comments, "nulls": nulls,
             "pages": pages, "unchanged": unchanged, "saturated": saturated,
             "window_age_ms": age_ms, "cursor": since}
+
+
+def apply_read_page(state, cfg, cid, p, drive, log):
+    """Read one page from the allowlist and shelve it.
+
+    Shelved automatically rather than left for a later `library_put`: the text
+    is thousands of characters, it would otherwise sit in a note that the next
+    fetch overwrites, and the whole reason to read a reference page is to have
+    it again. The agent gets a summary and the library gets the document.
+
+    The URL and the fetch date go in the index, so anything riffle later cites
+    from it can be traced back to what it actually read.
+    """
+    url = p["url"]
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "-u", "riffle-reader", "/usr/local/bin/riffle-reader",
+             "--url", url],
+            capture_output=True, text=True, timeout=120)
+        out = json.loads(r.stdout or "{}")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+        log(f"read_page {url[:80]} failed: {type(e).__name__}", level="warn",
+            drive=drive)
+        state.end_cycle(cid, "page-failed", str(e)[:200])
+        return 0
+
+    if not out.get("ok"):
+        why = out.get("error", "no reason given")
+        log(f"read_page refused: {why[:140]}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 could not read that page: {why}")
+        state.end_cycle(cid, "page-refused", why[:200])
+        return 0
+
+    text = out.get("text") or ""
+    lcfg = cfg.get("library") or {}
+    title = f"{urllib.parse.urlparse(out['url']).netloc}: {url.rsplit('/', 1)[-1][:80] or 'page'}"
+    try:
+        did, _ = library.put(
+            state, title, text, kind="page",
+            tags=urllib.parse.urlparse(out["url"]).netloc,
+            summary=(p.get("why") or "")[:600], source=out["url"],
+            root=lcfg.get("root", library.ROOT),
+            cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+    except (ValueError, OSError) as e:
+        did = None
+        log(f"read_page fetched but could not shelve: {e}", level="warn", drive=drive)
+
+    state.note("last_library_read",
+               f"{out['url']}  (fetched {utcnow()}, {out['chars']} chars"
+               + (f", shelved as #{did}" if did else "") + ")\n\n"
+               + text[:9000])
+    log(f"read {out['url'][:90]} ({out['chars']} chars"
+        + (f", shelved #{did}" if did else "") + ")", drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 read {out['url']}"
+                        + (f"\n{p['why']}" if p.get("why") else "")
+                        + (f"\nShelved as library #{did}." if did else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "page-read", out["url"][:120])
+    return 0
 
 
 def apply_library(state, cfg, cid, kind, p, drive, log):

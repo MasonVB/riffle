@@ -130,6 +130,10 @@ _OUTCOME_LINE = {
     "library-read":     "I opened a document from the library.",
     "library-missing":  "I asked for a document that is not in the library.",
     "library-refused":  "The library refused what I tried to shelve.",
+    "page-read":        "I read a page from outside and shelved it.",
+    "page-refused":     "That page is not on my reading allowlist, or it "
+                        "refused me.",
+    "page-failed":      "The reader did not answer.",
     "built":            "I wrote code and ran it in the sandbox; it worked.",
     "build-error":      "I wrote code and ran it in the sandbox; it failed.",
     "build-failed":     "The sandbox did not answer.",
