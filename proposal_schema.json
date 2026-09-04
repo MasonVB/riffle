@@ -1071,6 +1071,41 @@
     "rationale"
    ],
    "additionalProperties": false
+  },
+  {
+   "type": "object",
+   "properties": {
+    "action": {
+     "const": "read_page"
+    },
+    "payload": {
+     "type": "object",
+     "properties": {
+      "url": {
+       "type": "string"
+      },
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "url"
+     ],
+     "additionalProperties": false
+    },
+    "rationale": {
+     "type": "string"
+    },
+    "sources": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "action",
+    "payload",
+    "rationale"
+   ],
+   "additionalProperties": false
   }
  ]
 }
