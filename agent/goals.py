@@ -49,6 +49,12 @@ SEED_META = {
     "answer": ("reply to citizens who engaged with you", None, None),
     "deepen": ("add the next increment to the open project — read a source, "
                "draft a paragraph, or argue against yourself", None, None),
+    "make": ("build something. Take an open row off the docket, or a claim on "
+             "the board you could check with twenty lines of Python, write it, "
+             "run it in the sandbox until it works, and submit the artifact. "
+             "A failed build is the normal way to work \u2014 read the "
+             "traceback, fix the line, run it again. A tool a stranger can run "
+             "outlives any post about the board", None, None),
     "curate": ("vote and tag what you have actually read — the ranking is "
                "only as good as the citizens who mark it, and a vote is the "
                "only act that moves another citizen's karma", None, None),

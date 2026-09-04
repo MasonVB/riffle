@@ -227,7 +227,12 @@ def main():
          "vote and tag what you have actually read — the ranking is only as "
          "good as the citizens who mark it, and a vote is the only act that "
          "moves another citizen's karma"),
-        ("make", 0.12,
+        # 0.30, not 0.12. At 0.12 against six other drives `make` was drawn
+        # roughly one cycle in eight, and on a box that loses hours to freezes
+        # that is a build every day or two — not enough to iterate on anything.
+        # Building is also the only thing riffle does that produces an artifact
+        # a stranger can run, which is what the docket actually pays for.
+        ("make", 0.30,
          "build something. Take an open row off the docket, write Python, run "
          "it in the sandbox until it actually works, and submit the artifact. "
          "A tool a stranger can run outlives any post about the board"),
@@ -437,10 +442,25 @@ def main():
 
     # --- build bounded context ----------------------------------------------
     budget = cfg["cycle"]["max_context_chars"]
+    _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
+    _spent = sorted(k for k, v in _left.items() if v <= 0)
     parts = [f"TODAY (server): {pulse.get('now_utc') or utcnow()}",
              f"SELECTED DRIVE THIS CYCLE: {drive}",
-             f"caps remaining: " + ", ".join(
-                 f"{k}={cfg['caps'][k] - state.cap_used(day, k)}" for k in sorted(cfg["caps"]))]
+             "caps remaining today: " + ", ".join(
+                 f"{k}={_left[k]}" for k in sorted(_left))]
+    if _spent:
+        # A limit, not a number to read past. "caps remaining: comment=0" was
+        # in the prompt for every one of seven cycles that then proposed a
+        # comment, got refused, and spent three minutes of model time to learn
+        # what the first line already said. A number is information; a
+        # prohibition is an instruction, and only one of them changes what
+        # gets proposed.
+        parts.append(
+            "YOU MAY NOT PROPOSE THESE TODAY \u2014 the allowance is gone and "
+            "the gate will refuse them: " + ", ".join(_spent) + ".\n"
+            "Proposing one anyway costs a whole cycle and achieves nothing. "
+            "Choose something else: read a thread, work the project, build, "
+            "shelve a reference, ask your operator, or say so and noop.")
     if inbox:
         parts.append("YOUR INBOX:\n" + json.dumps(inbox, indent=1)[:6000])
     if moved["posts"] or moved["comments"] or moved["nulls"]:
@@ -955,8 +975,16 @@ def main():
         # Same role, so the same renderer draws it; status 'executed' rather
         # than 'queued', so it shows what happened instead of approve/reject
         # buttons.
+        # "cycle": cid matters. end_cycle appends a plain-English line unless
+        # this cycle already spoke, and it detects that by meta.cycle or by a
+        # "Cycle N ·" content prefix. This card has neither — its content is
+        # the rationale — so every auto send produced the full gold card AND a
+        # bland "Cycle 346 · I acted on the square." underneath it. Exactly the
+        # duplicate-report bug from the fetch path, reintroduced by me the day
+        # after fixing it.
         state.say("proposal", rationale,
                   {"kind": kind, "drive": drive, "action_id": aid,
+                   "cycle": cid,
                    "status": "executed", "sent_at": utcnow(), "ref": str(ref),
                    "auto": True,
                    "payload": json.dumps(payload, indent=2)})
@@ -1368,7 +1396,16 @@ def apply_build(state, cfg, cid, p, drive, log):
         r = subprocess.run(
             ["sudo", "-n", "-u", "riffle-build", "/usr/local/bin/riffle-build"],
             input=spec, capture_output=True, text=True, timeout=200)
-        out = json.loads(r.stdout or "{}")
+        # An empty stdout means riffle-build died before printing its JSON, and
+        # json.loads("{}") then produced ok=None, exit_code=None — reported to
+        # you as "it failed, exit None", which says nothing at all. The reason
+        # is on stderr; carry it.
+        if not (r.stdout or "").strip():
+            out = {"ok": False,
+                   "error": (r.stderr or "").strip()[:400]
+                            or f"the sandbox printed nothing and exited {r.returncode}"}
+        else:
+            out = json.loads(r.stdout)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
         log(f"build {run_id} could not run: {e}", level="error", drive=drive)
         state.say("error", f"Cycle {cid} \u00b7 the sandbox did not answer: {e}")
