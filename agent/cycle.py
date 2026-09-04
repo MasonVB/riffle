@@ -928,9 +928,24 @@ def main():
             state.mark_seen("post", payload.get("post_id") or payload.get("target_id"))
         log(f"executed {kind} #{aid}: {rationale[:200]}", drive=drive)
         ref = (resp or {}).get("id") or payload.get("target_id") or payload.get("post_id") or ""
-        state.say("report", f"Cycle {cid} · drive {drive} · sent a {kind}"
-                            + (f" on {ref}" if ref else "") + f". {rationale[:300]}",
-                  {"drive": drive, "action_id": aid})
+        # A CARD, NOT A ONE-LINE REPORT.
+        #
+        # The queued path has always rendered a gold-framed card showing the
+        # full payload — the actual comment, the actual post body. The auto
+        # path wrote a summary: "sent a comment on 2413", and the text riffle
+        # published appeared nowhere. That was tolerable while `auto` meant
+        # reads and project bookkeeping. It stops being tolerable the moment
+        # comment, vote, tag, seal, porch and attestation are all auto, which
+        # is exactly when you most need to see what went out.
+        #
+        # Same role, so the same renderer draws it; status 'executed' rather
+        # than 'queued', so it shows what happened instead of approve/reject
+        # buttons.
+        state.say("proposal", rationale,
+                  {"kind": kind, "drive": drive, "action_id": aid,
+                   "status": "executed", "sent_at": utcnow(), "ref": str(ref),
+                   "auto": True,
+                   "payload": json.dumps(payload, indent=2)})
         state.end_cycle(cid, "executed", f"action {aid}")
     except HttpError as e:
         state.set_status(aid, "failed", {"error": str(e)})

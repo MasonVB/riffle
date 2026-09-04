@@ -278,7 +278,12 @@ function statusLine(p){
   if(p.status === 'sending')
     return '<div class=sentline><span class=spin>&#9696;</span> sending&hellip;</div>';
   if(p.status === 'executed')
+    // "sent without asking" rather than a bare tick: with comment, vote, tag,
+    // seal, porch and attestation all on auto, the difference between a card
+    // you approved and one that went out on its own is the thing worth seeing
+    // at a glance.
     return '<div class=sentline>&#10003; Sent ' + esc(p.sent_at || '') +
+           (p.auto ? ' &middot; on auto, not asked' : '') +
            (p.ref ? ' &middot; ' + esc(p.ref) : '') + '</div>';
   if(p.status === 'failed')
     return '<div class="sentline bad">&#10005; Refused &middot; ' +
