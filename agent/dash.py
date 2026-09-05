@@ -829,7 +829,16 @@ def _goals_routes(h):
         projects.sort(key=lambda d: (0 if d["status"] == "active"
                                      else 1 if d["queue_pos"] else 2,
                                      d["queue_pos"] or -d["id"]))
+        # Lifetime counts, straight from the actions table. Every proposal is
+        # recorded there — including the reflexive ones since 2026-09-04 — so
+        # this is "times riffle has ever chosen this", not "times it worked".
+        # That is the number worth showing: an action set to auto that has
+        # never once been chosen is a different problem from one that keeps
+        # failing, and the settings page could not tell them apart.
+        uses = {r["kind"]: r["n"] for r in s.db.execute(
+            "SELECT kind, COUNT(*) n FROM actions GROUP BY kind")}
         h._json({"modes": policy.modes(s),
+                 "uses": uses,
                  "interval": interval,
                  "kinds": policy.ACTION_KINDS,
                  "square": sorted(policy.REACHES_THE_SQUARE),

@@ -635,6 +635,13 @@ td.who.agent{color:var(--sig)}
 .act .n{font-family:ui-monospace,Menlo,monospace;font-size:13.5px}
 .act .n small{display:block;color:var(--dim);font-size:11px;
   font-family:-apple-system,sans-serif;letter-spacing:0;text-transform:none}
+/* The counter sits under the segmented control, right-aligned, and is meant
+   to be read only when looked for. rgba rather than var(--dim) so it stays
+   quieter than the action note above it — this is reference, not status. */
+.segwrap{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.uses{font-family:ui-monospace,Menlo,monospace;font-size:10px;
+  color:rgba(255,255,255,.28);line-height:1;padding-right:2px;
+  font-variant-numeric:tabular-nums}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:99px;
   overflow:hidden}
 .seg button{background:transparent;color:var(--dim);border:0;border-radius:0;
@@ -855,13 +862,15 @@ async function loadPolicy(){
     const m = pol.modes[a] || 'queue';
     const sq = pol.square.indexOf(a) >= 0
       ? '<span style="color:var(--sig)">&#9679;</span> ' : '';
+    const n = (pol.uses || {})[a] || 0;
     return '<div class=act><div class=n>' + sq + esc(a) +
       (pol.notes[a] ? '<small>' + esc(pol.notes[a]) + '</small>' : '') +
-      '</div><div class=seg>' +
+      '</div><div class=segwrap><div class=seg>' +
       ['auto','queue','never'].map(function(x){
         return '<button data-m="' + x + '" class="' + (m===x?'on':'') +
           '" onclick="setMode(\'' + a + '\',\'' + x + '\')">' + x + '</button>';
-      }).join('') + '</div></div>';
+      }).join('') + '</div><div class=uses title="times chosen, all time">' +
+      n + '</div></div></div>';
   }).join('');
 
   document.getElementById('restrict').innerHTML = pol.drives.map(function(d){
