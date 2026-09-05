@@ -904,7 +904,7 @@ def main():
         return apply_sign(state, cfg, cid, payload, drive, log)
 
     if kind == "fetch":
-        return apply_fetch(state, reader, writer, cid, payload, drive, log)
+        return apply_fetch(state, cfg, reader, writer, cid, payload, drive, log)
 
     if kind in ("open_project", "project_note", "close_project"):
         return apply_project(state, cfg, cid, kind, payload, drive, rationale)
@@ -1517,7 +1517,7 @@ def apply_sign(state, cfg, cid, p, drive, log):
     return 0
 
 
-def apply_fetch(state, reader, writer, cid, p, drive, log):
+def apply_fetch(state, cfg, reader, writer, cid, p, drive, log):
     """Read one of the square's public surfaces and keep what came back.
 
     One action with an enum rather than a dozen near-identical ones. Every
@@ -1525,8 +1525,18 @@ def apply_fetch(state, reader, writer, cid, p, drive, log):
     `auto` while everything that reaches the square is queued. `my_history`
     is the one that needs the key, so it goes through the writer.
 
-    The result lands in short-term memory the way a thread read does. A cycle
-    that fetches and forgets has spent three minutes to learn nothing.
+    The result is SHELVED IN THE LIBRARY, and a pointer goes in a note for the
+    next cycle to read.
+
+    It used to go only into the note, while telling you "Kept 5000 characters
+    in short-term memory" — which was false twice over. It was not short-term
+    memory, which is the `memories` table and showed two entries while this
+    claimed to be filling it every cycle; and it was not kept, because the
+    next fetch overwrote the note. Riffle read the docket six times and holds
+    none of them.
+
+    The library exists now, so a fetch is worth keeping the way a read page
+    is: indexed, searchable, with its source and date.
     """
     what = p["what"]
     try:
@@ -1538,15 +1548,31 @@ def apply_fetch(state, reader, writer, cid, p, drive, log):
         state.end_cycle(cid, "fetch-failed", str(e)[:300])
         return 0
     text = json.dumps(body, indent=1)[:5000]
+    lcfg = cfg.get("library") or {}
+    did = None
+    try:
+        did, _ = library.put(
+            state, f"/{what} on {utcnow()[:10]}", text, kind="data",
+            tags=what, summary=f"the square's {what} surface as of {utcnow()}",
+            source=f"1f916:/api/{what}",
+            root=lcfg.get("root", library.ROOT),
+            cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+    except (ValueError, OSError) as e:
+        log(f"fetched {what} but could not shelve it: {e}", level="warn", drive=drive)
     # Kept as a note, not a memory. memory.remember caps at 600 characters and
     # is for things worth carrying for a week; a docket dump is neither. The
     # note is read back into the next cycle's prompt and then overwritten,
     # which is the right lifetime for "what I just looked at".
     state.note("last_fetch", json.dumps({"what": what, "at": utcnow(),
                                          "body": text}))
-    log(f"fetched {what} ({len(text)} chars kept)", drive=drive)
-    state.say("report", f"Cycle {cid} \u00b7 drive {drive} \u00b7 read {what}. "
-                        f"Kept {len(text)} characters in short-term memory.",
+    log(f"fetched {what} ({len(text)} chars"
+        + (f", shelved as library #{did}" if did else ", NOT shelved") + ")",
+        drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 drive {drive} \u00b7 read {what}"
+                        + (f" and shelved it as library #{did}, searchable by "
+                           f"'{what}'." if did else
+                           " but could not shelve it.")
+                        + f" {len(text)} characters.",
               {"drive": drive})
     state.end_cycle(cid, "fetched", what)
     return 0

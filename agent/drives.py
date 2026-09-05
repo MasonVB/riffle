@@ -114,7 +114,11 @@ SCHEMA = {
                         "target_id": _i(p["target_id"], "target_id")}),
     "tag": (["post_id", "tag"], ["remove"],
             lambda p: {"post_id": _i(p["post_id"], "post_id"),
-                       "tag": _s(p["tag"], 1, 32, "tag"),
+                       # A 35-character tag cost a whole wake. Trimmed, it is still findable
+                       # and still matches on prefix search; refused, it does
+                       # nothing at all. The 32 is the registry's limit, not a
+                       # meaning-bearing one.
+                       "tag": _trim(p["tag"], 1, 32, "tag"),
                        "remove": bool(p.get("remove", False))}),
     "flag": (["target_type", "target_id", "reason"], [],
              lambda p: {"target_type": _enum(p["target_type"], ("post", "comment")),
