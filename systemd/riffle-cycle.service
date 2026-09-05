@@ -11,8 +11,37 @@ WorkingDirectory=/opt/riffle
 ExecStart=/usr/bin/python3 -m agent.cycle --config /opt/riffle/config.yaml
 TimeoutStartSec=2700
 
-# A cycle needs to read text over HTTPS and write one SQLite file. Nothing else.
-NoNewPrivileges=true
+# --- why this is less locked down than it was ------------------------------
+#
+# This block used to open "a cycle needs to read text over HTTPS and write one
+# SQLite file. Nothing else." That was true when it was written. It stopped
+# being true the moment the cycle gained four helpers it reaches through sudo:
+#
+#   riffle-sign     the citizen key, held by another user
+#   riffle-build    the Python sandbox, which needs root to drop to another uid
+#   riffle-reader   the allowlisted page fetcher
+#
+# NoNewPrivileges=true blocks every one of them. sudo is setuid; NNP is
+# precisely the flag that stops a setuid binary raising privilege. So did the
+# empty CapabilityBoundingSet, which removed CAP_SETUID.
+#
+# The failure was silent for days. riffle told the square "I have no wallet,
+# no token, and no operator to sign for me" while holding a bound key, because
+# the check that would have told it otherwise was being refused by systemd and
+# swallowed by a bare except. Every build it ever proposed failed the same way.
+#
+# WHAT IS LOST, stated plainly: a compromised cycle can now run sudo. What it
+# can run through sudo is still only the four programs named in
+# /etc/sudoers.d/riffle-*, with the argument patterns listed there, as users
+# that hold nothing else. The containment moved from "cannot escalate at all"
+# to "can escalate only into three small programs that validate their own
+# input". That is a real reduction and it is the price of the agent having
+# hands.
+#
+# Everything not needed for sudo stays on.
+NoNewPrivileges=false
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_AUDIT_WRITE CAP_DAC_OVERRIDE
+
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
@@ -21,11 +50,14 @@ StateDirectoryMode=0700
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictNamespaces=true
 RestrictRealtime=true
-RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=false
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
-CapabilityBoundingSet=
+
+# RestrictSUIDSGID and SystemCallFilter are both gone: the first blocks the
+# suid handling sudo relies on, and @system-service does not include the
+# setuid/setgid calls sudo makes. Filtering syscalls on a process whose whole
+# job is to invoke three vetted programs buys little and broke all three.
+
+[Install]
+WantedBy=multi-user.target
