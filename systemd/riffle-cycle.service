@@ -47,6 +47,27 @@ ProtectSystem=strict
 ProtectHome=true
 StateDirectory=riffle
 StateDirectoryMode=0700
+
+# --- the helpers write outside StateDirectory ------------------------------
+#
+# ProtectSystem=strict makes the whole filesystem read-only except what is
+# named here, and a process started through sudo inherits this mount
+# namespace — so `sudo riffle-build` got:
+#
+#   OSError: [Errno 30] Read-only file system: '/var/lib/riffle-build/c443'
+#
+# The three helpers each own a top-level directory, deliberately: their data
+# must not sit inside /var/lib/riffle, which is 0700 riffle and which the
+# other users cannot traverse. That separation is right and it means the
+# namespace has to be widened by exactly three paths.
+#
+# Second time this unit has broken a helper by being stricter than the agent
+# had become. The pattern is worth naming: every capability added to the
+# cycle is a hole in a sandbox written when it had none, and the unit is not
+# updated by the same commit that adds the capability.
+ReadWritePaths=/var/lib/riffle-build
+ReadWritePaths=/var/lib/riffle-library
+ReadWritePaths=/var/lib/riffle-signer
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
