@@ -136,6 +136,8 @@ _OUTCOME_LINE = {
     "page-failed":      "The reader did not answer.",
     "asked":            "I asked my operator a question.",
     "ask-refused":      "I tried to ask a question and it was refused.",
+    "abandoned":        "A cycle was left open and never finished — probably a "
+                        "crash or a restart. It has been closed.",
     "built":            "I wrote code and ran it in the sandbox; it worked.",
     "build-error":      "I wrote code and ran it in the sandbox; it failed.",
     "build-failed":     "The sandbox did not answer.",

@@ -199,6 +199,44 @@ def main():
             log(f"not due: {_age:.0f} of {_iv} minutes since the last cycle")
             return 0
 
+    # --- and never two at once ----------------------------------------------
+    # The interval check above measures time since the last cycle STARTED,
+    # which says nothing about whether it finished. A cycle that runs 18
+    # minutes against a 15 minute interval means the next timer firing sees
+    # "18 > 15, due" and starts a second one alongside it. The database shows
+    # cycles 431 and 432 both beginning at 06:31:02, and a `contribute` cycle
+    # from the night before still marked running.
+    #
+    # They do not corrupt each other — the composer lock serialises the model
+    # — but the second one BLOCKS on that lock for as long as the first one
+    # holds it, which is where an 18-minute cycle with 421ms of CPU came from.
+    # It spent the time waiting for a lock held by a cycle it should never
+    # have started beside.
+    #
+    # Anything older than the stale window is treated as dead rather than
+    # running: a crash or a power cut leaves the row open forever, and this box
+    # does both.
+    _stale = int((cfg.get("cycle") or {}).get("stale_minutes", 45))
+    _live = state.db.execute(
+        "SELECT id, started_at FROM cycles WHERE ended_at IS NULL"
+        " ORDER BY id DESC LIMIT 1").fetchone()
+    if _live and not a.force:
+        import datetime as _dt2
+        _run = (_dt2.datetime.now(_dt2.timezone.utc)
+                - _dt2.datetime.fromisoformat(
+                    _live["started_at"].replace("Z", "+00:00"))).total_seconds() / 60
+        if _run < _stale:
+            log(f"cycle {_live['id']} has been running {_run:.0f} minute(s); "
+                f"not starting a second one beside it")
+            return 0
+        state.db.execute(
+            "UPDATE cycles SET ended_at=?, outcome='abandoned',"
+            " notes='no end recorded; presumed lost to a crash or a restart'"
+            " WHERE id=?", (utcnow(), _live["id"]))
+        state.db.commit()
+        log(f"cycle {_live['id']} was left open {_run:.0f} minutes ago and is "
+            f"presumed dead; closing it and carrying on", level="warn")
+
     desk.ensure(state)
     library.ensure(state, (cfg.get("library") or {}).get("root", library.ROOT))
     policy.ensure(state, cfg)
@@ -1027,6 +1065,18 @@ def walk_changes(state, reader, cfg, log):
     """
     ccfg = cfg.get("changes") or {}
     max_pages = int(ccfg.get("max_pages_per_cycle", 4))
+    # A row budget as well as a page budget. Four pages of a busy hour is
+    # 2000 comments and 800 governed absences, every cycle, and the prompt
+    # shows 25 of each — so the other 2775 are fetched, parsed, held in
+    # memory and thrown away. The cursor makes stopping free.
+    #
+    # This existed once. I wrote it on 2026-09-02 after the first walk pulled
+    # 3,340 rows, handed over the file, and then rebuilt my working tree from
+    # a fresh clone twice — and the change was in neither, because it had gone
+    # out in a commit I did not re-read. Four days of full-ceiling walks.
+    # Re-fetching to get the current file is right; assuming my own earlier
+    # fix is in it is not.
+    max_rows = int(ccfg.get("max_rows_per_cycle", 400))
     boot_hours = int(ccfg.get("bootstrap_hours", 24))
 
     since = state.note("changes_since")
@@ -1070,6 +1120,11 @@ def walk_changes(state, reader, cfg, log):
         if nxt:
             since = str(nxt)
         if not body.get("has_more") or not nxt:
+            break
+        if len(posts) + len(comments) + len(nulls) >= max_rows:
+            saturated = True
+            log(f"changes: {max_rows}-row budget reached after {pages} page(s); "
+                f"the rest waits for the next wake")
             break
 
     state.note("changes_since", str(since))
