@@ -807,9 +807,32 @@ def main():
                                     f"limit, so I asked for a shorter one:\n{_new}",
                           {"drive": drive})
             else:
-                log(f"title is {len(_t)} chars and the composer would not "
-                    f"shorten it; letting the gate refuse it", level="warn",
-                    drive=drive)
+                # Trim, rather than lose the cycle.
+                #
+                # I argued against this when I built it: "a sentence cut at
+                # character 120 is a title the agent did not write." True, and
+                # it cost cycle 508 anyway when the rewrite came back empty —
+                # the composer was busy, shorten_title swallowed the failure
+                # and returned None, and the gate refused a finished post over
+                # 26 characters.
+                #
+                # The argument I missed is that `post` is queued: you read the
+                # title on the card before it goes anywhere. A trimmed title
+                # you can reject beats no post at all, and the log says
+                # plainly that it was cut.
+                _cut = _t[:cortex.TITLE_LIMIT]
+                if " " in _cut[cortex.TITLE_LIMIT - 25:]:
+                    _cut = _cut.rsplit(" ", 1)[0]
+                _p["title"] = _cut.rstrip(" ,;:-\u2014")
+                log(f"title was {len(_t)} chars and the composer would not "
+                    f"shorten it, so it was CUT to {len(_p['title'])}: "
+                    f"{_p['title']}", level="warn", drive=drive)
+                state.say("report",
+                          f"Cycle {cid} \u00b7 the title ran {len(_t)} "
+                          f"characters over the {cortex.TITLE_LIMIT} limit and "
+                          f"the composer would not shorten it, so I cut it. "
+                          f"Check it before approving:\n{_p['title']}",
+                          {"drive": drive})
     except Exception as e:
         log(f"composer failed: {e}", level="error", drive=drive)
         state.say("error", f"Cycle {cid} ({drive}) failed to produce a proposal: {e}")
@@ -1334,12 +1357,15 @@ def apply_library(state, cfg, cid, kind, p, drive, log):
     cap = int(lcfg.get("max_bytes", library.MAX_BYTES))
 
     if kind == "library_find":
-        hits = library.find(state, p["query"])
+        hits = library.find(state, p["query"], root=root)
         if not hits:
             body = (f"Nothing in the library matches {p['query']!r}. Search "
-                    f"looks at titles, tags, summaries and sources — not the "
-                    f"text of the documents — so try the words you would have "
-                    f"written when you shelved it.")
+                    f"reads titles, tags and summaries first, then falls "
+                    f"back to the text of the smaller documents. If you "
+                    f"shelved it yourself, try the words you would have "
+                    f"used in the title; if it was shelved FOR you — a "
+                    f"docket, or a page you read — it is titled after "
+                    f"where it came from, so search for that instead.")
         else:
             body = "\n".join(
                 f"  #{h['id']}  [{h['kind']}] {h['title']}"

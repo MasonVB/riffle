@@ -131,7 +131,7 @@ def put(state, title, body, kind="note", tags="", summary="", source="",
     return cur.lastrowid, prune(state, root, cap)
 
 
-def find(state, query, limit=10):
+def find(state, query, limit=10, root=ROOT):
     """Search titles, tags, summaries and sources. Never the bodies.
 
     Bodies are not searched on purpose: grepping gigabytes on a box that is
@@ -146,7 +146,40 @@ def find(state, query, limit=10):
         " FROM library WHERE title LIKE ? OR tags LIKE ? OR summary LIKE ?"
         " OR source LIKE ? ORDER BY pinned DESC, reads DESC, id DESC LIMIT ?",
         (q, q, q, q, int(limit))).fetchall()
-    return rows
+    if rows:
+        return rows
+
+    # FALL BACK TO THE BODIES, but only when the index found nothing and only
+    # over a bounded number of the smallest documents.
+    #
+    # The index was the whole search, deliberately: grepping gigabytes on a box
+    # that stalls under load is a bad idea. But most of what gets shelved is
+    # fetched automatically — `/docket on 2026-09-06`, titled by a template —
+    # so the index describes where a document came from and nothing about what
+    # is in it. Riffle searched for "cadence bias sampling interval detection
+    # latency" against a library holding two dockets and got nothing, which is
+    # correct and useless.
+    #
+    # Bounded so it cannot become the thing it was avoiding: only when the
+    # index misses, only the 40 smallest documents, only up to 8 MB read.
+    terms = [w for w in re.split(r"\W+", str(query).lower()) if len(w) > 3][:8]
+    if not terms:
+        return []
+    budget, hits = 8 * 1024 * 1024, []
+    for r in state.db.execute(
+            "SELECT id,title,kind,tags,summary,bytes,created_at,reads,pinned,path"
+            " FROM library ORDER BY bytes LIMIT 40").fetchall():
+        if budget <= 0 or len(hits) >= int(limit):
+            break
+        budget -= r["bytes"]
+        try:
+            with open(os.path.join(root, r["path"]), "rb") as f:
+                body = f.read(200_000).decode("utf-8", "replace").lower()
+        except OSError:
+            continue
+        if sum(1 for t in terms if t in body) >= max(1, len(terms) // 3):
+            hits.append(r)
+    return hits
 
 
 def read(state, doc_id, root=ROOT, chars=READ_CHARS):
