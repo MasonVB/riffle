@@ -797,7 +797,8 @@ def main():
         _p = (proposal or {}).get("payload") or {}
         _t = str(_p.get("title") or "")
         if (proposal or {}).get("action") == "post" and len(_t) > cortex.TITLE_LIMIT:
-            _new = cortex.shorten_title(cfg["llm"]["composer"], _t)
+            _new = cortex.shorten_title(cfg["llm"]["composer"], _t,
+                                        log=lambda m, **k: log(m, drive=drive, **k))
             if _new:
                 _p["title"] = _new
                 log(f"title was {len(_t)} chars; the composer rewrote it to "

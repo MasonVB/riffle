@@ -323,7 +323,7 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
 TITLE_LIMIT = 120
 
 
-def shorten_title(llm_cfg, title, limit=TITLE_LIMIT, tries=2):
+def shorten_title(llm_cfg, title, limit=TITLE_LIMIT, tries=4, log=None):
     """Ask the composer to rewrite an over-long post title, in place.
 
     Not a new cycle and not a truncation. A title is twenty words; asking for
@@ -332,29 +332,60 @@ def shorten_title(llm_cfg, title, limit=TITLE_LIMIT, tries=2):
     the composer lock is still held, so nothing else can take the model
     between the proposal and the rewrite.
 
-    Returns a title that fits, or None if the model would not produce one.
-    The caller decides what to do with None — this function never truncates,
-    because cutting a sentence at character 120 produces a title the agent
-    did not write and would not stand behind.
+    IT KEEPS TRYING, against two different failures:
+
+      - The model answered and the answer is still too long. Ask again,
+        telling it how many characters over it was and handing back its own
+        last attempt to cut down. Asking the same question twice and hoping
+        for a different answer is a repeat, not a retry.
+      - The model did not answer at all: busy, timed out, errored. That is
+        transient and worth waiting out, so it backs off and asks again.
+
+    The first version returned None on ANY exception, immediately, with no
+    second attempt. A busy composer therefore meant one try and a refused
+    post, which is what happened to cycle 508: a finished post lost over 26
+    characters because the model was mid-generation for something else.
+
+    Returns a title that fits, or None. The caller decides what to do with
+    None; this function still never truncates.
     """
-    for _ in range(max(1, tries)):
+    import time as _t
+    attempt, prev, delay = 0, None, 2
+    while attempt < max(1, tries):
+        attempt += 1
+        cur = prev or title
+        ask = (f"This title is {len(cur)} characters. The hard limit is "
+               f"{limit}, so it must lose at least {len(cur) - limit} "
+               f"characters. Keep the specific claim and any figures; drop "
+               f"what is decorative. Reply with the title alone.\n\n{cur}")
+        if prev:
+            ask = (f"Your last attempt was still {len(prev) - limit} characters "
+                   f"too long. Cut harder - drop a clause, not a word.\n\n" + ask)
         try:
             out = complete(
                 llm_cfg,
                 "You rewrite titles. You reply with the rewritten title and "
                 "nothing else: no quotes, no preamble, no explanation.",
-                f"This title is {len(title)} characters. The hard limit is "
-                f"{limit}. Rewrite it to fit, keeping the specific claim and "
-                f"any figures intact and dropping only what is decorative. "
-                f"Reply with the title alone.\n\n{title}",
-                timeout=180)
-        except Exception:
-            return None
+                ask, timeout=180)
+        except Exception as e:
+            if log:
+                log(f"title rewrite attempt {attempt} could not reach the "
+                    f"composer ({type(e).__name__}); retrying in {delay}s",
+                    level="warn")
+            _t.sleep(delay)
+            delay = min(delay * 2, 15)
+            continue
         cand = " ".join(str(out or "").strip().strip('"\u201c\u201d').split())
         if 3 <= len(cand) <= limit:
+            if log and attempt > 1:
+                log(f"title rewrite succeeded on attempt {attempt}")
             return cand
+        if len(cand) > limit:
+            prev = cand
+        if log:
+            log(f"title rewrite attempt {attempt} came back at {len(cand)} "
+                f"chars against a {limit} limit", level="warn")
     return None
-
 
 def stable_prefix(cfg, continuity):
     """Byte-stable between cycles except for CONTINUITY, which is appended last
