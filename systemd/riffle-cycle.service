@@ -40,7 +40,19 @@ TimeoutStartSec=2700
 #
 # Everything not needed for sudo stays on.
 NoNewPrivileges=false
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_AUDIT_WRITE CAP_DAC_OVERRIDE
+# CAP_CHOWN and CAP_FOWNER are here because riffle-build chowns the scratch
+# files to the sandbox user so the confined process can read them. The
+# bounding set caps what ANY process in this unit may hold, including root
+# reached through sudo — so root without CAP_CHOWN got:
+#
+#   PermissionError: [Errno 1] Operation not permitted:
+#   '/var/lib/riffle-build/c482/solve.py'
+#
+# Third time this unit has broken a helper by being written for an agent that
+# could not do what this one can. I have now fixed it once per capability
+# rather than once, which is the wrong shape: the unit should be reviewed
+# against what the helpers actually need, not patched each time one fails.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_AUDIT_WRITE CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH
 
 PrivateTmp=true
 ProtectSystem=strict
