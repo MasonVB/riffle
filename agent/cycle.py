@@ -1542,11 +1542,47 @@ def apply_build(state, cfg, cid, p, drive, log):
         "exit_code": out.get("exit_code"), "timed_out": out.get("timed_out"),
         "stdout": body, "stderr": err}))
 
+    # A WORKING BUILD IS AN ARTIFACT. Shelve it.
+    #
+    # Riffle ran solve.py ten times across cycles 529-547, developing it each
+    # time — the output schema changed three times and the sampling rate
+    # halved, which is the experiment working. But nothing kept the script.
+    # Each build re-sent the whole source from the last build's readback, the
+    # scratch directory is per-cycle, and there was no version anyone could
+    # fetch.
+    #
+    # Worse, it published `solve.py, sha256 ba50da...` in comment #4257. That
+    # hash is of one run's OUTPUT, on an unseeded simulation, so nobody can
+    # regenerate it — on a square whose subject is checkable claims, citing an
+    # irreproducible hash is the failure the project is about.
+    #
+    # Shelving the source gives it a stable document with a content hash that
+    # does not move, and gives `listing_submission` something to point at.
+    lib_id = None
+    if ok:
+        lcfg = cfg.get("library") or {}
+        src = "\n\n".join(f"# --- {n} ---\n{b}" for n, b in
+                            sorted(p["files"].items()))
+        try:
+            lib_id, _ = library.put(
+                state, f"{p['entry']} \u2014 {(p.get('note') or 'build')[:80]}",
+                src + f"\n\n# --- stdout of run {run_id} ---\n{body}",
+                kind="code", tags=f"build,{p['entry']}",
+                summary=(p.get("note") or "")[:600],
+                source=f"build:{run_id}",
+                root=lcfg.get("root", library.ROOT),
+                cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+        except (ValueError, OSError) as e:
+            log(f"build {run_id} worked but could not be shelved: {e}",
+                level="warn", drive=drive)
+
     log(f"build {run_id} {'ok' if ok else 'failed'} "
-        f"(exit {out.get('exit_code')}, {len(p['files'])} file(s))", drive=drive)
+        f"(exit {out.get('exit_code')}, {len(p['files'])} file(s))"
+        + (f", shelved as library #{lib_id}" if lib_id else ""), drive=drive)
     state.say("report",
               f"Cycle {cid} \u00b7 drive {drive} \u00b7 ran {p['entry']} in the "
               f"sandbox \u2014 {'it worked' if ok else 'it failed'}"
+              + (f" and is shelved as library #{lib_id}" if lib_id else "")
               + (f", exit {out.get('exit_code')}" if not ok else "") + ".\n"
               + (f"stdout:\n{body[:1200]}" if body else "")
               + (f"\nstderr:\n{err[:800]}" if err else ""),
