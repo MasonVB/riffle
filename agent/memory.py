@@ -256,7 +256,25 @@ def extra_count(n, cfg, rng=None):
     return min(k, int(m.get("incidental_max_per_exchange", 2)))
 
 
+def _strip_thinking(out):
+    """Remove a <think> block, and treat what is left as the answer.
+
+    Qwen3 emits one before answering. The composer is started with
+    --chat-template-kwargs '{"enable_thinking":false}' and llama-triage was
+    not, so every reflection spent its token budget thinking and returned an
+    assistant message whose content was empty. The log said "parsed nothing
+    out of 0 chars" every cycle for over a week, which was accurate — and
+    which I read as the prompt being too permissive, so I rewrote the prompt
+    to argue against emptiness. The model was never seeing it.
+
+    The service flag is the real fix; this is the belt to its braces, and it
+    also covers the chat extractor, which calls the same model.
+    """
+    return re.sub(r"<think>.*?</think>", "", out or "", flags=re.S | re.I).strip()
+
+
 def _split_lists(out):
+    out = _strip_thinking(out)
     """Parse the DURABLE / PASSING sections. Tolerant of a model that omits one."""
     durable, passing, cur = [], [], None
     for line in out.splitlines():
@@ -424,9 +442,17 @@ def reflect(state, cfg, log=None):
     #
     # A pass that reports only its successes cannot be debugged from its logs.
     if not durable and not passing and log:
-        log(f"reflection on cycle {cid} parsed nothing out of "
-            f"{len(out or '')} chars of model output; first 200: "
-            f"{(out or '')[:200]!r}", level="warn")
+        if not _strip_thinking(out):
+            log(f"reflection on cycle {cid}: the triage model returned NOTHING "
+                f"but a thinking block, or nothing at all. Check that "
+                f"llama-triage runs with --chat-template-kwargs "
+                f"enable_thinking:false; a thinking model spends its whole "
+                f"budget before the answer and returns empty content.",
+                level="error")
+        else:
+            log(f"reflection on cycle {cid} parsed nothing out of "
+                f"{len(out or '')} chars of model output; first 200: "
+                f"{(out or '')[:200]!r}", level="warn")
     for line in durable[:cap]:
         mid = remember(state, line, kind="board", source=f"cycle:{cid}",
                        ttl_days=ttl)
