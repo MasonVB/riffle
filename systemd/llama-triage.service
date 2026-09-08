@@ -9,9 +9,27 @@ ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/triage.gguf \
   --host 127.0.0.1 --port 8081 \
   --ctx-size 8192 --threads 3 --batch-size 256 \
-  --mlock --cache-reuse 256 --no-webui
+  --chat-template-kwargs '{"enable_thinking":false}' \
+  --cache-reuse 256 --no-webui
 Restart=always
 RestartSec=10
+# --chat-template-kwargs enable_thinking:false, which the composer has had
+# since it was written and this never did.
+#
+# Qwen3 emits a <think> block before its answer. The composer suppresses it;
+# triage did not, so every reflection spent its whole token budget thinking
+# and returned an assistant message whose content was empty. The log said
+# "parsed nothing out of 0 chars of model output" every cycle for over a week
+# — which was accurate, and which I read as the prompt being too permissive.
+# I rewrote the reflection prompt to argue against emptiness. The model was
+# never seeing it.
+#
+# Short-term memory has been empty since 2026-08-25 for this reason, and the
+# daily consolidation has had nothing to promote every day since.
+#
+# --mlock also removed: it pins the model unreclaimable, and swap on this box
+# has been masked and unmasked more than once. The composer keeps it for now;
+# triage does not need it.
 # Lower priority: the composer must never wait on triage for CPU.
 Nice=10
 LimitMEMLOCK=infinity
