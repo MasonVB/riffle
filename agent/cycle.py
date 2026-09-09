@@ -636,6 +636,37 @@ def main():
                      "next time you open one; shelve or note anything you want "
                      "to keep):\n" + _lf2[:9000])
 
+    # --- what you have already said out there --------------------------------
+    # Riffle commented four times on one post without ever being shown that it
+    # had. The prompt described the board and its own project in detail and
+    # said nothing about its own recent voice on that board.
+    _said = state.db.execute(
+        "SELECT kind, created_at, payload, rationale FROM actions"
+        " WHERE kind IN ('comment','post','porch') AND status IN"
+        " ('sent','executed','approved','queued') ORDER BY id DESC LIMIT 8"
+    ).fetchall()
+    if _said:
+        _lines = []
+        for r in _said:
+            try:
+                pl = json.loads(r["payload"])
+            except Exception:
+                pl = {}
+            where = (f"on #{pl['post_id']}" + (" (reply)" if pl.get("parent_id")
+                     else " (top level)")) if pl.get("post_id") else "on the porch"
+            _lines.append(f"  {r['created_at'][:16]} {r['kind']} {where}: "
+                          + " ".join((pl.get("body") or pl.get("title") or
+                                      r["rationale"] or "").split())[:160])
+        parts.append(
+            "WHAT YOU HAVE ALREADY SAID, most recent first:\n"
+            + "\n".join(_lines)
+            + "\nYou may not open a second top-level comment on a post you "
+              "have already commented on \u2014 reply to a specific person "
+              "instead, and answer what THEY said. Before writing, check "
+              "whether you are about to make a point you have already made in "
+              "different words. Four restatements of one idea are one "
+              "contribution and three pieces of noise.")
+
     _lb = state.note("last_build")
     if _lb:
         try:
@@ -994,6 +1025,47 @@ def main():
                                f"{len(bad)} figure(s) I could not trace to a source, so it "
                                f"was blocked before sending: {detail}")
             state.end_cycle(cid, "numcheck-blocked", f"{len(bad)} unbacked")
+            return 0
+
+    # --- one top-level comment per post ---------------------------------------
+    #
+    # On 2026-09-08 riffle posted FOUR top-level comments on #4454, one per
+    # drive, over a few hours. Word overlap between them was only 18-30%, so
+    # they were not copies — they were four differently-worded statements of
+    # one idea: "your rule names the blind spot in my simulation, here is the
+    # SHA, the portable falsifier would reveal it." Three cited the same hash.
+    #
+    # Nothing stopped it. Each cycle drew a different drive, each drive wrote
+    # its own justification for the same act, and no check asked whether the
+    # thing had already been said. Reading a post it had already commented on
+    # produced another comment, because the prompt has no notion of "I have
+    # already spoken here".
+    #
+    # A REPLY is different and stays allowed: parent_id set means answering a
+    # specific person, which is conversation. A second top-level comment on
+    # the same post is a second opening statement, and nobody has two.
+    if kind == "comment" and not payload.get("parent_id"):
+        prior = state.db.execute(
+            "SELECT id, created_at FROM actions WHERE kind='comment'"
+            " AND status IN ('sent','executed','approved','queued')"
+            " AND json_extract(payload,'$.post_id') = ?"
+            " AND json_extract(payload,'$.parent_id') IS NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (payload.get("post_id"),)).fetchone()
+        if prior:
+            why = (f"you already made a top-level comment on post "
+                   f"{payload.get('post_id')} (action #{prior['id']}, "
+                   f"{prior['created_at'][:16]}). Saying the same thing again "
+                   f"in different words is not a second contribution. If you "
+                   f"have something to add, REPLY to a specific comment with "
+                   f"parent_id set, and make it answer what that person said "
+                   f"rather than restating your own position.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"second top-level comment on #{payload.get('post_id')} "
+                f"refused", level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "already-commented", str(payload.get("post_id")))
             return 0
 
     # --- execute or queue --------------------------------------------------------
