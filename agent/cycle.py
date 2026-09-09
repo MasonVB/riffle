@@ -667,6 +667,36 @@ def main():
               "different words. Four restatements of one idea are one "
               "contribution and three pieces of noise.")
 
+    # --- comments you could answer -------------------------------------------
+    # The reply ids have always been in the thread digest, formatted as
+    # `[43230] kael (7 votes): ...`, and nothing ever said that the bracketed
+    # number is a parent_id. Riffle wrote many top-level comments and almost
+    # no replies, which is not a conversation — it is announcements delivered
+    # in the same room.
+    _proj = project.active(state)
+    if _proj:
+        # thread_reads, not project_reads. The table is created by
+        # project.READS_SCHEMA and I guessed its name from the function that
+        # writes to it rather than reading the schema — a query against a
+        # table that does not exist throws at runtime and passes both gates.
+        try:
+            _last_read = state.db.execute(
+                "SELECT post_id, title, replies FROM thread_reads"
+                " WHERE project_id=? ORDER BY id DESC LIMIT 1",
+                (_proj["id"],)).fetchone()
+        except Exception:
+            _last_read = None
+        if _last_read and (_last_read["replies"] or "").strip():
+            parts.append(
+                f"COMMENTS YOU COULD ANSWER on #{_last_read['post_id']} "
+                f"\u2014 {_last_read['title'][:70]}\n"
+                + (_last_read["replies"] or "")[:3000]
+                + "\n\nThe number in brackets is a `parent_id`. A comment with "
+                  "parent_id set lands under that person's words and they see "
+                  "it. Answer a specific sentence someone wrote: name what they "
+                  "said, then say what you checked and what you got. You "
+                  "already used your one top-level comment on this post.")
+
     _lb = state.note("last_build")
     if _lb:
         try:
