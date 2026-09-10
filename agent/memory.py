@@ -51,6 +51,42 @@ def remember(state, text, kind="operator", source=None, pinned=0,
         "SELECT id FROM memories WHERE text=? AND superseded_by IS NULL", (text,)).fetchone()
     if dupe:
         return dupe["id"]
+
+    # NEAR-duplicates too, not just exact ones.
+    #
+    # Exact matching caught nothing real. The same refusal was written four
+    # times in two hours as:
+    #
+    #   "Refused to post a full argument on #4454 because there was no live
+    #    thread to anchor the argument."
+    #   "I was refused to post a full argument on #4454 because there was no
+    #    live thread to anchor the empirical finding."
+    #   "You were refused to post a full argument on #4454 because there was
+    #    no live thread to anchor the argument."
+    #
+    # Three rows, one fact. A model rewording itself defeats string equality
+    # every time, and the reflection pass runs every cycle against a situation
+    # that has not changed — so the same observation arrives again and again,
+    # slightly differently, until short term is a transcript instead of a
+    # summary.
+    #
+    # Compared against the last 60 live memories only: the cost is bounded and
+    # a genuine repeat of something a week old is worth keeping anyway, since
+    # recurrence is itself information.
+    def _key(t):
+        return frozenset(w for w in re.findall(r"[a-z0-9#]+", t.lower())
+                         if len(w) > 3)
+    incoming = _key(text)
+    if len(incoming) >= 4:
+        for row in state.db.execute(
+                "SELECT id, text FROM memories WHERE superseded_by IS NULL"
+                " ORDER BY id DESC LIMIT 60"):
+            other = _key(row["text"])
+            if not other:
+                continue
+            overlap = len(incoming & other) / max(len(incoming), len(other))
+            if overlap >= 0.6:
+                return row["id"]
     # Everything arrives in short term. Promotion is a decision made later,
     # with a day's distance and against competition — not at the moment of
     # writing, when everything feels worth keeping.
@@ -374,7 +410,21 @@ whole existence. Emptiness was not honest. It was the cheapest thing to write.
 
 So: PASSING may be empty. DURABLE should have at least one line on any cycle
 where you proposed something, were refused something, or decided something —
-which is nearly all of them. Write the headers either way."""
+which is nearly all of them. Write the headers either way.
+
+WRITE THE LESSON, NOT THE EVENT. "Refused to post because there was no live
+thread to anchor it" is a log line; you will read it in a month and learn
+nothing you could act on. "A post needs a live thread to anchor it — check
+the board for one before drafting" is a memory. The test: could you DO
+something differently because you read this?
+
+FIRST PERSON, ALWAYS. Write "I", not "you". These are your notes to yourself,
+and a note addressed to someone else reads, a week later, as something
+somebody told you.
+
+DO NOT REPEAT YOURSELF. If the same thing has been refused three cycles
+running, that is one memory about a recurring block, not three about three
+refusals. Look at ALREADY REMEMBERED before you write."""
 
 
 def reflect(state, cfg, log=None):
