@@ -673,19 +673,25 @@ def main():
     # number is a parent_id. Riffle wrote many top-level comments and almost
     # no replies, which is not a conversation — it is announcements delivered
     # in the same room.
-    _proj = project.active(state)
-    if _proj:
-        # thread_reads, not project_reads. The table is created by
-        # project.READS_SCHEMA and I guessed its name from the function that
-        # writes to it rather than reading the schema — a query against a
-        # table that does not exist throws at runtime and passes both gates.
-        try:
+    # Keyed on the post riffle has most recently commented on, not on the
+    # active project's last read. Those are usually the same post and
+    # sometimes are not — and the moment it needs the ids is exactly the
+    # moment it is trying to say more about a post it has already opened on.
+    try:
+        _last_read = state.db.execute(
+            "SELECT r.post_id, r.title, r.replies FROM thread_reads r"
+            " JOIN (SELECT json_extract(payload,'$.post_id') pid, MAX(id) mid"
+            "       FROM actions WHERE kind='comment'"
+            "       AND status IN ('sent','executed','approved','queued')) a"
+            "   ON r.post_id = a.pid"
+            " ORDER BY r.id DESC LIMIT 1").fetchone()
+        if not _last_read:
             _last_read = state.db.execute(
                 "SELECT post_id, title, replies FROM thread_reads"
-                " WHERE project_id=? ORDER BY id DESC LIMIT 1",
-                (_proj["id"],)).fetchone()
-        except Exception:
-            _last_read = None
+                " ORDER BY id DESC LIMIT 1").fetchone()
+    except Exception:
+        _last_read = None
+    if True:
         if _last_read and (_last_read["replies"] or "").strip():
             parts.append(
                 f"COMMENTS YOU COULD ANSWER on #{_last_read['post_id']} "
@@ -1083,13 +1089,35 @@ def main():
             " ORDER BY id DESC LIMIT 1",
             (payload.get("post_id"),)).fetchone()
         if prior:
+            # NAME THE IDS IT CAN USE.
+            #
+            # The first version of this said "reply with parent_id set" and
+            # stopped there. Riffle then blocked five cycles in a row on
+            # #4454, each rationale beginning "I am replying to coppice's
+            # comment" — it had understood the instruction and had no idea
+            # what number to put in the field. Telling someone to cite a
+            # reference without giving them the catalogue is not an
+            # instruction, it is a riddle.
+            _ids = ""
+            try:
+                _r = state.db.execute(
+                    "SELECT replies FROM thread_reads WHERE post_id=?"
+                    " ORDER BY id DESC LIMIT 1",
+                    (payload.get("post_id"),)).fetchone()
+                if _r and (_r["replies"] or "").strip():
+                    _ids = ("\nThese are the comments on that post and the "
+                            "number in brackets is the parent_id for each:\n"
+                            + (_r["replies"] or "")[:1800])
+            except Exception:
+                pass
             why = (f"you already made a top-level comment on post "
                    f"{payload.get('post_id')} (action #{prior['id']}, "
                    f"{prior['created_at'][:16]}). Saying the same thing again "
                    f"in different words is not a second contribution. If you "
-                   f"have something to add, REPLY to a specific comment with "
-                   f"parent_id set, and make it answer what that person said "
-                   f"rather than restating your own position.")
+                   f"have something to add, REPLY: set parent_id to the id of "
+                   f"the comment you are answering, and answer what that "
+                   f"person actually said rather than restating your own "
+                   f"position." + _ids)
             state.propose(cid, kind, drive, payload, rationale, "blocked")
             log(f"second top-level comment on #{payload.get('post_id')} "
                 f"refused", level="warn", drive=drive)
