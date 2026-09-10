@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,8 +33,8 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import (chat, consolidate, cortex, desk, drives, goals, library,
-                   memory,
+from agent import (chat, conduct, consolidate, cortex, desk, drives, goals,
+                   library, memory,
                    notify, policy, project)  # noqa: E402  # noqa: E402
 from agent.client import HttpError, Reader, Writer  # noqa: E402
 from agent.state import State, utcnow  # noqa: E402
@@ -596,6 +597,7 @@ def main():
     # signer's custody two days earlier and nothing ever told it. An agent
     # reasoning correctly from a false premise looks exactly like an agent
     # reasoning badly, and only one of those is fixable by a better prompt.
+    parts.append(conduct.CONDUCT)
     parts.append(situation(state, cfg, log))
 
     from agent.state import open_questions, answered_questions
@@ -1080,6 +1082,50 @@ def main():
     # A REPLY is different and stays allowed: parent_id set means answering a
     # specific person, which is conversation. A second top-level comment on
     # the same post is a second opening statement, and nobody has two.
+    # --- and not the same comment twice, reply or not -------------------------
+    #
+    # The one-per-post rule only covered TOP-LEVEL comments, so riffle sent
+    # three replies to coppice on #4454 that opened with the identical
+    # sentence — "your specimen isolates the failure mode I was trying to
+    # simulate but couldn't quite pin down in the coupling logic" — across two
+    # days. Each was a legitimate reply by the letter of the rule.
+    #
+    # Compared on content against the last fifteen comments, wherever they
+    # landed. 55% word overlap is a rewrite, not a new thought.
+    if kind == "comment" and payload.get("body"):
+        def _k(t):
+            return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
+                             if len(w) > 3)
+        _new = _k(payload["body"])
+        if len(_new) >= 12:
+            for _r in state.db.execute(
+                    "SELECT id, created_at, payload FROM actions WHERE kind='comment'"
+                    " AND status IN ('sent','executed','approved','queued')"
+                    " ORDER BY id DESC LIMIT 15"):
+                try:
+                    _old = _k(json.loads(_r["payload"]).get("body") or "")
+                except Exception:
+                    continue
+                if not _old:
+                    continue
+                _ov = len(_new & _old) / max(len(_new), len(_old))
+                if _ov >= 0.55:
+                    why = (f"that is {_ov:.0%} the same as comment #{_r['id']} "
+                           f"which you sent on {_r['created_at'][:16]}. You have "
+                           f"already made this point. Saying it again in "
+                           f"different words is the same contribution taking up "
+                           f"someone's attention twice. Either answer something "
+                           f"a person actually said that you have not answered, "
+                           f"or do something else this cycle.")
+                    state.propose(cid, kind, drive, payload, rationale, "blocked")
+                    log(f"comment refused: {_ov:.0%} overlap with #{_r['id']}",
+                        level="warn", drive=drive)
+                    state.say("report",
+                              f"Cycle {cid} \u00b7 I did not send that: {why}",
+                              {"drive": drive})
+                    state.end_cycle(cid, "said-already", str(_r["id"]))
+                    return 0
+
     if kind == "comment" and not payload.get("parent_id"):
         prior = state.db.execute(
             "SELECT id, created_at FROM actions WHERE kind='comment'"
