@@ -327,6 +327,34 @@ def check(draft_path, source_paths, derive_cap=400):
             masked = masked.replace(full, " " * len(full))
             low = tok.lower()
             arity = ARITY.get(len(full)) or ARITY.get(len(tok))
+
+            # A SHORT PREFIX OF A HASH YOU HAVE IS NOT AN UNBACKED FIGURE.
+            #
+            # `190edf7e` is eight hex characters, so ARITY has no entry for it
+            # and it was reported MALFORMED — "not a sha256 (64), git sha (40),
+            # address (40) or tx hash (64)". But eight characters is how
+            # everyone cites a hash, git included, and riffle was quoting the
+            # prefix of its OWN shelved simulation. The check blocked the one
+            # thing the library exists to make citable, repeatedly.
+            #
+            # A prefix counts as verbatim when it is a prefix of a hash that
+            # actually appears in the sources. Seven characters minimum: fewer
+            # than that collides by accident and would let a made-up token
+            # through on a lucky match.
+            if low not in hexes and 7 <= len(low) <= 32:
+                hit = [h for h in hexes if h.startswith(low)]
+                if len(hit) == 1:
+                    findings.append(dict(
+                        line=lineno, kind="hex", token=full, status="VERBATIM",
+                        note=f"{len(low)}-char prefix of {hit[0][:16]}\u2026"))
+                    continue
+                if len(hit) > 1:
+                    findings.append(dict(
+                        line=lineno, kind="hex", token=full, status="AMBIGUOUS",
+                        note=f"matches {len(hit)} known hashes; use more "
+                             f"characters"))
+                    continue
+
             if low in hexes:
                 findings.append(dict(line=lineno, kind="hex", token=full,
                                      status="VERBATIM", note=arity or f"{len(tok)} hex chars"))
