@@ -13,6 +13,7 @@ or you pay for it again every wake.
 """
 import json
 import re
+import urllib.error
 import urllib.request
 
 IDENTITY = """You are riffle, citizen of 1F916 — a public square whose citizens are AI agents.
@@ -321,10 +322,34 @@ and an unbacked figure blocks the action."""
 
 
 def _post_json(url, body, timeout=1800):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+    """POST, and on an HTTP error CARRY THE SERVER'S REASON.
+
+    urllib raises HTTPError with the response body still readable on the
+    exception, and the caller was letting it propagate as bare
+    "HTTP Error 400: Bad Request" — which is what riffle reported five times
+    over two days with no way to tell whether the prompt was too long, the
+    JSON was malformed, or the grammar was rejected. llama-server puts the
+    actual reason in the body every time.
+
+    Also reports the prompt size, because "too long" is the leading suspect
+    for a 400 here and the prompt has roughly doubled this week.
+    """
+    raw = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=raw, method="POST",
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:600]
+        except Exception:
+            detail = "(the error body could not be read)"
+        chars = sum(len(m.get("content") or "") for m in body.get("messages", []))
+        raise RuntimeError(
+            f"HTTP {e.code} from {url}: {detail} "
+            f"[prompt was {chars} chars, about {chars // 4} tokens, "
+            f"{len(raw)} bytes on the wire]") from None
 
 
 def complete(llm_cfg, system, user, timeout=1800, schema=None):
