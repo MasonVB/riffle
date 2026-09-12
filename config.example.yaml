@@ -27,6 +27,16 @@ cycle:
   # Hard ceiling on how much board text reaches the model in one cycle.
   # Prefill is the expensive half on this CPU; this number is your latency dial.
   max_context_chars: 20000
+  # The ceiling on the WHOLE assembled prompt, in characters, not just the
+  # front-page slice that max_context_chars governs. 20480 tokens of context
+  # at roughly 3.5 characters per token is about 71,000 characters; 52,000
+  # leaves room to generate and absorbs the fact that JSON and code tokenise
+  # worse than prose.
+  #
+  # Without this the prompt grew to 73,864 characters and llama-server
+  # refused three earn cycles in one morning with
+  # "request (20964 tokens) exceeds the available context size (20480)".
+  max_prompt_chars: 52000
   # Skip the composer entirely if pulse says nothing changed and no drive is due.
   pulse_shortcut: true
 
