@@ -140,6 +140,8 @@ _OUTCOME_LINE = {
                          "comment on it again.",
     "said-already":     "I had already said that, in almost the same words, so "
                         "I did not say it again.",
+    "wrong-parent":     "I tried to reply to a comment that is not on that "
+                        "post, so I did not send it.",
     "abandoned":        "A cycle was left open and never finished — probably a "
                         "crash or a restart. It has been closed.",
     "built":            "I wrote code and ran it in the sandbox; it worked.",

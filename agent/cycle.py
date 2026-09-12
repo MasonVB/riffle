@@ -794,6 +794,30 @@ def main():
     parts.append("YOUR GOALS RIGHT NOW (you may propose adjust_drive on an "
                  "unlocked one):\n" + goal_lines)
 
+    # --- make the budget mean something --------------------------------------
+    #
+    # `budget` only ever constrained the front-page slice. Everything in
+    # `parts` was unbounded, and `room` fell back to its 1800 floor once the
+    # fixed blocks exceeded the budget on their own — so a bigger prompt
+    # produced a bigger prompt.
+    #
+    # It reached 73,864 characters and llama-server refused it:
+    #   request (20964 tokens) exceeds the available context size (20480)
+    #
+    # Three earn cycles died that way in one morning. Every block added over
+    # the last fortnight is defensible on its own and nothing ever weighed
+    # them against a ceiling.
+    #
+    # Trimmed longest-first down to a floor, then dropped, so the blocks that
+    # grow without bound give way before the small ones that carry a rule.
+    # And it SAYS what it cut: a prompt silently missing its project block
+    # produces behaviour nobody can explain.
+    # NOT `budget` — that is the front-page allowance and applying it to the
+    # whole prompt would cut four fifths of it. The ceiling here comes from
+    # the model's context window, in characters, with room left to generate.
+    _ccfg = cfg.get("cycle") or {}
+    parts = _fit(parts, int(_ccfg.get("max_prompt_chars", 52000)), log)
+
     fixed = "\n\n".join(parts)
     room = max(1800, budget - len(fixed) - 400)
 
@@ -1092,6 +1116,43 @@ def main():
     #
     # Compared on content against the last fifteen comments, wherever they
     # landed. 55% word overlap is a rewrite, not a new thought.
+    # --- a parent_id has to belong to the post you are replying on ------------
+    #
+    # Two comments were refused by the registry with
+    #   "parent comment 52768 not found on post 4727"
+    # because the reply ids riffle had in front of it came from a DIFFERENT
+    # post. The block that shows them is keyed on the post it most recently
+    # commented on; when it then replies somewhere else, those ids are the
+    # only ones it has seen and it uses them.
+    #
+    # Checked locally against what it actually read, so the cycle is not spent
+    # discovering it from a 404. If no read of that post is on file the check
+    # stays out of the way: absence of a record is not evidence the id is
+    # wrong, and this project has published on that too.
+    if kind == "comment" and payload.get("parent_id") and payload.get("post_id"):
+        try:
+            _rd = state.db.execute(
+                "SELECT replies FROM thread_reads WHERE post_id=?"
+                " ORDER BY id DESC LIMIT 1", (payload["post_id"],)).fetchone()
+        except Exception:
+            _rd = None
+        if _rd and (_rd["replies"] or "").strip():
+            _seen = set(re.findall(r"\[(\d+)\]", _rd["replies"] or ""))
+            if str(payload["parent_id"]) not in _seen:
+                why = (f"comment {payload['parent_id']} is not on post "
+                       f"{payload['post_id']}. The ids you can reply to there "
+                       f"are: {', '.join(sorted(_seen)) or '(none read yet)'}. "
+                       f"Reply ids belong to one post; an id you saw on another "
+                       f"thread will be refused by the registry. If you meant a "
+                       f"comment you have not read, read that post first.")
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log(f"parent {payload['parent_id']} not on post "
+                    f"{payload['post_id']}", level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "wrong-parent", str(payload["parent_id"]))
+                return 0
+
     if kind == "comment" and payload.get("body"):
         def _k(t):
             return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
@@ -1343,6 +1404,43 @@ def walk_changes(state, reader, cfg, log):
     return {"posts": posts, "comments": comments, "nulls": nulls,
             "pages": pages, "unchanged": unchanged, "saturated": saturated,
             "window_age_ms": age_ms, "cursor": since}
+
+
+def _fit(parts, budget, log=None, floor=900):
+    """Bring the assembled blocks under a character budget, loudly.
+
+    Longest first: a 9,000-character desk dump gives way before a 400
+    character rule about not saying the same thing twice. Each oversized
+    block is cut at a paragraph break where one is near, and marked, so the
+    agent can tell a truncation from an absence — this project has published
+    twice on that distinction.
+    """
+    total = sum(len(p) for p in parts) + 2 * len(parts)
+    if total <= budget:
+        return parts
+    order = sorted(range(len(parts)), key=lambda i: -len(parts[i]))
+    cut = []
+    for i in order:
+        if total <= budget:
+            break
+        keep = max(floor, len(parts[i]) - (total - budget) - 60)
+        if keep >= len(parts[i]):
+            continue
+        head = parts[i][:keep]
+        brk = head.rfind("\n\n")
+        if brk > keep * 0.6:
+            head = head[:brk]
+        dropped = len(parts[i]) - len(head)
+        total -= dropped
+        cut.append((parts[i][:40].split("\n")[0], dropped))
+        parts[i] = head + (f"\n[...{dropped} characters of this section were "
+                           f"cut to fit the context window. It is shortened, "
+                           f"not empty.]")
+    if cut and log:
+        log("prompt over budget by "
+            + str(sum(d for _, d in cut)) + " chars; trimmed "
+            + ", ".join(f"{n}(-{d})" for n, d in cut[:4]), level="warn")
+    return parts
 
 
 def situation(state, cfg, log=None):
