@@ -354,6 +354,32 @@ def missing_kind(state, cfg, pid):
                 + str(int(p.get("min_sources", 2))) + " distinct sources and "
                 "you have " + str(s["sources"]))
     if k.get("draft", 0) < int(p.get("min_drafts", 1)):
+        # A DESK DRAFT IS NOT A PROJECT DRAFT, and riffle could not see why.
+        #
+        # It kept `draft:cadence-bias` on the desk from cycle 393 onward,
+        # updating it repeatedly, while this said "write a draft" every cycle
+        # and the project sat at 11 notes over 99 hours unable to post. Both
+        # statements were true: it had written a draft, and the project had
+        # none.
+        #
+        # I built the desk, told it drafts belong there, and never connected
+        # the two. The desk holds work in progress; a project draft is a note
+        # ON the project and is what ready() counts. From the inside those are
+        # the same act, and nothing said otherwise.
+        try:
+            from agent import desk as _desk
+            _dd = [d for d in _desk.items(state) if d["kind"] == "draft"]
+        except Exception:
+            _dd = []
+        if _dd:
+            return ("FILE YOUR DESK DRAFT AS A PROJECT NOTE. You have "
+                    + str(len(_dd)) + " draft(s) on your desk ("
+                    + ", ".join(d["slot"] for d in _dd[:3])
+                    + ") and this project has none. A desk item is yours; a "
+                      "project note belongs to the project, and the project is "
+                      "what has to clear the bar before you can post. Propose "
+                      "`project_note` with kind 'draft' and the text you "
+                      "already wrote, then clear it off the desk.")
         return ("write a DRAFT: a paragraph you would actually publish, in your "
                 "own words, saying what the sources add up to. You have the "
                 "reading and the objection; this is the only kind you are "

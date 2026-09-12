@@ -75,7 +75,10 @@ header{align-items:center}
 button.go:active{background:var(--fg);color:var(--bg)}
 .pillbtn,a.link,.clearbtn,button.go,button.no,#send{
   transition:background .12s ease,color .12s ease}
-.sentline{font-size:12px;color:var(--dim);font-family:ui-monospace,Menlo,monospace;
+/* var(--dim) is for things you are meant to skip. When an action went out
+   unattended, when it went out is not one of those. */
+.sentline{font-size:12px;color:var(--fg2,#b9b4a3);
+  font-family:ui-monospace,Menlo,monospace;
   display:flex;align-items:center;gap:7px}
 .sentline.bad{color:var(--bad)}
 .spin{display:inline-block;animation:sp 1.1s linear infinite}
@@ -283,6 +286,19 @@ autos.onchange = function(){
 };
 const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 140;
 
+function shortTime(iso){
+  // The cards printed the raw ISO string — "2026-09-11T13:24:48Z" — in the
+  // dimmest colour on the page, while the log two lines above showed "6:13
+  // PM". Same information, one of them readable. Local time, same format as
+  // everything else, with the full stamp on hover for when it matters.
+  if(!iso) return '';
+  const d = new Date(iso);
+  if(isNaN(d)) return iso;
+  const t = d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  const today = new Date().toDateString() === d.toDateString();
+  return today ? t
+    : d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + t;
+}
 function statusLine(p){
   if(p.status === 'sending')
     return '<div class=sentline><span class=spin>&#9696;</span> sending&hellip;</div>';
@@ -291,14 +307,16 @@ function statusLine(p){
     // seal, porch and attestation all on auto, the difference between a card
     // you approved and one that went out on its own is the thing worth seeing
     // at a glance.
-    return '<div class=sentline>&#10003; Sent ' + esc(p.sent_at || '') +
+    return '<div class=sentline title="' + esc(p.sent_at || '') + '">' +
+           '&#10003; Sent ' + esc(shortTime(p.sent_at)) +
            (p.auto ? ' &middot; on auto, not asked' : '') +
            (p.ref ? ' &middot; ' + esc(p.ref) : '') + '</div>';
   if(p.status === 'failed')
     return '<div class="sentline bad">&#10005; Refused &middot; ' +
            esc(p.error || '') + '</div>';
   if(p.status === 'rejected')
-    return '<div class=sentline>&#10005; Rejected ' + esc(p.sent_at || '') +
+    return '<div class=sentline title="' + esc(p.sent_at || '') + '">' +
+           '&#10005; Rejected ' + esc(shortTime(p.sent_at)) +
            ' &middot; not sent</div>';
   return '<div class=when>' + esc(p.status || '') + '</div>';
 }
