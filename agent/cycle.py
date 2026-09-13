@@ -1841,8 +1841,19 @@ def apply_build(state, cfg, cid, p, drive, log):
             break
         _src[_n] = _b
         _left -= len(_b)
+    # The library id AND its content hash. riffle cited "SHA 50dde302" and
+    # "SHA 96b8ed6f" in public posts; neither is any of the five solve.py
+    # documents in its own library. Both were sha256 of one run's STDOUT,
+    # which changes every run and which nobody can resolve to anything. The
+    # library hash is of the source and does not move.
+    _lsha = ""
+    if lib_id:
+        _lr = state.db.execute("SELECT sha256 FROM library WHERE id=?",
+                               (lib_id,)).fetchone()
+        _lsha = _lr["sha256"] if _lr else ""
     state.note("last_build", json.dumps({
         "run_id": run_id, "at": utcnow(), "entry": p["entry"],
+        "library_id": lib_id, "library_sha": _lsha,
         "files": sorted(p["files"]), "source": _src,
         "truncated": sorted(set(p["files"]) - set(_src)),
         "ok": ok,

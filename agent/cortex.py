@@ -494,7 +494,22 @@ def parse_proposal(text):
                     break
         i += 1
     if not candidates:
-        raise ValueError("no JSON object carrying an 'action' key in model output")
+        # SHOW WHAT CAME BACK.
+        #
+        # This raised the bare sentence and threw the output away, so three
+        # alarms in one day said only that parsing failed. The same shape as
+        # the bare "HTTP Error 400" and the bare "reflection parsed nothing":
+        # an error that reports its own existence and nothing else, and which
+        # I then have to guess at twice.
+        #
+        # The first 400 characters is enough to tell prose from truncated JSON
+        # from an empty string, which are three different problems.
+        head = " ".join((t or "").split())[:400]
+        raise ValueError(
+            "no JSON object carrying an 'action' key in model output. "
+            + (f"{len(t or '')} chars came back, beginning: {head!r}"
+               if head else "the model returned NOTHING at all \u2014 check "
+                            "whether the prompt filled the context window"))
     return candidates[-1]
 
 

@@ -14,6 +14,7 @@ drives, the caps, or the autonomy levels. Those are files on disk that you
 edit as yourself over ssh, and the service account cannot write them either.
 """
 import argparse
+import datetime as dt
 import json
 import os
 import sys
@@ -448,6 +449,32 @@ class Handler(BaseHTTPRequestHandler):
                 continue
         return None, None
 
+    def reap_stuck_sends(self, older_than_minutes=20):
+        """Close out actions left mid-send. Returns how many.
+
+        Anything still 'sending' after twenty minutes is not sending: the
+        thread that owned it is gone, and nothing will ever come back to
+        change it. Called on dash start, so a restart clears what a crash
+        left behind.
+        """
+        s = self.state
+        cut = (dt.datetime.now(dt.timezone.utc)
+               - dt.timedelta(minutes=older_than_minutes)).isoformat()
+        rows = s.db.execute(
+            "SELECT id, kind FROM actions WHERE status='sending'"
+            " AND created_at < ?", (cut,)).fetchall()
+        for r in rows:
+            s.set_status(r["id"], "failed",
+                         {"error": "the send thread did not finish; status "
+                                   "was left at 'sending'"})
+            self._update_card(r["id"], status="failed",
+                              error="the send never completed — it was left "
+                                    "mid-flight and has been closed out. "
+                                    "Nothing was published.")
+            s.log(f"closed out {r['kind']} #{r['id']}, stuck sending",
+                  level="warn")
+        return len(rows)
+
     def _update_card(self, aid, **fields):
         mid, meta = self._card_for(aid)
         if mid is None:
@@ -529,6 +556,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._update_card(aid, status="failed", error=str(e)[:200])
                 s.log(f"the registry refused {a['kind']} #{aid}: {e}",
                       level="error", drive=a["drive"])
+            except BaseException as e:
+                # CATCH EVERYTHING ELSE TOO.
+                #
+                # This caught only HttpError. A timeout, a DNS failure, a
+                # missing secret file, a bug in on_posted — any of them killed
+                # the thread with the card still reading "sending", the queue
+                # still counting it, and nothing anywhere saying why. One has
+                # been sending for several hours.
+                #
+                # A daemon thread that dies silently is the worst shape a
+                # failure can take: the interface keeps asserting the thing is
+                # in progress, which is a stronger claim than saying nothing.
+                s.set_status(aid, "failed", {"error": f"{type(e).__name__}: {e}"})
+                self._update_card(aid, status="failed",
+                                  error=f"{type(e).__name__}: {e}"[:200])
+                s.log(f"sending {a['kind']} #{aid} failed: {type(e).__name__}: {e}",
+                      level="error", drive=a["drive"])
 
         _th.Thread(target=worker, daemon=True).start()
         return {"ok": True, "status": "sending"}
@@ -607,6 +651,18 @@ def main():
         print(f"closed {orphans} interrupted reply row(s) from a previous run")
         st.log(f"startup: closed {orphans} reply row(s) left open by a restart")
     Handler.cfg, Handler.state = cfg, st
+    # Same idea as the orphaned reply rows above: a restart is the moment to
+    # close out anything a dead thread left mid-flight.
+    _stuck = st.db.execute(
+        "SELECT COUNT(*) c FROM actions WHERE status='sending'").fetchone()["c"]
+    if _stuck:
+        st.db.execute(
+            "UPDATE actions SET status='failed' WHERE status='sending'")
+        st.db.commit()
+        print(f"closed {_stuck} action(s) left stuck sending")
+        st.log(f"startup: closed {_stuck} action(s) left stuck at 'sending'; "
+               f"the thread that owned them did not finish. Nothing was sent.",
+               level="warn")
     Handler.worker = chat.Worker(st, cfg)
     Handler.worker.start()
     Handler.start_scheduler()

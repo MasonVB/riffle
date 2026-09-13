@@ -144,6 +144,7 @@ _OUTCOME_LINE = {
                         "post, so I did not send it.",
     "post-queued-already": "I already have a post waiting for you, so I did "
                            "not write another one.",
+    "voted-already":    "I had already voted on that, so I did not vote again.",
     "abandoned":        "A cycle was left open and never finished — probably a "
                         "crash or a restart. It has been closed.",
     "built":            "I wrote code and ran it in the sandbox; it worked.",
