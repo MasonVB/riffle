@@ -185,7 +185,19 @@ a.link{color:var(--sig);text-decoration:none;border-color:var(--sig)}
    appended outside that would vanish on the next poll that did. */
 .msg{cursor:pointer}
 .msg .when.at{display:none}
-.msg.showts .when.at{display:block}
+.msg.showts .when.at{display:flex;align-items:center;gap:8px}
+.copybtn{background:transparent;border:1px solid var(--line);color:var(--dim);
+  border-radius:6px;font:inherit;font-size:10px;padding:1px 7px;cursor:pointer}
+.copybtn:active{color:var(--fg)}
+.cardhead{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.kebab{background:transparent;border:0;color:var(--dim);font-size:17px;
+  line-height:1;padding:0 4px;cursor:pointer;letter-spacing:1px}
+.cardmenu{display:none;position:absolute;right:10px;z-index:60;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  box-shadow:0 8px 22px rgba(0,0,0,.55);padding:4px}
+.cardmenu button{background:transparent;border:0;color:var(--fg);font:inherit;
+  font-size:12px;padding:6px 14px;cursor:pointer;white-space:nowrap}
+.card{position:relative}
 .msg.user .when.at{text-align:right}
 .msg.report .when.at,.msg.err .when.at{font-size:10.5px}
 .card{align-self:stretch;max-width:100%;background:var(--panel);
@@ -244,7 +256,10 @@ footer{gap:7px}
       <span class=pill id=p-state onclick="toggleAlarms(event)">&mdash;</span>
       <div class=alarmpanel id=alarmpanel>
         <div id=alarmlist></div>
-        <div class=clearbar><button class=clearbtn onclick="clearAlarms(event)">clear</button></div>
+        <div class=clearbar>
+          <button class=clearbtn onclick="copyAlarms(event)">copy all</button>
+          <button class=clearbtn onclick="clearAlarms(event)">clear</button>
+        </div>
       </div>
     </span>
     <span class=pill id=p-queue></span>
@@ -400,16 +415,77 @@ function renderAlarms(list){
       '<div class=alarmempty>nothing outstanding</div>';
     return;
   }
-  document.getElementById('alarmlist').innerHTML = list.map(a =>
+  // ONLY REDRAW WHEN IT CHANGED.
+  //
+  // This rewrote innerHTML on every poll, about once a second, which
+  // destroys any text selection inside the panel. Highlighting an alarm and
+  // scrolling made the selection jump or vanish — not a scrolling bug, a
+  // DOM-replacement bug that scrolling made visible because it took long
+  // enough for a poll to land.
+  const al = document.getElementById('alarmlist');
+  const sig = JSON.stringify(list.map(a => [a.ts, a.level, a.text.length]));
+  if(al.dataset.sig === sig) return;
+  al.dataset.sig = sig;
+  al.innerHTML = list.map(a =>
     '<div class="alarmrow lvl-' + esc(a.level) + '"><span class=m>' +
     esc(a.level) + ' &middot; ' + esc((a.ts||'').slice(5,16).replace('T',' ')) +
     (a.drive ? ' &middot; ' + esc(a.drive) : '') + '</span>' +
     esc(a.text) + '</div>').join('');
+  al.dataset.raw = list.map(a =>
+    (a.ts||'') + '  ' + (a.level||'') + (a.drive ? '  ' + a.drive : '') +
+    '\n' + a.text).join('\n\n');
+}
+
+async function copyText(text, btn){
+  const done = () => { if(btn){ const t = btn.textContent;
+    btn.textContent = 'copied'; setTimeout(() => btn.textContent = t, 1200); } };
+  try{
+    await navigator.clipboard.writeText(text);
+    done();
+  }catch(e){
+    // navigator.clipboard needs a secure context, and this is served over
+    // plain http on the LAN. The textarea fallback is the only thing that
+    // works there, and there is no point offering a button that silently
+    // does nothing on the machine it was built for.
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(); }catch(e2){}
+    document.body.removeChild(ta);
+  }
+}
+function copyAlarms(e){
+  e.stopPropagation();
+  copyText(document.getElementById('alarmlist').dataset.raw || '', e.target);
 }
 
 /* Which messages are currently showing their timestamp. render() reassigns
    className on every poll, so the set is the only place this can live. */
 const tsShown = new Set();
+/* The raw text of each message, so copy gives you what riffle wrote rather
+   than what the browser rendered. */
+const msgText = {};
+function copyMsg(e, id){
+  e.stopPropagation();          // or the tap closes the timestamp it sits in
+  copyText(msgText[String(id)] || '', e.target);
+}
+function copyCard(e, id){
+  e.stopPropagation();
+  const c = cardText[String(id)] || {};
+  copyText([c.head, c.why, c.payload].filter(Boolean).join('\n\n'), e.target);
+  const m = document.getElementById('cm' + id);
+  if(m) m.style.display = 'none';
+}
+const cardText = {};
+function toggleCardMenu(e, id){
+  e.stopPropagation();
+  document.querySelectorAll('.cardmenu').forEach(x => {
+    if(x.id !== 'cm' + id) x.style.display = 'none'; });
+  const m = document.getElementById('cm' + id);
+  if(m) m.style.display = m.style.display === 'block' ? 'none' : 'block';
+}
+document.addEventListener('click', () =>
+  document.querySelectorAll('.cardmenu').forEach(x => x.style.display = 'none'));
 
 function atTime(ts){
   if(!ts) return '';
@@ -438,8 +514,16 @@ function render(m){
     if(el.dataset.sig === _qsig) return;
     el.dataset.sig = _qsig;
     el.className = 'card ask';
-    el.innerHTML = '<h4>riffle is asking you &middot; drive ' + esc(p.drive||'') +
-      '</h4><div class=why>' + esc(m.content) + '</div>' +
+    cardText[String(m.id)] = {
+      head: 'riffle asked · drive ' + (p.drive||''), why: m.content,
+      payload: p.status === 'answered' ? 'you answered: ' + (p.answer||'') : ''};
+    el.innerHTML = '<div class=cardhead><h4>riffle is asking you &middot; drive ' +
+      esc(p.drive||'') + '</h4>' +
+      '<button class=kebab onclick="toggleCardMenu(event,\'' + m.id +
+      '\')">&#8942;</button></div>' +
+      '<div class=cardmenu id="cm' + m.id + '">' +
+      '<button onclick="copyCard(event,\'' + m.id + '\')">copy</button></div>' +
+      '<div class=why>' + esc(m.content) + '</div>' +
       (p.why ? '<div class=when>' + esc(p.why) + '</div>' : '') +
       (p.status === 'answered'
         ? '<div class=answered>' + esc(p.answer||'') + '</div>' +
@@ -457,8 +541,17 @@ function render(m){
     if(el.dataset.sig === _csig) return;
     el.dataset.sig = _csig;
     el.className = 'card';
-    el.innerHTML = '<h4>' + esc(p.kind||'action') + ' &middot; drive ' + esc(p.drive||'') +
-      '</h4><div class=why>' + esc(m.content) + '</div><pre>' + esc(p.payload||'') + '</pre>' +
+    cardText[String(m.id)] = {
+      head: (p.kind||'action') + ' · drive ' + (p.drive||'') +
+            (p.sent_at ? '  (sent ' + p.sent_at + ')' : ''),
+      why: m.content, payload: p.payload || ''};
+    el.innerHTML = '<div class=cardhead><h4>' + esc(p.kind||'action') +
+      ' &middot; drive ' + esc(p.drive||'') + '</h4>' +
+      '<button class=kebab onclick="toggleCardMenu(event,\'' + m.id +
+      '\')">&#8942;</button></div>' +
+      '<div class=cardmenu id="cm' + m.id + '">' +
+      '<button onclick="copyCard(event,\'' + m.id + '\')">copy</button></div>' +
+      '<div class=why>' + esc(m.content) + '</div><pre>' + esc(p.payload||'') + '</pre>' +
       (p.status === 'queued'
         ? '<div class=btns><button class=go onclick="decide('+p.action_id+',\'approve\',this)">send it</button>'+
           '<button class=no onclick="decide('+p.action_id+',\'reject\',this)">reject</button></div>'
@@ -475,10 +568,13 @@ function render(m){
   const _sig = m.role + '|' + m.done + '|' + m.content.length;
   if(el.dataset.sig === _sig) return;
   el.dataset.sig = _sig;
+  msgText[String(m.id)] = m.content;
   el.innerHTML = esc(m.content) + (m.done ? '' : '<span class=dot>&#9612;</span>') +
     (m.role!=='user' && m.done && m.meta && m.meta.elapsed_s
       ? '<div class=when>' + m.meta.elapsed_s + 's</div>' : '') +
-    '<div class="when at">' + esc(atTime(m.ts)) + '</div>';
+    '<div class="when at">' + esc(atTime(m.ts)) +
+    '<button class=copybtn onclick="copyMsg(event,\'' + m.id +
+    '\')">copy</button></div>';
 }
 
 async function poll(){

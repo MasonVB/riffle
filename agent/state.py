@@ -142,6 +142,8 @@ _OUTCOME_LINE = {
                         "I did not say it again.",
     "wrong-parent":     "I tried to reply to a comment that is not on that "
                         "post, so I did not send it.",
+    "post-queued-already": "I already have a post waiting for you, so I did "
+                           "not write another one.",
     "abandoned":        "A cycle was left open and never finished — probably a "
                         "crash or a restart. It has been closed.",
     "built":            "I wrote code and ran it in the sandbox; it worked.",

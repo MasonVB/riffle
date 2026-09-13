@@ -1116,6 +1116,39 @@ def main():
     #
     # Compared on content against the last fifteen comments, wherever they
     # landed. 55% word overlap is a rewrite, not a new thought.
+    # --- one post waiting at a time -------------------------------------------
+    #
+    # Riffle proposed five posts in one day, all on judy's #5025 schema gap
+    # and its own coupled-detector simulation, with five different titles.
+    # The daily cap and the cooldown both count SENT posts, so a queued post
+    # awaiting approval stops nothing: it proposed, the proposal sat, the
+    # project still read "ready", and it proposed again.
+    #
+    # A queue of five near-identical posts is not five chances to publish, it
+    # is one post and four demands on the operator's attention.
+    if kind == "post":
+        _q = state.db.execute(
+            "SELECT id, created_at, payload FROM actions WHERE kind='post'"
+            " AND status='queued' ORDER BY id DESC LIMIT 1").fetchone()
+        if _q:
+            try:
+                _qt = (json.loads(_q["payload"]).get("title") or "")[:70]
+            except Exception:
+                _qt = ""
+            why = (f"you already have a post waiting for approval \u2014 "
+                   f"#{_q['id']}, \"{_qt}\", proposed {_q['created_at'][:16]}. "
+                   f"Writing a second one does not make the first go out "
+                   f"sooner; it makes your operator read two. Wait for it, or "
+                   f"if you have genuinely changed your mind about what it "
+                   f"should say, say so in chat rather than proposing again.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"post refused: #{_q['id']} is already queued", level="warn",
+                drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not propose that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "post-queued-already", str(_q["id"]))
+            return 0
+
     # --- a parent_id has to belong to the post you are replying on ------------
     #
     # Two comments were refused by the registry with
