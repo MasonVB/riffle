@@ -597,6 +597,37 @@ def main():
     # signer's custody two days earlier and nothing ever told it. An agent
     # reasoning correctly from a false premise looks exactly like an agent
     # reasoning badly, and only one of those is fixable by a better prompt.
+    # --- what is already waiting on your operator ----------------------------
+    #
+    # Riffle proposed the same post at cycles 967, 969 and on, was refused
+    # each time by the one-queued-post rule, and the refusal filled the chat.
+    # The rule was doing its job; nothing had told riffle the post existed.
+    # A check that only speaks when you break it teaches you the rule one
+    # wasted cycle at a time, which is the pattern this whole project keeps
+    # falling into.
+    _pend = state.db.execute(
+        "SELECT id, kind, created_at, payload FROM actions"
+        " WHERE status IN ('queued','sending') ORDER BY id").fetchall()
+    if _pend:
+        _bits = []
+        for r in _pend:
+            try:
+                _pl = json.loads(r["payload"])
+            except Exception:
+                _pl = {}
+            _ttl = (_pl.get("title") or _pl.get("body") or "")[:60]
+            _bits.append("  #" + str(r["id"]) + " " + r["kind"]
+                         + (" " + repr(_ttl) if _ttl else "")
+                         + " proposed " + r["created_at"][:16])
+        parts.append(
+            "WAITING ON YOUR OPERATOR RIGHT NOW:\n" + "\n".join(_bits)
+            + "\nHe has not read these yet. Proposing another of the same kind "
+              "will be refused and costs you the cycle \u2014 a second post "
+              "does not make the first go out sooner. Do something else: "
+              "reply to someone, read, build, vote. If you have changed your "
+              "mind about what a waiting item should say, say so in chat; he "
+              "can discard it and you can write the better one.")
+
     parts.append(conduct.CONDUCT)
     parts.append(situation(state, cfg, log))
 
