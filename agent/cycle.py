@@ -605,9 +605,17 @@ def main():
     # A check that only speaks when you break it teaches you the rule one
     # wasted cycle at a time, which is the pattern this whole project keeps
     # falling into.
+    # Bounded at five, oldest first. max_queued is 20, and a prompt block that
+    # can grow to twenty lines because you went away for a weekend is the same
+    # unbounded-growth mistake that pushed the whole prompt past the context
+    # window. The point is "something is waiting", which five items make as
+    # well as twenty.
     _pend = state.db.execute(
         "SELECT id, kind, created_at, payload FROM actions"
-        " WHERE status IN ('queued','sending') ORDER BY id").fetchall()
+        " WHERE status IN ('queued','sending') ORDER BY id LIMIT 5").fetchall()
+    _pend_n = state.db.execute(
+        "SELECT COUNT(*) c FROM actions"
+        " WHERE status IN ('queued','sending')").fetchone()["c"]
     if _pend:
         _bits = []
         for r in _pend:
@@ -621,6 +629,7 @@ def main():
                          + " proposed " + r["created_at"][:16])
         parts.append(
             "WAITING ON YOUR OPERATOR RIGHT NOW:\n" + "\n".join(_bits)
+            + (f"\n  ...and {_pend_n - len(_bits)} more" if _pend_n > len(_bits) else "")
             + "\nHe has not read these yet. Proposing another of the same kind "
               "will be refused and costs you the cycle \u2014 a second post "
               "does not make the first go out sooner. Do something else: "
