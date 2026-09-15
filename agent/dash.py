@@ -54,10 +54,19 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/":
             # Substituted at serve time: PAGE is a module constant and the
             # model id lives in config.
+            # __BUILD__ is a hash of the page source. If it does not change
+            # after a deploy, the browser is serving a cached copy — which is
+            # exactly what happened on 2026-09-15: the page kept showing a
+            # message that had been deleted from the source, and the fix
+            # looked broken when it had simply never been loaded.
             b = PAGE.replace("%MODEL%",
-                             str(self.cfg.get("model_id", ""))[:40]).encode()
+                             str(self.cfg.get("model_id", ""))[:40]) \
+                    .replace("__BUILD__",
+                             hashlib.sha256(PAGE.encode()).hexdigest()[:6])
+            b = b.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             return self.wfile.write(b)
@@ -65,6 +74,7 @@ class Handler(BaseHTTPRequestHandler):
             b = ACT_PAGE.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             return self.wfile.write(b)
@@ -86,11 +96,21 @@ class Handler(BaseHTTPRequestHandler):
             b = history_page(self.state).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             return self.wfile.write(b)
         if u.path == "/api/messages":
-            after = int(urllib.parse.parse_qs(u.query).get("after", ["0"])[0])
+            _qs = urllib.parse.parse_qs(u.query)
+            after = int(_qs.get("after", ["0"])[0])
+            # `from` pulls history BACKWARDS to a given message id, so the
+            # waiting button can load the card it wants to scroll to rather
+            # than telling you to go and find it. "Scroll up to load it" was a
+            # dead end: the card was two days back, scrolling loaded nothing,
+            # and the message repeated forever.
+            _from = int(_qs.get("from", ["0"])[0])
+            if _from:
+                after = max(0, _from - 1)
             return self._json(self.snapshot(after))
         self._json({"error": "not found"}, 404)
 

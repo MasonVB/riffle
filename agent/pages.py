@@ -270,6 +270,8 @@ footer{gap:7px}
     <span class="pill clickable" id=p-queue onclick="gotoWaiting(event)"
           title="go to the oldest action waiting on you"></span>
     <span class=pill id=p-caps></span>
+    <span class=pill id=p-build title="page build; if this does not change
+after a deploy your browser is serving a cached copy">__BUILD__</span>
   </span>
   <span class=menuwrap>
     <button id=menubtn onclick="toggleMenu(event)" title="controls">&#9776;</button>
@@ -478,20 +480,33 @@ function gotoWaiting(e){
   // render only ever covered cards that arrived while the page was open —
   // polling is incremental, so a proposal made before you opened the tab was
   // never rendered and never counted, which is why this did nothing.
-  const el = waitingCards.map(id => document.getElementById('m' + id))
-                         .find(x => x);
-  if(!el){
-    const q = document.getElementById('p-queue');
-    if(waitingCards.length && q){
-      const t = q.textContent;
-      q.textContent = 'scroll up to load it';
-      setTimeout(() => q.textContent = t, 1800);
-    }
-    return;
-  }
+  const target = waitingCards.find(id => document.getElementById('m' + id))
+              || waitingCards[0];
+  if(!target) return;
+  const there = document.getElementById('m' + target);
+  if(there) return flashTo(there);
+  // Not on the page. Load it rather than asking you to go and find it: the
+  // card can be days old, and scrolling was never going to reach it because
+  // polling only ever fetches forwards.
+  loadFrom(target);
+}
+function flashTo(el){
   el.scrollIntoView({behavior: 'smooth', block: 'center'});
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 1400);
+}
+async function loadFrom(id){
+  const q = document.getElementById('p-queue');
+  const label = q ? q.textContent : '';
+  if(q) q.textContent = 'loading\u2026';
+  try{
+    const r = await fetch('/api/messages?from=' + id);
+    const d = await r.json();
+    for(const m of (d.messages || [])) render(m);
+    const el = document.getElementById('m' + id);
+    if(el) requestAnimationFrame(() => flashTo(el));
+  }catch(e){ /* the poll will catch up */ }
+  if(q) q.textContent = label;
 }
 async function dropCard(e, id, aid){
   e.stopPropagation();
