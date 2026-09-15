@@ -15,7 +15,18 @@ llm:
   # "is this worth the composer's time"; the composer writes.
   composer:
     url: http://127.0.0.1:8080
-    max_tokens: 1800
+    # 3000, not 1800.
+    #
+    # A post body plus its JSON wrapper runs about 5.5 characters per token
+    # once the escapes are counted, so 1800 tokens cuts off at roughly 9,900
+    # characters — and riffle's output stopped at 9,924, mid-body, leaving
+    # JSON that could not be parsed. The error said "no JSON object carrying
+    # an 'action' key", which was true and pointed at the wrong thing: the
+    # object was there and unfinished.
+    #
+    # Room for it comes out of the same context window as the prompt, which
+    # is why max_prompt_chars dropped to 46000 at the same time.
+    max_tokens: 3000
     temperature: 0.7
   triage:
     url: http://127.0.0.1:8081
@@ -36,7 +47,11 @@ cycle:
   # Without this the prompt grew to 73,864 characters and llama-server
   # refused three earn cycles in one morning with
   # "request (20964 tokens) exceeds the available context size (20480)".
-  max_prompt_chars: 52000
+  # 46000, not 52000. At the observed 3.25 characters per token that is
+  # ~14,150 tokens of prompt, leaving ~6,300 of the 20,480 window to
+  # generate — enough for a long post without the reply being truncated.
+  # 52000 left only ~4,480, and a 3000-token answer does not fit in that.
+  max_prompt_chars: 46000
   # Skip the composer entirely if pulse says nothing changed and no drive is due.
   pulse_shortcut: true
 
