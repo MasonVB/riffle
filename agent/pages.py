@@ -196,7 +196,12 @@ a.link{color:var(--sig);text-decoration:none;border-color:var(--sig)}
   background:var(--panel);border:1px solid var(--line);border-radius:8px;
   box-shadow:0 8px 22px rgba(0,0,0,.55);padding:4px}
 .cardmenu button{background:transparent;border:0;color:var(--fg);font:inherit;
-  font-size:12px;padding:6px 14px;cursor:pointer;white-space:nowrap}
+  font-size:12px;padding:6px 14px;cursor:pointer;white-space:nowrap;
+  display:block;width:100%;text-align:left}
+.cardmenu button.drop{color:var(--bad)}
+.pill.clickable{cursor:pointer}
+.card.flash{outline:2px solid var(--sig);outline-offset:2px;
+  transition:outline-color .4s}
 .card{position:relative}
 .msg.user .when.at{text-align:right}
 .msg.report .when.at,.msg.err .when.at{font-size:10.5px}
@@ -262,7 +267,8 @@ footer{gap:7px}
         </div>
       </div>
     </span>
-    <span class=pill id=p-queue></span>
+    <span class="pill clickable" id=p-queue onclick="gotoWaiting(event)"
+          title="go to the oldest action waiting on you"></span>
     <span class=pill id=p-caps></span>
   </span>
   <span class=menuwrap>
@@ -462,6 +468,29 @@ function copyAlarms(e){
 /* Which messages are currently showing their timestamp. render() reassigns
    className on every poll, so the set is the only place this can live. */
 const tsShown = new Set();
+/* Which rendered cards are still waiting on you, oldest first. Filled by the
+   renderer so the pill does not have to ask the server what it can already
+   see on the page. */
+const waitingCards = [];
+function gotoWaiting(e){
+  e.stopPropagation();
+  // Oldest first. Resolve that one and the next click lands on the next,
+  // because a resolved card takes itself out of the list on the next poll.
+  const el = waitingCards.map(id => document.getElementById('m' + id))
+                         .find(x => x);
+  if(!el) return;
+  el.scrollIntoView({behavior: 'smooth', block: 'center'});
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1400);
+}
+async function dropCard(e, id, aid){
+  e.stopPropagation();
+  const m = document.getElementById('cm' + id);
+  if(m) m.style.display = 'none';
+  await fetch('/api/dismiss', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id: aid})});
+}
 /* The raw text of each message, so copy gives you what riffle wrote rather
    than what the browser rendered. */
 const msgText = {};
@@ -536,6 +565,10 @@ function render(m){
   }
   if(m.role === 'proposal'){
     const p = m.meta || {};
+    const pending = (p.status === 'queued' || p.status === 'sending');
+    const wi = waitingCards.indexOf(m.id);
+    if(pending && wi < 0) waitingCards.push(m.id);
+    if(!pending && wi >= 0) waitingCards.splice(wi, 1);
     const _csig = JSON.stringify([p.status, p.sent_at, p.ref, p.error,
                                   m.content.length]);
     if(el.dataset.sig === _csig) return;
@@ -550,7 +583,10 @@ function render(m){
       '<button class=kebab onclick="toggleCardMenu(event,\'' + m.id +
       '\')">&#8942;</button></div>' +
       '<div class=cardmenu id="cm' + m.id + '">' +
-      '<button onclick="copyCard(event,\'' + m.id + '\')">copy</button></div>' +
+      '<button onclick="copyCard(event,\'' + m.id + '\')">copy</button>' +
+      (pending ? '<button class=drop onclick="dropCard(event,\'' + m.id +
+                 '\',' + (p.action_id||0) + ')">discard</button>' : '') +
+      '</div>' +
       '<div class=why>' + esc(m.content) + '</div><pre>' + esc(p.payload||'') + '</pre>' +
       (p.status === 'queued'
         ? '<div class=btns><button class=go onclick="decide('+p.action_id+',\'approve\',this)">send it</button>'+

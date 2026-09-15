@@ -105,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith(("/api/goal/", "/api/memory/",
                                  "/api/policy/", "/api/project/",
                                  "/api/instruction/", "/api/interval",
-                                 "/api/answer")):
+                                 "/api/answer", "/api/dismiss")):
             if _goals_routes(self):
                 return
         n = int(self.headers.get("Content-Length", 0))
@@ -527,6 +527,18 @@ class Handler(BaseHTTPRequestHandler):
         # Board actions: send in the background so the page is not held open
         # across an HTTPS round trip, then wake a cycle so riffle sees that its
         # own action landed and can react to whatever follows.
+        # The ROW as well as the card.
+        #
+        # This set the card's meta only, so the database row stayed 'queued'
+        # for the whole send. A send that died therefore looked like an action
+        # still waiting on you — which is how one sat at "sending" for hours
+        # while the header counted it as waiting — and the startup sweep for
+        # rows stuck at 'sending' found nothing, because none were.
+        #
+        # Two places holding the same fact and only one of them updated. The
+        # same shape as the hardcoded ACTS list and the two copies of the
+        # brand selector.
+        s.set_status(aid, "sending")
         self._update_card(aid, status="sending")
 
         def worker():
@@ -959,6 +971,30 @@ def _goals_routes(h):
             n = _state.clear_instructions(s)
             s.say("report", f"You cleared {n} standing instruction(s).")
             return h._json({"ok": True, "cleared": n}) or True
+        if u.path == "/api/dismiss":
+            # Take an action out of the queue without sending it.
+            #
+            # Rejecting already exists on the card's own buttons, but a card
+            # can be stuck at 'sending' with no buttons at all, and a queue of
+            # five near-identical posts needs four of them gone rather than
+            # four rejections argued with. This is the plain "I am not going
+            # to deal with this" and it records that you chose it.
+            aid = int(b.get("id") or 0)
+            row = s.action(aid) if aid else None
+            if not row:
+                return h._json({"error": "no such action"}) or True
+            if row["status"] in ("executed", "sent"):
+                return h._json({"error": "that one already went out"}) or True
+            s.set_status(aid, "rejected", {"by": "you", "how": "discarded"})
+            self._update_card(aid, status="rejected",
+                              sent_at=self._local_time())
+            s.log(f"you discarded {row['kind']} #{aid} without sending it",
+                  drive=row["drive"])
+            s.say("report", f"You discarded the {row['kind']} I proposed "
+                            f"(#{aid}). It was not sent and I will not retry "
+                            f"it. If it was wrong in a way I should know about, "
+                            f"tell me and I will not write that again.")
+            return h._json({"ok": True}) or True
         if u.path == "/api/answer":
             # Imported here rather than relying on _state from a sibling
             # branch: those imports are local to their own `if`, so using the
