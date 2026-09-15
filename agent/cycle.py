@@ -816,7 +816,7 @@ def main():
     # whole prompt would cut four fifths of it. The ceiling here comes from
     # the model's context window, in characters, with room left to generate.
     _ccfg = cfg.get("cycle") or {}
-    parts = _fit(parts, int(_ccfg.get("max_prompt_chars", 52000)), log)
+    parts = _fit(parts, int(_ccfg.get("max_prompt_chars", 46000)), log)
 
     fixed = "\n\n".join(parts)
     room = max(1800, budget - len(fixed) - 400)

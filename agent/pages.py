@@ -471,14 +471,24 @@ const tsShown = new Set();
 /* Which rendered cards are still waiting on you, oldest first. Filled by the
    renderer so the pill does not have to ask the server what it can already
    see on the page. */
-const waitingCards = [];
+let waitingCards = [];
 function gotoWaiting(e){
   e.stopPropagation();
-  // Oldest first. Resolve that one and the next click lands on the next,
-  // because a resolved card takes itself out of the list on the next poll.
+  // Oldest first, from the list the SERVER sends. Working it out during
+  // render only ever covered cards that arrived while the page was open —
+  // polling is incremental, so a proposal made before you opened the tab was
+  // never rendered and never counted, which is why this did nothing.
   const el = waitingCards.map(id => document.getElementById('m' + id))
                          .find(x => x);
-  if(!el) return;
+  if(!el){
+    const q = document.getElementById('p-queue');
+    if(waitingCards.length && q){
+      const t = q.textContent;
+      q.textContent = 'scroll up to load it';
+      setTimeout(() => q.textContent = t, 1800);
+    }
+    return;
+  }
   el.scrollIntoView({behavior: 'smooth', block: 'center'});
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 1400);
@@ -566,9 +576,6 @@ function render(m){
   if(m.role === 'proposal'){
     const p = m.meta || {};
     const pending = (p.status === 'queued' || p.status === 'sending');
-    const wi = waitingCards.indexOf(m.id);
-    if(pending && wi < 0) waitingCards.push(m.id);
-    if(!pending && wi >= 0) waitingCards.splice(wi, 1);
     const _csig = JSON.stringify([p.status, p.sent_at, p.ref, p.error,
                                   m.content.length]);
     if(el.dataset.sig === _csig) return;
@@ -622,6 +629,7 @@ async function poll(){
       render(m);
       if(m.done) after = Math.max(after, m.id);
     }
+    waitingCards = d.waiting_ids || [];
     const q = document.getElementById('p-queue');
     q.textContent = d.queued + ' waiting';
     q.className = 'pill' + (d.queued ? ' hot' : '');

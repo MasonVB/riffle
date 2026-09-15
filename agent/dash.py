@@ -194,7 +194,31 @@ class Handler(BaseHTTPRequestHandler):
                             "done": True, "ts": m["ts"]})
         out.sort(key=lambda x: x["id"])
 
+        # The MESSAGE ids of the cards still waiting on you, oldest first.
+        #
+        # The client used to work these out while rendering, which fails for
+        # anything proposed before the page was opened: polling is
+        # incremental, so render() is never called for older messages and the
+        # list stayed empty. The server knows which actions are pending and
+        # which message carries each one; it should just say.
+        _pending = s.db.execute(
+            "SELECT id FROM actions WHERE status IN ('queued','sending')"
+            " ORDER BY id").fetchall()
+        _pids = {r["id"] for r in _pending}
+        _waiting = []
+        if _pids:
+            for m in s.db.execute(
+                    "SELECT id, meta FROM messages WHERE role='proposal'"
+                    " ORDER BY id"):
+                try:
+                    _mm = json.loads(m["meta"] or "{}")
+                except ValueError:
+                    continue
+                if _mm.get("action_id") in _pids:
+                    _waiting.append(m["id"])
+
         return {"messages": out, "queued": len(s.queued()),
+                "waiting_ids": _waiting,
                 "alarms_list": alarm_list,
                 "model_restarting": type(self)._restarting,
                 "cycle_running": type(self)._cycle_running,
