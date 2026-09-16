@@ -77,6 +77,77 @@ then
   exit 1
 fi
 
+# --- gate 3: does the dashboard actually render ------------------------
+#
+# Parsing and importing both passed on a change that made every page 500:
+# a NameError inside do_GET, because hashlib was imported inside a
+# function three hundred lines away and a guard that asked 'is hashlib
+# mentioned in this file' found it there and skipped the real import.
+#
+# An import gate proves the module loads. It says nothing about whether
+# the thing the module exists to do still works. This builds each page
+# the way the handler does, which is the cheapest test that would have
+# caught it.
+if ! python3 - <<'PYRENDER'
+import io
+import sys
+import tempfile
+sys.path.insert(0, ".")
+bad = 0
+try:
+    from agent.state import State
+    from agent import dash
+
+    class Fake(dash.Handler):
+        # Exercises do_GET itself, not the page constants. The first
+        # version of this gate built pages.PAGE directly and passed
+        # cleanly on a NameError that lived in do_GET, which is the whole
+        # failure it was written for. A gate that does not run the code
+        # path the user hits is a gate that agrees with you.
+        command = "GET"
+        def __init__(self, path):
+            self.path = path
+            self.wfile = io.BytesIO()
+            self.headers = {}
+            self.code = None
+        def send_response(self, c):
+            self.code = c
+        def send_header(self, k, v):
+            self.headers[k] = v
+        def end_headers(self):
+            pass
+
+    dash.Handler.cfg = {"model_id": "gate", "caps": {}, "dash": {}}
+    dash.Handler.state = State(tempfile.mktemp(suffix=".sqlite"))
+    for path in ("/", "/settings", "/history"):
+        h = Fake(path)
+        try:
+            h.do_GET()
+        except BaseException as e:
+            print(f"  {path} RAISED {type(e).__name__}: {e}")
+            bad += 1
+            continue
+        body = h.wfile.getvalue().decode("utf-8", "replace")
+        if h.code != 200:
+            print(f"  {path} returned {h.code}")
+            bad += 1
+        elif len(body) < 500:
+            print(f"  {path} returned only {len(body)} bytes")
+            bad += 1
+        elif "__BUILD__" in body or "%MODEL%" in body:
+            print(f"  {path} left a placeholder unsubstituted")
+            bad += 1
+except BaseException as e:
+    print(f"  RENDER GATE COULD NOT RUN: {type(e).__name__}: {e}")
+    bad += 1
+sys.exit(1 if bad else 0)
+PYRENDER
+then
+  echo "!! the dashboard does not serve; rolling back to $BEFORE"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
