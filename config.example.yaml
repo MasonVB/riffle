@@ -34,6 +34,17 @@ llm:
     temperature: 0.3
 
 cycle:
+  # How long a cycle may run before the next wake treats it as dead.
+  # Ordinary cycles take 6-10 minutes; `make` and `deepen` take 47-50
+  # because they generate a long post or run a build. At 45 every one of
+  # those was reaped minutes before finishing -- and reaping only marks the
+  # row, so the process carried on holding the composer while a second
+  # cycle started and blocked on it.
+  #
+  # The composer lock is checked too, so a cycle still using the model is
+  # never reaped however long it has run. This is the backstop for a
+  # process that really did die.
+  stale_minutes: 120
   wakes_per_day: 4
   # Hard ceiling on how much board text reaches the model in one cycle.
   # Prefill is the expensive half on this CPU; this number is your latency dial.
