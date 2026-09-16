@@ -148,6 +148,47 @@ then
   exit 1
 fi
 
+# --- gate 4: does the whole prompt fit the context window ----------------
+#
+# The prompt has now overflowed three times for three different reasons:
+# unbounded blocks, too small a generation allowance, and a system prompt
+# that was never counted. Each fix was aimed at part of the prompt because
+# nothing measured all of it.
+#
+# This measures what actually goes on the wire — system plus user plus the
+# front page — against the model's window, and refuses a deploy that leaves
+# too little room to answer in.
+if ! python3 - <<'PYFIT'
+import sys
+sys.path.insert(0, ".")
+try:
+    import yaml
+    from agent import cortex
+    cfg = yaml.safe_load(open("config.yaml"))
+    ctx = int(cfg.get("llm", {}).get("composer", {}).get("ctx", 20480))
+    want = int(cfg.get("llm", {}).get("composer", {}).get("max_tokens", 3000))
+    ceiling = int(cfg.get("cycle", {}).get("max_prompt_chars", 46000))
+    sysc = len(cortex.stable_prefix(cfg, ""))
+    total = ceiling + 1800
+    tokens = int(total / 3.25)
+    left = ctx - tokens
+    print(f"  prompt ceiling {ceiling} chars (system {sysc} of it)"
+          f" = ~{tokens} tokens of {ctx}; {left} left to answer in")
+    if left < want:
+        print(f"  TOO TIGHT: max_tokens is {want} and only {left} fit.")
+        sys.exit(1)
+except FileNotFoundError:
+    print("  (no config.yaml here; skipping the fit check)")
+except BaseException as e:
+    print(f"  FIT GATE COULD NOT RUN: {type(e).__name__}: {e}")
+sys.exit(0)
+PYFIT
+then
+  echo "!! the prompt does not leave room to answer; rolling back to $BEFORE"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
