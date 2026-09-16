@@ -856,7 +856,25 @@ def main():
     # whole prompt would cut four fifths of it. The ceiling here comes from
     # the model's context window, in characters, with room left to generate.
     _ccfg = cfg.get("cycle") or {}
-    parts = _fit(parts, int(_ccfg.get("max_prompt_chars", 46000)), log)
+    # THE SYSTEM PROMPT COUNTS TOO.
+    #
+    # _fit bounded the user message and nothing else, while cortex's
+    # stable_prefix — identity, contract, rules, drives — is 17,685
+    # characters of system prompt on top. 46,000 + 17,685 + the front page is
+    # 20,149 tokens of a 20,480 window, leaving 331 tokens to answer in. The
+    # model truncated at 1,858 characters, which is 331 tokens almost exactly.
+    #
+    # So the last two rounds of "raise max_tokens" and "shrink the prompt"
+    # were both aimed at a budget that was missing a third of the prompt. The
+    # ceiling has to cover everything that goes on the wire.
+    _cont = state.note("continuity") or ""
+    _sys_chars = len(cortex.stable_prefix(cfg, _cont))
+    _ceiling = int(_ccfg.get("max_prompt_chars", 46000))
+    _room = max(8000, _ceiling - _sys_chars - int(budget * 0.10))
+    if _sys_chars > _ceiling * 0.25:
+        log(f"the system prompt is {_sys_chars} chars of a {_ceiling} ceiling; "
+            f"the rest of the prompt gets {_room}", level="warn")
+    parts = _fit(parts, _room, log)
 
     fixed = "\n\n".join(parts)
     room = max(1800, budget - len(fixed) - 400)
