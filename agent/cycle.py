@@ -637,6 +637,34 @@ def main():
               "mind about what a waiting item should say, say so in chat; he "
               "can discard it and you can write the better one.")
 
+    # --- the field names you have actually seen -------------------------------
+    #
+    # On 2026-09-15 riffle told a citizen that the API "does not return a
+    # `truncated: true` flag" and cited `body_full_chars` as confirmation of
+    # the cut length. The API returns `body_truncated`, `body_length`,
+    # `body_preview_len` and `body_full_at`. The flag it said was missing
+    # exists; the field it cited as proof does not.
+    #
+    # It was not lying. It was describing a system from memory of what such a
+    # system would plausibly look like, in a comment that read as verified
+    # fact, on a board about checkable claims. The answer is not a rule about
+    # honesty — it is to put the real names in front of it.
+    _keys = set()
+    for _p in front[:6]:
+        if isinstance(_p, dict):
+            _keys |= set(_p.keys())
+    if _keys:
+        parts.append(
+            "THE FIELDS THE API ACTUALLY RETURNS on a front-page post: "
+            + ", ".join(sorted(_keys)) + ".\n"
+            "These are the names from this cycle's own response. If you write "
+            "about how the board works \u2014 what a field is called, whether a "
+            "flag exists, what an endpoint returns \u2014 use these, and say "
+            "which response you read them from. Do not name a field you have "
+            "not seen in this list or in something you fetched. A plausible "
+            "field name stated as fact is worse than saying you do not know, "
+            "because the person you told will go looking for it.")
+
     parts.append(conduct.CONDUCT)
     parts.append(situation(state, cfg, log))
 
@@ -719,21 +747,37 @@ def main():
     # active project's last read. Those are usually the same post and
     # sometimes are not — and the moment it needs the ids is exactly the
     # moment it is trying to say more about a post it has already opened on.
+    # EVERY post read recently, not just the one last commented on.
+    #
+    # Riffle wrote "I am answering their point" and "the thread has one reply
+    # from friend-of-manu" and then set parent_id null, three times, on three
+    # different posts. It knew it was replying. It did not have the id,
+    # because this block only ever showed the ids for the post it had most
+    # recently COMMENTED on — and a post it has just read and wants to answer
+    # is by definition not that one.
     try:
-        _last_read = state.db.execute(
-            "SELECT r.post_id, r.title, r.replies FROM thread_reads r"
-            " JOIN (SELECT json_extract(payload,'$.post_id') pid, MAX(id) mid"
-            "       FROM actions WHERE kind='comment'"
-            "       AND status IN ('sent','executed','approved','queued')) a"
-            "   ON r.post_id = a.pid"
-            " ORDER BY r.id DESC LIMIT 1").fetchone()
-        if not _last_read:
-            _last_read = state.db.execute(
-                "SELECT post_id, title, replies FROM thread_reads"
-                " ORDER BY id DESC LIMIT 1").fetchone()
+        _reads = state.db.execute(
+            "SELECT post_id, title, replies, MAX(id) m FROM thread_reads"
+            " WHERE replies IS NOT NULL AND replies != ''"
+            " GROUP BY post_id ORDER BY m DESC LIMIT 4").fetchall()
     except Exception:
-        _last_read = None
-    if True:
+        _reads = []
+    if _reads:
+        _blocks = []
+        for _r in _reads:
+            _blocks.append(f"  on #{_r['post_id']} \u2014 {(_r['title'] or '')[:64]}\n"
+                           + (_r["replies"] or "")[:1100])
+        parts.append(
+            "COMMENTS YOU COULD ANSWER, from the threads you have read:\n"
+            + "\n".join(_blocks)
+            + "\n\nThe number in brackets is the `parent_id`. To answer a "
+              "person, put THEIR id there and their post's id in post_id. A "
+              "comment with parent_id null is a new opening statement "
+              "addressed to nobody, and you only get one of those per post. "
+              "If your own rationale says you are answering someone, the "
+              "parent_id must not be null.")
+    _last_read = _reads[0] if _reads else None
+    if False:
         if _last_read and (_last_read["replies"] or "").strip():
             parts.append(
                 f"COMMENTS YOU COULD ANSWER on #{_last_read['post_id']} "
@@ -1174,6 +1218,77 @@ def main():
     #
     # Compared on content against the last fifteen comments, wherever they
     # landed. 55% word overlap is a rewrite, not a new thought.
+    # --- one vote per target --------------------------------------------------
+    #
+    # The registry answers 409 "Already voted on that." and the cycle is gone.
+    # Checkable here from what riffle already sent.
+    #
+    # This check was written on 2026-09-14 and is not in the deployed tree: it
+    # went into a working copy that was rebuilt from a fresh clone before the
+    # file was handed over. Second time a fix of mine has been lost that way.
+    if kind == "vote" and payload.get("target_id"):
+        _v = state.db.execute(
+            "SELECT id, created_at FROM actions WHERE kind='vote'"
+            " AND status IN ('sent','executed','approved')"
+            " AND json_extract(payload,'$.target_id') = ?"
+            " AND json_extract(payload,'$.target_type') = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (payload["target_id"], payload.get("target_type") or "post")).fetchone()
+        if _v:
+            why = (f"you already voted on {payload.get('target_type','post')} "
+                   f"{payload['target_id']} on {_v['created_at'][:16]} "
+                   f"(action #{_v['id']}). A second vote is refused by the "
+                   f"registry and costs you the cycle.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"vote refused: already voted on {payload['target_id']}",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "voted-already", str(payload["target_id"]))
+            return 0
+
+    # --- a hash you call your own has to be one of yours ----------------------
+    #
+    # numcheck accepts any hex string that appears in the `sources` block, and
+    # riffle writes that block itself \u2014 so citing "solve.py, SHA 96b8ed6f"
+    # and listing 96b8ed6f as a source passes cleanly. It did, repeatedly. That
+    # hash is not any of the five solve.py documents in its own library; it is
+    # the sha256 of one run's STDOUT, which changes every run and resolves to
+    # nothing for anyone who tries to check it.
+    #
+    # Only checked when the text claims the artifact as riffle's own. A hash
+    # quoted from another citizen's thread is theirs to be right about.
+    _body = payload.get("body") or ""
+    if kind in ("post", "comment") and _body:
+        if re.search(r"\b(my (simulation|build|script|artifact)|solve\.py)\b",
+                     _body, re.I):
+            try:
+                _lib = {r["sha256"] for r in state.db.execute(
+                    "SELECT sha256 FROM library WHERE kind='code'")}
+            except Exception:
+                _lib = set()
+            _bad = [h for h in
+                    set(re.findall(r"\b([0-9a-f]{7,64})\b", _body.lower()))
+                    if _lib and not any(x.startswith(h) for x in _lib)]
+            if _bad and _lib:
+                _recent = state.db.execute(
+                    "SELECT id, sha256 FROM library WHERE kind='code'"
+                    " ORDER BY id DESC LIMIT 1").fetchone()
+                why = (f"you cite {', '.join(_bad[:3])} as your own artifact "
+                       f"and no document in your library has that hash. The "
+                       f"hash of a run's output is not the hash of the script "
+                       f"and changes every run \u2014 nobody can resolve it. "
+                       f"Your latest shelved build is library "
+                       f"#{_recent['id']}, sha {_recent['sha256'][:12]}. Cite "
+                       f"that, or say which library id you mean.")
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log(f"unresolvable self-cited hash: {', '.join(_bad[:3])}",
+                    level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "hash-unresolvable", ", ".join(_bad[:3]))
+                return 0
+
     # --- one post waiting at a time -------------------------------------------
     #
     # Riffle proposed five posts in one day, all on judy's #5025 schema gap
