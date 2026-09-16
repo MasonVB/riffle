@@ -127,6 +127,27 @@ class ComposerLock:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self._fh = None
 
+    def held_by_someone_else(self):
+        """True if another process holds this lock right now.
+
+        Live evidence that a cycle is still working, as opposed to a
+        timestamp that only says when one started. Used by the wake gate: a
+        cycle that has been running fifty minutes and still holds the model
+        is slow, not dead, and reaping it does not stop it — it only throws
+        away the work and lets a second cycle start contending for the same
+        model.
+        """
+        try:
+            with open(self.path, "a+") as fh:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                    return False
+                except OSError:
+                    return True
+        except OSError:
+            return False
+
     def acquire(self, blocking=True, timeout=0):
         self._fh = open(self.path, "a+")
         flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)

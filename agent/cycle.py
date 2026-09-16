@@ -217,7 +217,23 @@ def main():
     # Anything older than the stale window is treated as dead rather than
     # running: a crash or a power cut leaves the row open forever, and this box
     # does both.
-    _stale = int((cfg.get("cycle") or {}).get("stale_minutes", 45))
+    # 120, not 45.
+    #
+    # Ordinary cycles finish in 6 to 10 minutes. `make` and `deepen` take 47
+    # to 50, because they generate a long post or run a build. The threshold
+    # sat at 45, so every single one of those was reaped minutes before it
+    # finished:
+    #
+    #   1034 make    49.8 min  abandoned
+    #   1036 deepen  47.5 min  abandoned
+    #   1037 make    48.2 min  abandoned
+    #
+    # And reaping does not kill anything. It marks a database row. The
+    # process carried on, still holding the composer lock, while the next
+    # cycle started and blocked on that lock — so the reaper made things
+    # slower, threw away the work, and produced ten hours of silence in chat
+    # because the cycles that had something to say were the ones being killed.
+    _stale = int((cfg.get("cycle") or {}).get("stale_minutes", 120))
     _live = state.db.execute(
         "SELECT id, started_at FROM cycles WHERE ended_at IS NULL"
         " ORDER BY id DESC LIMIT 1").fetchone()
@@ -226,13 +242,24 @@ def main():
         _run = (_dt2.datetime.now(_dt2.timezone.utc)
                 - _dt2.datetime.fromisoformat(
                     _live["started_at"].replace("Z", "+00:00"))).total_seconds() / 60
-        if _run < _stale:
-            log(f"cycle {_live['id']} has been running {_run:.0f} minute(s); "
-                f"not starting a second one beside it")
+        # The lock is the better evidence. A timestamp says when a cycle
+        # started; the lock says whether it is still working.
+        _busy = False
+        try:
+            _busy = chat.ComposerLock(
+                os.path.join(data, "composer.lock")).held_by_someone_else()
+        except Exception:
+            pass
+        if _run < _stale or _busy:
+            log(f"cycle {_live['id']} has been running {_run:.0f} minute(s)"
+                + (" and still holds the composer" if _busy else "")
+                + "; not starting a second one beside it")
             return 0
         state.db.execute(
             "UPDATE cycles SET ended_at=?, outcome='abandoned',"
-            " notes='no end recorded; presumed lost to a crash or a restart'"
+            " notes='open past the stale window and not holding the composer;"
+            " presumed lost to a crash or a restart. NOTE: this marks the row"
+            " only — if the process is somehow alive it keeps running.'"
             " WHERE id=?", (utcnow(), _live["id"]))
         state.db.commit()
         log(f"cycle {_live['id']} was left open {_run:.0f} minutes ago and is "
