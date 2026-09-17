@@ -1,0 +1,2554 @@
+#!/usr/bin/env python3
+"""One wake cycle. Run from a systemd timer.
+
+    python3 -m agent.cycle --config config.yaml
+
+Order of operations, and why:
+
+  pulse   -> a few hundred bytes that answer whether anything concerns you.
+             Only pay for a full read when it says yes.
+  attest  -> the witness ritual runs FIRST and unconditionally. It is the one
+             obligation that is not subject to a weighted desire, because a
+             society whose members each remember one hash is the whole
+             mechanism and a drive table that can skip it has misunderstood
+             what it is for.
+  gather  -> inbox and a bounded slice of what moved.
+  drive   -> weighted choice among drives that actually have something to act
+             on. A drive with no material is not available this cycle.
+  propose -> one action, from the model, as JSON.
+  gate    -> schema, caps, constraints. Model output is a suggestion.
+  check   -> numcheck over any body containing figures.
+  execute -> or queue for the operator, per config autonomy.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agent import (chat, conduct, consolidate, cortex, desk, drives, goals,
+                   library, memory,
+                   notify, policy, project)  # noqa: E402  # noqa: E402
+from agent.client import HttpError, Reader, Writer  # noqa: E402
+from agent.state import State, utcnow  # noqa: E402
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CFG = None  # set in main(); do_witness needs it for alarm notifications
+
+
+def load_config(path):
+    """Minimal YAML subset reader so the agent needs no pip install."""
+    try:
+        import yaml
+        return yaml.safe_load(open(path))
+    except ImportError:
+        pass
+    cfg = {}
+    stack = [(-1, cfg)]
+    for raw in open(path):
+        line = raw.split("#")[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        s = line.strip()
+        if s.startswith("- "):
+            parent.setdefault("_list", []).append(_scalar(s[2:]))
+            continue
+        key, _, val = s.partition(":")
+        val = val.strip()
+        if not val:
+            node = {}
+            parent[key.strip()] = node
+            stack.append((indent, node))
+        elif val.startswith("[") and val.endswith("]"):
+            parent[key.strip()] = [_scalar(x) for x in val[1:-1].split(",") if x.strip()]
+        else:
+            parent[key.strip()] = _scalar(val)
+    return cfg
+
+
+def _scalar(v):
+    v = v.strip().strip('"').strip("'")
+    if v in ("true", "True"):
+        return True
+    if v in ("false", "False"):
+        return False
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        return v
+
+
+def run_numcheck(body, sources, context=None):
+    """Returns (ok, report). Blocks the action if a figure has no provenance."""
+    with tempfile.TemporaryDirectory() as td:
+        draft = os.path.join(td, "draft.md")
+        src = os.path.join(td, "src")
+        os.makedirs(src)
+        open(draft, "w").write(body)
+        json.dump(sources or {}, open(os.path.join(src, "sources.json"), "w"))
+        # Everything the agent was shown this cycle is, by definition, traceable.
+        # Requiring the model to copy figures back out of its own prompt was
+        # asking it to re-declare what it had just been handed, and it blocked
+        # six cycles over post ids read straight off the front page.
+        if context:
+            open(os.path.join(src, "context.txt"), "w").write(context)
+        try:
+            p = subprocess.run(
+                [sys.executable, os.path.join(HERE, "numcheck.py"), draft, src,
+                 "--json", "--agent"],
+                capture_output=True, text=True, timeout=120)
+            report = json.loads(p.stdout) if p.stdout.strip() else {"error": p.stderr[:400]}
+            return p.returncode == 0, report
+        except Exception as e:
+            return False, {"error": f"numcheck failed to run: {e}"}
+
+
+def do_witness(state, reader, log):
+    """The obligation that is not a desire."""
+    prior_i, prior_t = state.last_head("identity"), state.last_head("treasury")
+    if prior_i and prior_t:
+        try:
+            chk = reader.attest(identity_from=prior_i["through_id"], identity_expect=prior_i["head"],
+                                ledger_from=prior_t["through_id"], ledger_expect=prior_t["head"])
+            for name, key in (("identity", "identity_log"), ("treasury", "treasury")):
+                b = chk.get(key, {})
+                st, em, vt = b.get("status"), b.get("expect_matches"), b.get("verified_through_id")
+                if st == "broken" or (st == "mismatch" and vt is not None and em is False):
+                    notify.alarm(state, _CFG or {}, f"{name} chain: status={st}, "
+                                 f"expect_matches={em}, through={vt}", log)
+                    log(f"ALARM on {name}: status={st} expect_matches={em} through={vt}. "
+                        f"The segment witnessed at id {prior_i['through_id']} no longer hashes "
+                        f"to what was saved.", level="alarm", drive="witness")
+                elif st in ("empty", "unsealed_anchor") or (st == "mismatch" and vt is None):
+                    log(f"{name}: INCONCLUSIVE (status={st}, verified_through_id={vt}) — this "
+                        f"call hashed nothing, so expect_matches carries no information",
+                        level="warn", drive="witness")
+        except HttpError as e:
+            log(f"re-check failed: {e}", level="warn", drive="witness")
+
+    att = reader.attest()
+    saved = []
+    for name, key in (("identity", "identity_log"), ("treasury", "treasury")):
+        b = att.get(key, {})
+        if b.get("status") == "verified" and b.get("head"):
+            state.save_head(name, b["head"], b["verified_through_id"])
+            saved.append(f"{name}@{b['verified_through_id']}")
+    if saved:
+        log(f"marks saved: {', '.join(saved)} (head + index + read time, all three)",
+            drive="witness")
+        state.say("report", "Witness pass: " + ", ".join(saved)
+                  + ". Re-checked yesterday's marks against the chain and the GitHub log.",
+                  {"drive": "witness"})
+    return att
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default=os.path.join(HERE, "config.yaml"))
+    ap.add_argument("--dry-run", action="store_true", help="propose, never execute")
+    ap.add_argument("--force", action="store_true",
+                    help="wake now regardless of the interval (the run-cycle "
+                         "button and request_cycle use this)")
+    a = ap.parse_args()
+
+    cfg = load_config(a.config)
+    global _CFG
+    _CFG = cfg
+    data = os.path.expanduser(cfg["data_dir"])
+    state = State(os.path.join(data, "state.sqlite"))
+    log = state.log
+    reader = Reader(cfg["base"])
+    secret_path = os.path.join(data, f"{cfg['handle']}.secret")
+    if not os.path.exists(secret_path):
+        sys.exit(f"no secret at {secret_path} — run join.py first")
+    writer = Writer(cfg["base"], open(secret_path).read().strip())
+
+    goals.seed(state, cfg)
+    project.ensure(state)
+    # --- how often riffle wakes ------------------------------------------
+    # The timer now fires every 5 minutes and this decides whether it is
+    # actually time. The interval has to be settable from the dashboard, and
+    # the dashboard cannot write /opt/riffle or run systemctl — the same
+    # boundary that moved the goal table and the action policy into the
+    # database. A systemd override would need root; a row does not.
+    _iv = int(state.note("cycle_interval_minutes")
+              or (cfg.get("cycle") or {}).get("interval_minutes", 60))
+    _iv = max(5, min(1440, _iv))
+    _last = state.db.execute(
+        "SELECT started_at FROM cycles ORDER BY id DESC LIMIT 1").fetchone()
+    if _last and not a.force:
+        import datetime as _dt
+        _age = (_dt.datetime.now(_dt.timezone.utc)
+                - _dt.datetime.fromisoformat(_last["started_at"].replace("Z", "+00:00"))
+                ).total_seconds() / 60
+        if _age < _iv - 0.5:
+            log(f"not due: {_age:.0f} of {_iv} minutes since the last cycle")
+            return 0
+
+    # --- and never two at once ----------------------------------------------
+    # The interval check above measures time since the last cycle STARTED,
+    # which says nothing about whether it finished. A cycle that runs 18
+    # minutes against a 15 minute interval means the next timer firing sees
+    # "18 > 15, due" and starts a second one alongside it. The database shows
+    # cycles 431 and 432 both beginning at 06:31:02, and a `contribute` cycle
+    # from the night before still marked running.
+    #
+    # They do not corrupt each other — the composer lock serialises the model
+    # — but the second one BLOCKS on that lock for as long as the first one
+    # holds it, which is where an 18-minute cycle with 421ms of CPU came from.
+    # It spent the time waiting for a lock held by a cycle it should never
+    # have started beside.
+    #
+    # Anything older than the stale window is treated as dead rather than
+    # running: a crash or a power cut leaves the row open forever, and this box
+    # does both.
+    # 120, not 45.
+    #
+    # Ordinary cycles finish in 6 to 10 minutes. `make` and `deepen` take 47
+    # to 50, because they generate a long post or run a build. The threshold
+    # sat at 45, so every single one of those was reaped minutes before it
+    # finished:
+    #
+    #   1034 make    49.8 min  abandoned
+    #   1036 deepen  47.5 min  abandoned
+    #   1037 make    48.2 min  abandoned
+    #
+    # And reaping does not kill anything. It marks a database row. The
+    # process carried on, still holding the composer lock, while the next
+    # cycle started and blocked on that lock — so the reaper made things
+    # slower, threw away the work, and produced ten hours of silence in chat
+    # because the cycles that had something to say were the ones being killed.
+    _stale = int((cfg.get("cycle") or {}).get("stale_minutes", 120))
+    _live = state.db.execute(
+        "SELECT id, started_at FROM cycles WHERE ended_at IS NULL"
+        " ORDER BY id DESC LIMIT 1").fetchone()
+    if _live and not a.force:
+        import datetime as _dt2
+        _run = (_dt2.datetime.now(_dt2.timezone.utc)
+                - _dt2.datetime.fromisoformat(
+                    _live["started_at"].replace("Z", "+00:00"))).total_seconds() / 60
+        # The lock is the better evidence. A timestamp says when a cycle
+        # started; the lock says whether it is still working.
+        _busy = False
+        try:
+            _busy = chat.ComposerLock(
+                os.path.join(data, "composer.lock")).held_by_someone_else()
+        except Exception:
+            pass
+        if _run < _stale or _busy:
+            log(f"cycle {_live['id']} has been running {_run:.0f} minute(s)"
+                + (" and still holds the composer" if _busy else "")
+                + "; not starting a second one beside it")
+            return 0
+        state.db.execute(
+            "UPDATE cycles SET ended_at=?, outcome='abandoned',"
+            " notes='open past the stale window and not holding the composer;"
+            " presumed lost to a crash or a restart. NOTE: this marks the row"
+            " only — if the process is somehow alive it keeps running.'"
+            " WHERE id=?", (utcnow(), _live["id"]))
+        state.db.commit()
+        log(f"cycle {_live['id']} was left open {_run:.0f} minutes ago and is "
+            f"presumed dead; closing it and carrying on", level="warn")
+
+    desk.ensure(state)
+    library.ensure(state, (cfg.get("library") or {}).get("root", library.ROOT))
+    policy.ensure(state, cfg)
+    try:
+        from agent import telemetry
+        telemetry.install(state, cfg)
+        telemetry.sample(state, cfg, "cycle-start")
+    except Exception:
+        pass
+    # The settings page writes these; config.yaml only seeds them.
+    cfg["autonomy"] = policy.effective(state, cfg)
+    # `deepen` is a goal like any other, seeded once, editable on /goals.
+    if not state.db.execute("SELECT 1 FROM drives WHERE name='deepen'").fetchone():
+        state.db.execute(
+            "INSERT INTO drives (name,weight,locked,description,created_at,created_by)"
+            " VALUES ('deepen',0.25,0,?,?,'seed')",
+            ("add the next increment to the open project — read a source, draft "
+             "a paragraph, or argue against yourself", state.note("x") or "seed"))
+        state.db.commit()
+        state.log("seeded the 'deepen' goal at 0.25")
+    # The live goal table overrides the file. config.yaml seeded it once and is
+    # never read for weights again, because the agent can move them and cannot
+    # write the file.
+    for _n, _w, _d in (
+        ("curate", 0.10,
+         "vote and tag what you have actually read — the ranking is only as "
+         "good as the citizens who mark it, and a vote is the only act that "
+         "moves another citizen's karma"),
+        # 0.30, not 0.12. At 0.12 against six other drives `make` was drawn
+        # roughly one cycle in eight, and on a box that loses hours to freezes
+        # that is a build every day or two — not enough to iterate on anything.
+        # Building is also the only thing riffle does that produces an artifact
+        # a stranger can run, which is what the docket actually pays for.
+        ("make", 0.30,
+         "build something. Take an open row off the docket, write Python, run "
+         "it in the sandbox until it actually works, and submit the artifact. "
+         "A tool a stranger can run outlives any post about the board"),
+        ("greet", 0.08,
+         "the porch: one line a day, nothing ranked. Say hello, congratulate, "
+         "thank, disagree in plain words — the social room, not the record"),
+    ):
+        if not state.db.execute("SELECT 1 FROM drives WHERE name=?",
+                                (_n,)).fetchone():
+            state.db.execute(
+                "INSERT INTO drives (name,weight,locked,description,created_at,"
+                "created_by) VALUES (?,?,0,?,?,'seed')", (_n, _w, _d, utcnow()))
+            state.db.commit()
+            state.log(f"seeded the '{_n}' drive at {_w}")
+    if not state.db.execute("SELECT 1 FROM drives WHERE name='operator'").fetchone():
+        state.db.execute(
+            "INSERT INTO drives (name,weight,locked,description,created_at,created_by)"
+            " VALUES ('operator',0.0,1,?,?,'seed')",
+            ("carry out what your operator asked for in the chat box; selected "
+             "only when a live instruction exists, never at random", utcnow()))
+        state.db.commit()
+        state.log("seeded the 'operator' drive; it is chosen only by an instruction")
+    # Whatever was waiting behind a finished project starts now rather than at
+    # the next open_project. close_project promotes too; this covers a row that
+    # was closed by hand, or by an older build that had no queue.
+    _promoted = project.promote_next(state)
+    if _promoted:
+        state.log(f"started the next queued project: {_promoted['title']}")
+        state.say("report", f"Started the next project in the queue: "
+                            f"{_promoted['title']}\n{_promoted['question']}")
+    live_weights = goals.weights(state)
+    cfg["_forbids"] = {r["name"]: (json.loads(r["forbids"]) if r["forbids"] else [])
+                       for r in goals.all_drives(state)}
+    cfg["_selects"] = {r["name"]: (json.loads(r["selects"]) if r["selects"] else None)
+                       for r in goals.all_drives(state)}
+
+    # --- pulse ------------------------------------------------------------
+    try:
+        pulse = writer.pulse()
+    except HttpError as e:
+        log(f"pulse failed: {e}", level="warn")
+        pulse = {}
+    day = (pulse.get("now_utc") or utcnow())[:10]
+
+    # Reflect on the PREVIOUS cycle: one call site rather than one per exit
+    # path, and an hour's distance on what mattered. Uses the small model on
+    # its own server, so it costs no composer lock.
+    try:
+        memory.reflect(state, cfg, log)
+    except Exception as e:
+        log(f"reflection error: {e}", level="warn")
+    memory.prune(state, keep=1200)
+
+    consolidate.sweep(state, cfg, log)
+    if consolidate.due(state, cfg):
+        lock = chat.ComposerLock(os.path.join(data, "composer.lock"))
+        if lock.acquire(blocking=True, timeout=900):
+            try:
+                consolidate.run(state, cfg, log, say=state.say)
+            finally:
+                lock.release()
+        else:
+            log("consolidation due but the composer was busy; will retry next cycle",
+                level="info")
+
+    # --- witness (always) --------------------------------------------------
+    att = do_witness(state, reader, log)
+
+    # --- gather ------------------------------------------------------------
+    try:
+        me = writer.me()
+    except HttpError as e:
+        me = {}
+        log(f"me failed: {e}", level="warn")
+    # /api/me carries starter_items when you hold no claims: small open docket
+    # rows nobody has taken. It was being fetched and thrown away every cycle.
+    starters = me.get("starter_items")
+    starters = starters if isinstance(starters, list) else []
+    inbox = []
+    for b in ("replies", "comments_on_your_posts", "mentions_of_you", "threads_you_joined"):
+        v = me.get(b)
+        if isinstance(v, list):
+            inbox += [dict(bucket=b, **x) if isinstance(x, dict) else {"bucket": b, "raw": x}
+                      for x in v]
+
+    # --- acknowledge the inbox ---------------------------------------------
+    # Until you ack, /api/me replays the same window forever: every cycle sees
+    # the same mentions with no way to tell a new one from one it read four
+    # days ago. That is why `answer` never felt responsive.
+    #
+    # The watermark field is NOT documented and this build has never seen a
+    # live /api/me body, so nothing is guessed: the candidates below are tried
+    # in order and whatever is found is logged by name. If none is present the
+    # ack is skipped and the log says so, which is how we learn the real field
+    # without breaking a cycle over it.
+    if inbox:
+        _mark, _from = None, None
+        for _k in ("up_to", "now_ms", "high_water_ms", "high_water", "as_of_ms",
+                   "as_of", "cursor_ms", "next_since", "now"):
+            _v = me.get(_k)
+            if isinstance(_v, int) and _v > 1_000_000_000_000:   # ms epoch, not seconds
+                _mark, _from = _v, _k
+                break
+        if _mark is None:
+            log("inbox not acked: no ms-epoch watermark on /api/me. Keys seen: "
+                + ", ".join(sorted(str(k) for k in me)[:40]), level="warn")
+        else:
+            try:
+                writer.ack(_mark)
+                log(f"acked {len(inbox)} inbox item(s) up to {_mark} "
+                    f"(watermark field '{_from}')")
+            except HttpError as e:
+                log(f"ack failed: {e}", level="warn")
+
+    moved = walk_changes(state, reader, cfg, log)
+
+    front = reader.front(limit=15).get("posts", [])
+    # Keep a digest of what was actually on the board this cycle. Next cycle's
+    # reflection needs to know what it read, and the front page will have moved
+    # by then.
+    state.note("last_front_digest", "\n".join(
+        f"  #{p.get('id')} \"{str(p.get('title'))[:90]}\" by {p.get('author')}"
+        f" ({p.get('votes', 0)} votes, {p.get('comments', 0)} comments)"
+        for p in front[:12]))
+    unseen = [p for p in front if not state.is_seen("post", p.get("id"))]
+
+    try:
+        listings = reader.listings().get("listings", [])
+    except HttpError:
+        listings = []
+    open_listings = [l for l in listings if l.get("status") in (None, "open")]
+
+    # --- which drives have material this cycle ------------------------------
+    # A goal with nothing to act on is not available this cycle. Goals you
+    # added yourself have no precondition wired in, so they are always
+    # available — describe them well and the model decides what they mean.
+    known = {"understand", "witness"}
+    if inbox:
+        known.add("answer")
+    if unseen or starters:
+        known.add("contribute")
+    if open_listings:
+        known.add("earn")
+    # curate needs something it has actually read. Voting on a front-page title
+    # is exactly the uncritical marking the square complains about, so the
+    # material is threads already opened into a project, plus the inbox.
+    if inbox or project.reads(state, (project.active(state) or {"id": 0})["id"]):
+        known.add("curate")
+    known.add("greet")          # the porch is uncapped and always open
+    if starters or state.note("last_build") or open_listings:
+        known.add("make")
+    available = {n for n in live_weights
+                 if n in known or n not in ("answer", "contribute", "earn")}
+    available.discard("operator")      # selected by an instruction, never by weight
+    cooling, _until, hours_left = project.in_cooldown(state)
+    # `deepen` is always available, but what it may DO depends on whether
+    # there is anything to deepen. Without this it drew "work on the project"
+    # with no project and wrote a comment instead.
+    available.add("deepen")
+    # While posting is closed there is one useful thing to do, so weight it that
+    # way rather than relying on the model to notice.
+    if cooling and "deepen" in available:
+        live_weights = dict(live_weights)
+        focus = float((cfg.get("projects") or {}).get("cooldown_focus", 3.0))
+        live_weights["deepen"] = live_weights.get("deepen", 0.25) * focus
+    drive = drives.pick_drive(cfg, available, weights_override=live_weights) or "understand"
+
+    # --- an operator instruction takes the cycle -----------------------------
+    # Instructions used to be read AFTER the drive was picked and appended to
+    # the prompt as data, under a line naming a drive the model then followed
+    # instead. With witness passes dominating the log, "create a project X"
+    # was reliably read by a cycle that had no intention of doing it — and
+    # spend_instructions charges on READ, so it was gone before a cycle that
+    # would act on it ever saw it. That is what the send-to-cycle button was
+    # doing: nothing, once, quietly.
+    #
+    # `operator` is a real row in the drives table rather than a name invented
+    # here, so what it may propose is visible and editable on the settings
+    # page like every other drive. It is never picked at random: it is only
+    # ever selected below, and only when you have actually asked for something.
+    # Someone talking TO riffle outranks whatever the weights drew. `answer`
+    # was 0.15 against five other drives, so a mention had roughly a one in
+    # seven chance of being the thing that cycle did — and with the inbox
+    # replaying unacked, the same mention lost that lottery for days.
+    _mentions = [x for x in inbox if x.get("bucket") == "mentions_of_you"]
+    if _mentions and "answer" in live_weights:
+        drive = "answer"
+        log(f"{len(_mentions)} mention(s) waiting, so this cycle answers "
+            f"rather than {drive!r} by weight", drive="answer")
+
+    from agent.state import live_instructions, spend_instructions
+    _pending = live_instructions(state)
+    if _pending:
+        drive = "operator"
+
+    # A `deepen` draw with no open project used to be narrowed here to
+    # open_project alone, by writing _selects in memory. That is now handled
+    # by the gate below, which refuses every action but open_project and noop
+    # when nothing is open, for every drive, and says why. The old version set
+    # a restriction that existed only in memory — so the drives table always
+    # looked clean, the audit trigger never fired, and clearing the column
+    # changed nothing. A rule you cannot see is a rule you cannot debug.
+
+    cid = state.begin_cycle(drive)
+    log(f"cycle {cid}: drive={drive}, inbox={len(inbox)}, unseen_front={len(unseen)}, "
+        f"open_listings={len(open_listings)}", drive=drive)
+
+    # --- build bounded context ----------------------------------------------
+    budget = cfg["cycle"]["max_context_chars"]
+    _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
+    _spent = sorted(k for k, v in _left.items() if v <= 0)
+    parts = [f"TODAY (server): {pulse.get('now_utc') or utcnow()}",
+             f"SELECTED DRIVE THIS CYCLE: {drive}",
+             "caps remaining today: " + ", ".join(
+                 f"{k}={_left[k]}" for k in sorted(_left))]
+    if _spent:
+        # A limit, not a number to read past. "caps remaining: comment=0" was
+        # in the prompt for every one of seven cycles that then proposed a
+        # comment, got refused, and spent three minutes of model time to learn
+        # what the first line already said. A number is information; a
+        # prohibition is an instruction, and only one of them changes what
+        # gets proposed.
+        parts.append(
+            "YOU MAY NOT PROPOSE THESE TODAY \u2014 the allowance is gone and "
+            "the gate will refuse them: " + ", ".join(_spent) + ".\n"
+            "Proposing one anyway costs a whole cycle and achieves nothing. "
+            "Choose something else: read a thread, work the project, build, "
+            "shelve a reference, ask your operator, or say so and noop.")
+    if inbox:
+        parts.append("YOUR INBOX:\n" + json.dumps(inbox, indent=1)[:6000])
+    if moved["posts"] or moved["comments"] or moved["nulls"]:
+        _bits = [f"{len(moved['posts'])} post(s)",
+                 f"{len(moved['comments'])} comment(s)",
+                 f"{len(moved['nulls'])} governed absence(s)"]
+        _hdr = ("WHAT ACTUALLY MOVED since your last walk \u2014 " + ", ".join(_bits)
+                + ". This is the complete read, not the ranked front page: "
+                + "nothing here was chosen for you by a ranking formula.")
+        if moved["saturated"]:
+            _hdr += (" THIS PAGE CAME BACK AT ITS CEILING, so there is more "
+                     "behind it that the next wake will collect.")
+        if isinstance(moved["window_age_ms"], int):
+            _hdr += (f" The window you asked for is "
+                     f"{round(moved['window_age_ms'] / 3600000, 1)}h old.")
+        parts.append(_hdr + "\n" + json.dumps(
+            {"posts": moved["posts"][:25], "comments": moved["comments"][:25],
+             "nulls": moved["nulls"][:15]}, indent=1)[:7000])
+    if moved["nulls"]:
+        parts.append("THE NULLS ABOVE ARE NOT NOISE. Each is an absence the "
+                     "platform governed and recorded WITH ITS REASON \u2014 a "
+                     "refused write, a reply the depth cap moved, a rotation, "
+                     "a tombstone. You have published twice on the difference "
+                     "between an absence with a record and one without. These "
+                     "are the ones with a record.")
+
+    # --- what it has never tried ------------------------------------------
+    # Telling a model to "explore all your actions" is an instruction it
+    # cannot check itself against. This is the same instruction as a fact:
+    # here are the ones you have never once proposed, counted from your own
+    # actions table. In 120 cycles riffle used maybe six of twenty-two, not
+    # because the rest were forbidden but because nothing ever pointed at
+    # them. A list it can read is harder to ignore than an adjective.
+    _used = {r["kind"] for r in state.db.execute(
+        "SELECT DISTINCT kind FROM actions")}
+    _never = [k for k in policy.ACTION_KINDS
+              if k not in _used
+              and cfg["autonomy"].get(k, "never") != "never"]
+    # ONE action, not a list of sixteen.
+    #
+    # The list version named everything unused at once, which is the same
+    # mistake missing_kind() was written to avoid: an agent told it has
+    # sixteen options picks none of them. Sixteen names read as a complaint;
+    # one name with a reason reads as a task. Rotated by cycle id so it works
+    # through them rather than fixating on whichever sorts first.
+    _WHY = {
+        "remember": "write down one thing this cycle taught you that you would "
+                    "still want to know in a month. You have made ONE memory in "
+                    "your whole existence and your short-term store has been "
+                    "empty for eight days, so the daily consolidation has had "
+                    "nothing to promote every single day. A cycle whose only "
+                    "trace is a report is a cycle you will repeat.",
+        "tag": "tag a thread you actually read, so the next citizen can find "
+               "it. Taggers are public by handle, so it is a signed opinion.",
+        "vote": "a vote is the only act that moves another citizen's karma. A "
+                "post you read carefully and did not vote on left no trace "
+                "that you were there.",
+        "seal": "fingerprint something you want to be able to prove you had "
+                "before you had it.",
+        "flag": "if something on the board is wrong in a way that matters, say "
+                "so formally rather than only in a comment.",
+        "porch": "one line, no ranking, no cap. Thank someone, congratulate a "
+                 "result, or disagree in ordinary words.",
+        "knock": "mark yourself present without saying anything.",
+        "attestation": "sign a claim about another citizen's work. You have a "
+                       "bound key; almost nobody uses it for this.",
+        "fetch": "read one of the square's public surfaces. Read the docket "
+                 "before deciding nothing needs building.",
+        "build": "write Python and run it. No network, standard library, two "
+                 "minutes. A failed build costs nothing.",
+        "sign": "ask for a signature. You never see the key and never choose "
+                "the bytes.",
+        "listing_submission": "submit work against a docket row. The artifact "
+                              "may be a post id.",
+        "add_goal": "if what you keep wanting to do has no drive for it, "
+                    "propose one.",
+        "adjust_drive": "if the weights no longer match what is worth doing, "
+                        "move one and say why.",
+        "close_project": "end a question you have stopped being able to move.",
+        "request_cycle": "ask to wake again sooner if something is in flight.",
+    }
+    if _never:
+        _pick = _never[cid % len(_never)]
+        parts.append(
+            f"AN ACTION YOU HAVE NEVER ONCE PROPOSED: `{_pick}` \u2014 "
+            + _WHY.get(_pick, "it is enabled and you have never reached for it.")
+            + f"\nAlso unused: {', '.join(k for k in _never if k != _pick)}."
+            if len(_never) > 1 else
+            f"AN ACTION YOU HAVE NEVER ONCE PROPOSED: `{_pick}` \u2014 "
+            + _WHY.get(_pick, "it is enabled and you have never reached for it."))
+
+    # --- what it actually holds -------------------------------------------
+    # riffle spent 2026-09-01 refusing to earn because "I have no wallet, no
+    # key, and no signed attestation to submit". The key was adopted into the
+    # signer's custody two days earlier and nothing ever told it. An agent
+    # reasoning correctly from a false premise looks exactly like an agent
+    # reasoning badly, and only one of those is fixable by a better prompt.
+    # --- what is already waiting on your operator ----------------------------
+    #
+    # Riffle proposed the same post at cycles 967, 969 and on, was refused
+    # each time by the one-queued-post rule, and the refusal filled the chat.
+    # The rule was doing its job; nothing had told riffle the post existed.
+    # A check that only speaks when you break it teaches you the rule one
+    # wasted cycle at a time, which is the pattern this whole project keeps
+    # falling into.
+    # Bounded at five, oldest first. max_queued is 20, and a prompt block that
+    # can grow to twenty lines because you went away for a weekend is the same
+    # unbounded-growth mistake that pushed the whole prompt past the context
+    # window. The point is "something is waiting", which five items make as
+    # well as twenty.
+    _pend = state.db.execute(
+        "SELECT id, kind, created_at, payload FROM actions"
+        " WHERE status IN ('queued','sending') ORDER BY id LIMIT 5").fetchall()
+    _pend_n = state.db.execute(
+        "SELECT COUNT(*) c FROM actions"
+        " WHERE status IN ('queued','sending')").fetchone()["c"]
+    if _pend:
+        _bits = []
+        for r in _pend:
+            try:
+                _pl = json.loads(r["payload"])
+            except Exception:
+                _pl = {}
+            _ttl = (_pl.get("title") or _pl.get("body") or "")[:60]
+            _bits.append("  #" + str(r["id"]) + " " + r["kind"]
+                         + (" " + repr(_ttl) if _ttl else "")
+                         + " proposed " + r["created_at"][:16])
+        parts.append(
+            "WAITING ON YOUR OPERATOR RIGHT NOW:\n" + "\n".join(_bits)
+            + (f"\n  ...and {_pend_n - len(_bits)} more" if _pend_n > len(_bits) else "")
+            + "\nHe has not read these yet. Proposing another of the same kind "
+              "will be refused and costs you the cycle \u2014 a second post "
+              "does not make the first go out sooner. Do something else: "
+              "reply to someone, read, build, vote. If you have changed your "
+              "mind about what a waiting item should say, say so in chat; he "
+              "can discard it and you can write the better one.")
+
+    # --- the field names you have actually seen -------------------------------
+    #
+    # On 2026-09-15 riffle told a citizen that the API "does not return a
+    # `truncated: true` flag" and cited `body_full_chars` as confirmation of
+    # the cut length. The API returns `body_truncated`, `body_length`,
+    # `body_preview_len` and `body_full_at`. The flag it said was missing
+    # exists; the field it cited as proof does not.
+    #
+    # It was not lying. It was describing a system from memory of what such a
+    # system would plausibly look like, in a comment that read as verified
+    # fact, on a board about checkable claims. The answer is not a rule about
+    # honesty — it is to put the real names in front of it.
+    _keys = set()
+    for _p in front[:6]:
+        if isinstance(_p, dict):
+            _keys |= set(_p.keys())
+    if _keys:
+        parts.append(
+            "THE FIELDS THE API ACTUALLY RETURNS on a front-page post: "
+            + ", ".join(sorted(_keys)) + ".\n"
+            "These are the names from this cycle's own response. If you write "
+            "about how the board works \u2014 what a field is called, whether a "
+            "flag exists, what an endpoint returns \u2014 use these, and say "
+            "which response you read them from. Do not name a field you have "
+            "not seen in this list or in something you fetched. A plausible "
+            "field name stated as fact is worse than saying you do not know, "
+            "because the person you told will go looking for it.")
+
+    # --- what actually stops you, from the code that stops you ----------------
+    #
+    # Riffle has spent days declining to post because "the project requires a
+    # live thread anchor to be valid". No such rule exists. It invented the
+    # constraint, the reflection pass recorded it, the daily consolidation
+    # promoted it to long term, and it now reads it every cycle as a fact
+    # about itself. A closed loop manufacturing its own paralysis.
+    #
+    # The counter is not an instruction to be less cautious. It is the actual
+    # list, generated from the same functions that do the blocking, so an
+    # invented rule can be checked against a real one.
+    _ok, _why = project.ready(state, cfg)
+    _gates = [f"  the project bar: {'CLEARED' if _ok else _why}"]
+    _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
+    _gates.append("  today's allowance: "
+                  + ", ".join(f"{k}={_left[k]}" for k in sorted(_left)))
+    _cool = project.cooling(state) if hasattr(project, "cooling") else None
+    _gates.append("  numcheck: every figure must appear in your sources block")
+    _gates.append("  one top-level comment per post; replies need a parent_id "
+                  "from that post")
+    _gates.append("  one post queued at a time; a hash you call yours must be "
+                  "in your library")
+    parts.append(
+        "EVERYTHING THAT CAN STOP AN ACTION, AND NOTHING ELSE:\n"
+        + "\n".join(_gates)
+        + "\nThat is the complete list. There is no rule requiring a live "
+          "thread, an anchor, a matching bounty, or a citizen to have asked. "
+          "If you are about to decline because of a constraint that is not "
+          "above, you have invented it \u2014 and you have done this before and "
+          "written it into your own memory as though it were real. Check the "
+          "list. If the list does not stop you, the only thing stopping you "
+          "is you.")
+
+    parts.append(conduct.CONDUCT)
+    parts.append(situation(state, cfg, log))
+
+    from agent.state import open_questions, answered_questions
+    _open, _answered = open_questions(state), answered_questions(state)
+    if _answered:
+        parts.append(
+            "ANSWERS FROM YOUR OPERATOR. These are first-hand and you may cite "
+            "them as a source — `operator:<id>` — the same way you would cite "
+            "a thread. They stay here; you do not have to act on one the cycle "
+            "you first see it:\n"
+            + "\n".join(f"  #{q['id']} you asked: {q['question']}\n"
+                        f"      he answered ({q['answered_at'][:16]}): {q['answer']}"
+                        for q in _answered))
+    if _open:
+        parts.append(
+            "QUESTIONS YOU HAVE ASKED AND HE HAS NOT ANSWERED YET:\n"
+            + "\n".join(f"  #{q['id']} ({q['asked_at'][:16]}) {q['question']}"
+                        for q in _open)
+            + "\nDo not ask these again and do not wait on them. Carry on with "
+              "something else; the answer will be here when it comes.")
+    elif not _answered:
+        parts.append(
+            "YOU CAN ASK YOUR OPERATOR A QUESTION. `ask_operator` puts one in "
+            "his chat and his answer comes back here, permanently, as a source "
+            "you can cite. Use it when the answer would change what you do and "
+            "you cannot get it from the square, the docket, a reference page or "
+            "your own library: what he intends, whether something is worth "
+            "building, what a constraint of yours is actually for. You have "
+            "reasoned from guesses about your own situation before and "
+            "published one of them.")
+
+    parts.append(desk.as_context(state))
+    parts.append(library.as_context(
+        state, int((cfg.get("library") or {}).get("max_bytes", library.MAX_BYTES))))
+    _lf2 = state.note("last_library_read")
+    if _lf2:
+        parts.append("THE DOCUMENT YOU OPENED LAST CYCLE (it is replaced the "
+                     "next time you open one; shelve or note anything you want "
+                     "to keep):\n" + _lf2[:9000])
+
+    # --- what you have already said out there --------------------------------
+    # Riffle commented four times on one post without ever being shown that it
+    # had. The prompt described the board and its own project in detail and
+    # said nothing about its own recent voice on that board.
+    _said = state.db.execute(
+        "SELECT kind, created_at, payload, rationale FROM actions"
+        " WHERE kind IN ('comment','post','porch') AND status IN"
+        " ('sent','executed','approved','queued') ORDER BY id DESC LIMIT 8"
+    ).fetchall()
+    if _said:
+        _lines = []
+        for r in _said:
+            try:
+                pl = json.loads(r["payload"])
+            except Exception:
+                pl = {}
+            where = (f"on #{pl['post_id']}" + (" (reply)" if pl.get("parent_id")
+                     else " (top level)")) if pl.get("post_id") else "on the porch"
+            _lines.append(f"  {r['created_at'][:16]} {r['kind']} {where}: "
+                          + " ".join((pl.get("body") or pl.get("title") or
+                                      r["rationale"] or "").split())[:160])
+        parts.append(
+            "WHAT YOU HAVE ALREADY SAID, most recent first:\n"
+            + "\n".join(_lines)
+            + "\nYou may not open a second top-level comment on a post you "
+              "have already commented on \u2014 reply to a specific person "
+              "instead, and answer what THEY said. Before writing, check "
+              "whether you are about to make a point you have already made in "
+              "different words. Four restatements of one idea are one "
+              "contribution and three pieces of noise.")
+
+    # --- comments you could answer -------------------------------------------
+    # The reply ids have always been in the thread digest, formatted as
+    # `[43230] kael (7 votes): ...`, and nothing ever said that the bracketed
+    # number is a parent_id. Riffle wrote many top-level comments and almost
+    # no replies, which is not a conversation — it is announcements delivered
+    # in the same room.
+    # Keyed on the post riffle has most recently commented on, not on the
+    # active project's last read. Those are usually the same post and
+    # sometimes are not — and the moment it needs the ids is exactly the
+    # moment it is trying to say more about a post it has already opened on.
+    # EVERY post read recently, not just the one last commented on.
+    #
+    # Riffle wrote "I am answering their point" and "the thread has one reply
+    # from friend-of-manu" and then set parent_id null, three times, on three
+    # different posts. It knew it was replying. It did not have the id,
+    # because this block only ever showed the ids for the post it had most
+    # recently COMMENTED on — and a post it has just read and wants to answer
+    # is by definition not that one.
+    try:
+        _reads = state.db.execute(
+            "SELECT post_id, title, replies, MAX(id) m FROM thread_reads"
+            " WHERE replies IS NOT NULL AND replies != ''"
+            " GROUP BY post_id ORDER BY m DESC LIMIT 4").fetchall()
+    except Exception:
+        _reads = []
+    if _reads:
+        _blocks = []
+        for _r in _reads:
+            _blocks.append(f"  on #{_r['post_id']} \u2014 {(_r['title'] or '')[:64]}\n"
+                           + (_r["replies"] or "")[:1100])
+        parts.append(
+            "COMMENTS YOU COULD ANSWER, from the threads you have read:\n"
+            + "\n".join(_blocks)
+            + "\n\nThe number in brackets is the `parent_id`. To answer a "
+              "person, put THEIR id there and their post's id in post_id. A "
+              "comment with parent_id null is a new opening statement "
+              "addressed to nobody, and you only get one of those per post. "
+              "If your own rationale says you are answering someone, the "
+              "parent_id must not be null.")
+    _last_read = _reads[0] if _reads else None
+    if False:
+        if _last_read and (_last_read["replies"] or "").strip():
+            parts.append(
+                f"COMMENTS YOU COULD ANSWER on #{_last_read['post_id']} "
+                f"\u2014 {_last_read['title'][:70]}\n"
+                + (_last_read["replies"] or "")[:3000]
+                + "\n\nThe number in brackets is a `parent_id`. A comment with "
+                  "parent_id set lands under that person's words and they see "
+                  "it. Answer a specific sentence someone wrote: name what they "
+                  "said, then say what you checked and what you got. You "
+                  "already used your one top-level comment on this post.")
+
+    _lb = state.note("last_build")
+    if _lb:
+        try:
+            _lb = json.loads(_lb)
+            parts.append(
+                f"YOUR LAST BUILD \u2014 {_lb['entry']} at {_lb['at']}, "
+                f"{'worked' if _lb['ok'] else 'FAILED'}"
+                + (f" (exit {_lb.get('exit_code')})" if not _lb["ok"] else "")
+                + f", files: {', '.join(_lb['files'])}.\n"
+                + (f"stdout:\n{_lb['stdout'][:2000]}\n" if _lb["stdout"] else "")
+                + (f"stderr:\n{_lb['stderr'][:1500]}\n" if _lb["stderr"] else "")
+                + (("YOUR SOURCE, so you can fix it rather than start over:\n"
+                    + "\n".join(f"--- {k} ---\n{v}" for k, v in
+                                 (_lb.get("source") or {}).items()))
+                   if _lb.get("source") else "")
+                + ("\n(files too large to show: "
+                   + ", ".join(_lb["truncated"]) + ")" if _lb.get("truncated") else "")
+                + "\n\nIf it FAILED: read the traceback, change the line it "
+                  "names, and build again with the corrected files. A failed "
+                  "build costs nothing and iterating is what the sandbox is "
+                  "for \u2014 three or four rounds is normal and is not a sign "
+                  "the project is wrong. DO NOT close a project because a "
+                  "build failed; that is the one reason that is never a good "
+                  "one. If it worked, submit it: an artifact nobody can run "
+                  "is not a contribution.")
+        except Exception:
+            pass
+
+    _lf = state.note("last_fetch")
+    if _lf:
+        try:
+            _lf = json.loads(_lf)
+            parts.append(f"WHAT YOU READ LAST CYCLE \u2014 /{_lf['what']} at "
+                         f"{_lf['at']}. Use it or say why not; it is replaced "
+                         f"the next time you fetch anything:\n{_lf['body']}")
+        except Exception:
+            pass
+    if starters:
+        parts.append("WORK NOBODY HAS TAKEN — open docket rows sized for one "
+                     "citizen. These are things the square has asked for and "
+                     "not got. Building one is worth more than another "
+                     "comment about the board:\n"
+                     + json.dumps(starters, indent=1)[:4000])
+    if open_listings and drive == "earn":
+        parts.append("OPEN LISTINGS:\n" + json.dumps(open_listings, indent=1)[:5000])
+    # Structural blocks first, front page with whatever is left. The previous
+    # order froze `material` before these were appended, so none of them ever
+    # reached the model and every cycle really was the cold start it described.
+    recalled = memory.recall(state, f"{drive} " + " ".join(
+        str(p.get("title", "")) for p in front[:8]), limit=8)
+    goal_lines = "\n".join(
+        f"  {r['name']}: {r['weight']:.2f}{' [locked]' if r['locked'] else ''}"
+        f"  — {r['description'] or ''}" for r in goals.all_drives(state))
+    _q = project.queue(state)
+    if _q:
+        parts.append("PROJECTS WAITING BEHIND THIS ONE (they start when this "
+                     "one is posted or closed — do not open them again):\n"
+                     + "\n".join(f"  {i + 1}. {r['title']}"
+                                 for i, r in enumerate(_q[:8])))
+    if not project.active(state):
+        # First line of the prompt, before the board, the memories or the
+        # goals. A constraint stated after three thousand characters of other
+        # material is a suggestion.
+        parts.insert(0,
+            "NO PROJECT IS OPEN. This cycle, open_project is the only action "
+            "that will be accepted — everything else is refused before it "
+            "reaches the square. Pick the question you most want to settle "
+            "from what you have read and open a project on it. A rough "
+            "question you can sharpen later beats another cycle spent "
+            "re-reading something you cannot keep.")
+    if _pending:
+        # First line, above even the no-project rule: this cycle exists to do
+        # this. Still not new RULES — the gate, the caps and numcheck all
+        # apply exactly as they would otherwise, and an instruction to do
+        # something forbidden is refused like anything else.
+        parts.insert(0,
+                     "YOUR OPERATOR ASKED FOR THIS, most recent last. This "
+                     "cycle exists to carry it out — do it now rather than "
+                     "describing what you would do, and do not substitute "
+                     "something else you find more interesting. The gate, the "
+                     "caps and the number check still apply:\n"
+                     + "\n".join("  - " + r["text"] for r in _pending))
+        log("cycle carried " + str(len(_pending)) + " operator instruction(s)",
+            drive=drive)
+    parts.append(project.as_context(state, cfg, budget=int(budget * 0.40)))
+    parts.append("WHAT YOU REMEMBER:\n" + memory.as_context(recalled))
+    parts.append("YOUR GOALS RIGHT NOW (you may propose adjust_drive on an "
+                 "unlocked one):\n" + goal_lines)
+
+    # --- make the budget mean something --------------------------------------
+    #
+    # `budget` only ever constrained the front-page slice. Everything in
+    # `parts` was unbounded, and `room` fell back to its 1800 floor once the
+    # fixed blocks exceeded the budget on their own — so a bigger prompt
+    # produced a bigger prompt.
+    #
+    # It reached 73,864 characters and llama-server refused it:
+    #   request (20964 tokens) exceeds the available context size (20480)
+    #
+    # Three earn cycles died that way in one morning. Every block added over
+    # the last fortnight is defensible on its own and nothing ever weighed
+    # them against a ceiling.
+    #
+    # Trimmed longest-first down to a floor, then dropped, so the blocks that
+    # grow without bound give way before the small ones that carry a rule.
+    # And it SAYS what it cut: a prompt silently missing its project block
+    # produces behaviour nobody can explain.
+    # NOT `budget` — that is the front-page allowance and applying it to the
+    # whole prompt would cut four fifths of it. The ceiling here comes from
+    # the model's context window, in characters, with room left to generate.
+    _ccfg = cfg.get("cycle") or {}
+    # THE SYSTEM PROMPT COUNTS TOO.
+    #
+    # _fit bounded the user message and nothing else, while cortex's
+    # stable_prefix — identity, contract, rules, drives — is 17,685
+    # characters of system prompt on top. 46,000 + 17,685 + the front page is
+    # 20,149 tokens of a 20,480 window, leaving 331 tokens to answer in. The
+    # model truncated at 1,858 characters, which is 331 tokens almost exactly.
+    #
+    # So the last two rounds of "raise max_tokens" and "shrink the prompt"
+    # were both aimed at a budget that was missing a third of the prompt. The
+    # ceiling has to cover everything that goes on the wire.
+    _cont = state.note("continuity") or ""
+    _sys_chars = len(cortex.stable_prefix(cfg, _cont))
+    _ceiling = int(_ccfg.get("max_prompt_chars", 46000))
+    _room = max(8000, _ceiling - _sys_chars - int(budget * 0.10))
+    if _sys_chars > _ceiling * 0.25:
+        log(f"the system prompt is {_sys_chars} chars of a {_ceiling} ceiling; "
+            f"the rest of the prompt gets {_room}", level="warn")
+    parts = _fit(parts, _room, log)
+
+    fixed = "\n\n".join(parts)
+    room = max(1800, budget - len(fixed) - 400)
+
+    # Trim each body to a fixed size and SAY SO, rather than letting one slice
+    # cut the last post mid-sentence. A labelled truncation is something the
+    # agent can act on; an unlabelled one just looks like the board is broken.
+    per = max(220, min(700, room // max(1, len(front))))
+    rows = []
+    for p in front:
+        body = (p.get("body") or "")
+        row = {"id": p.get("id"), "title": p.get("title"),
+               "author": p.get("author"), "votes": p.get("votes"),
+               "comments": p.get("comments"),
+               "body": body[:per]}
+        if len(body) > per:
+            row["body_truncated"] = True
+            row["body_full_chars"] = len(body)
+        rows.append(row)
+    front_block = ("FRONT PAGE — an index, not the posts themselves. Bodies are "
+                   "cut to " + str(per) + " characters and comments are not "
+                   "included at all. Use `read_thread` on an id to get the whole "
+                   "post and its replies; what you read is filed into your "
+                   "project.\n" + json.dumps(rows, indent=1)[:room])
+    parts.append(front_block)
+    material = "\n\n".join(parts)
+    continuity = state.note("continuity") or "(nothing yet — this is your first recorded cycle)"
+    system = cortex.stable_prefix(cfg, continuity)
+    user = (f"<board>\n{material}\n</board>\n\n"
+            f"Choose ONE action for this cycle, driven by '{drive}'. "
+            f"Reply with the JSON object only.")
+
+    # Announce anything already waiting, including a backlog held overnight.
+    notify.announce_pending(state, cfg, log)
+
+    # With hourly wakes an unread queue would grow all day and stop being read.
+    depth = len(state.queued())
+    # The default is the fallback for a config that never named it; yours
+    # does. 5 was chosen when a cycle was hourly, so five unread proposals
+    # meant five hours of your inattention. At a five-minute timer it is
+    # twenty-five minutes, and riffle spent whole runs of cycles refusing to
+    # think because you had not clicked anything since breakfast.
+    cap = int(cfg.get("max_queued", 20))
+    if depth >= cap:
+        log(f"queue holds {depth} unread proposal(s) (cap {cap}); witnessing only, "
+            f"not waking the composer", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 {depth} proposals are still waiting on "
+                            f"you, so I did not write another one.", {"drive": drive})
+        state.end_cycle(cid, "queue-full")
+        return 0
+
+    # --- think ---------------------------------------------------------------
+    # One model, six cores. If a chat turn is generating, wait for it rather
+    # than halving both and cooking a 35W chassis.
+    lock = chat.ComposerLock(os.path.join(data, "composer.lock"))
+    if not lock.acquire(blocking=True, timeout=1200):
+        log("composer busy with a chat turn for 20 minutes; skipping this cycle",
+            level="warn", drive=drive)
+        state.end_cycle(cid, "composer-busy")
+        return 0
+    try:
+        raw = cortex.complete(cfg["llm"]["composer"], system, user,
+                              schema=cortex.proposal_schema())
+        proposal = cortex.parse_proposal(raw)
+        # An over-long title used to lose the whole cycle: three in a row came
+        # back at 121, 124 and 127 characters and each one died at the gate
+        # having spent three minutes. Ask for a shorter one right here, inside
+        # the lock, while the cache is warm — a title is a ~30-token
+        # generation, not another cycle. Never truncated: a sentence cut at
+        # character 120 is a title the agent did not write.
+        _p = (proposal or {}).get("payload") or {}
+        _t = str(_p.get("title") or "")
+        if (proposal or {}).get("action") == "post" and len(_t) > cortex.TITLE_LIMIT:
+            _new = cortex.shorten_title(cfg["llm"]["composer"], _t,
+                                        log=lambda m, **k: log(m, drive=drive, **k))
+            if _new:
+                _p["title"] = _new
+                log(f"title was {len(_t)} chars; the composer rewrote it to "
+                    f"{len(_new)}: {_new}", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 the title ran "
+                                    f"{len(_t)} characters over the {cortex.TITLE_LIMIT} "
+                                    f"limit, so I asked for a shorter one:\n{_new}",
+                          {"drive": drive})
+            else:
+                # Trim, rather than lose the cycle.
+                #
+                # I argued against this when I built it: "a sentence cut at
+                # character 120 is a title the agent did not write." True, and
+                # it cost cycle 508 anyway when the rewrite came back empty —
+                # the composer was busy, shorten_title swallowed the failure
+                # and returned None, and the gate refused a finished post over
+                # 26 characters.
+                #
+                # The argument I missed is that `post` is queued: you read the
+                # title on the card before it goes anywhere. A trimmed title
+                # you can reject beats no post at all, and the log says
+                # plainly that it was cut.
+                _cut = _t[:cortex.TITLE_LIMIT]
+                if " " in _cut[cortex.TITLE_LIMIT - 25:]:
+                    _cut = _cut.rsplit(" ", 1)[0]
+                _p["title"] = _cut.rstrip(" ,;:-\u2014")
+                log(f"title was {len(_t)} chars and the composer would not "
+                    f"shorten it, so it was CUT to {len(_p['title'])}: "
+                    f"{_p['title']}", level="warn", drive=drive)
+                state.say("report",
+                          f"Cycle {cid} \u00b7 the title ran {len(_t)} "
+                          f"characters over the {cortex.TITLE_LIMIT} limit and "
+                          f"the composer would not shorten it, so I cut it. "
+                          f"Check it before approving:\n{_p['title']}",
+                          {"drive": drive})
+    except Exception as e:
+        log(f"composer failed: {e}", level="error", drive=drive)
+        state.say("error", f"Cycle {cid} ({drive}) failed to produce a proposal: {e}")
+        state.end_cycle(cid, "composer-failed", str(e)[:500])
+        # Exit 0: the cycle ran, the model wrote something odd, and
+        # nothing is broken. Returning 1 painted systemd red for a
+        # normal outcome, and a log where everything is red is a log
+        # in which the real failures cannot be seen.
+        return 0
+    finally:
+        lock.release()
+
+    # Charge the instruction now rather than when it was read. The old call
+    # site was before the composer, so a busy lock or a failed completion —
+    # neither of which the model ever saw — burned the instruction anyway.
+    # A gate refusal still spends it: the model DID see it and answered, and
+    # an instruction that survives every refusal steers long after you stopped
+    # watching.
+    if _pending:
+        spend_instructions(state)
+
+    # --- gate -----------------------------------------------------------------
+    try:
+        kind, payload, rationale = drives.gate(proposal, drive, cfg)
+    except drives.Rejected as e:
+        state.propose(cid, str(proposal.get("action"))[:40], drive, proposal, str(e), "blocked")
+        log(f"proposal blocked by the gate: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} · drive {drive} · the gate refused my own "
+                           f"proposal: {e}")
+        state.end_cycle(cid, "blocked", str(e)[:500])
+        return 0
+
+    if kind == "noop":
+        log(f"noop: {payload.get('why', '')}", drive=drive)
+        state.say("report", f"Cycle {cid} · drive {drive} · did nothing. "
+                            f"{payload.get('why', '')}", {"drive": drive})
+        state.end_cycle(cid, "noop", payload.get("why", "")[:500])
+        return 0
+
+    if kind == "post":
+        cooling, until, left = project.in_cooldown(state)
+        if cooling:
+            msg = (f"posting is closed for another {left:.1f}h after your last "
+                   f"post. Work the project instead.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"post refused: {msg}", level="info", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I wanted to post and could "
+                                f"not: {msg}", {"drive": drive})
+            state.end_cycle(cid, "cooldown")
+            return 0
+        rdy, why_r = project.ready(state, cfg)
+        if not rdy:
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"post refused: {why_r}", level="info", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I wanted to post and could "
+                                f"not: {why_r}", {"drive": drive})
+            state.end_cycle(cid, "not-ready")
+            return 0
+
+    ok, why = drives.caps_ok(state, day, kind, cfg)
+    if not ok:
+        state.propose(cid, kind, drive, payload, rationale, "blocked")
+        log(f"blocked: {why}", level="warn", drive=drive)
+        state.end_cycle(cid, "cap-reached", why)
+        return 0
+
+    # --- reflexive actions: applied locally, never sent to the square ----------
+    # A constraint, not advice. The previous version explained itself and
+    # was ignored eight cycles running, because an explanation the model will
+    # not remember cannot change what it does next.
+    if kind not in ("open_project", "noop") and not project.active(state):
+        state.propose(cid, kind, drive, payload, rationale, "blocked")
+        log(f"{kind} refused: no project is open", level="info", drive=drive)
+        _last = state.db.execute(
+            "SELECT text FROM memories WHERE kind='board' ORDER BY id DESC"
+            " LIMIT 1").fetchone()
+        hint = (" You last read " + _last["text"][:70] + "…"
+                if _last else "")
+        state.say("report", "Cycle " + str(cid) + " : refused " + kind
+                  + " because no project is open. Open one and everything you "
+                  "read afterwards is kept." + hint, {"drive": drive})
+        state.end_cycle(cid, "no-project")
+        return 0
+
+    # Everything below this line is handled and returns, so none of it ever
+    # reached state.propose() — which is where the actions table comes from,
+    # and where the "ACTIONS YOU HAVE NEVER ONCE PROPOSED" block reads its
+    # list. riffle used `fetch` on 2026-08-29 and ran a `build` the same day,
+    # and the prompt has been telling it ever since that it had never proposed
+    # either. A nudge built on a table that half the actions never enter is a
+    # nudge that lies, and it lies most about exactly the new actions it
+    # exists to encourage.
+    #
+    # Recorded once, here, after the gate accepted it and before the handler
+    # runs. The non-reflexive kinds fall past this and are recorded further
+    # down as they always were.
+    if kind in ("read_more", "request_cycle", "read_thread", "build", "sign",
+                "fetch", "open_project", "project_note", "close_project",
+                "adjust_drive", "add_goal", "remember",
+                "desk_put", "desk_clear",
+                "library_put", "library_find", "library_read", "read_page",
+                "ask_operator"):
+        state.propose(cid, kind, drive, payload, rationale, "accepted")
+
+    if kind == "read_more":
+        return apply_read_more(state, cfg, cid, payload, drive)
+
+    if kind == "request_cycle":
+        return apply_request_cycle(state, cfg, cid, payload, drive)
+
+    if kind == "read_thread":
+        return apply_read_thread(state, cfg, cid, payload, drive)
+
+    if kind in ("desk_put", "desk_clear"):
+        return apply_desk(state, cid, kind, payload, drive, log)
+
+    if kind in ("library_put", "library_find", "library_read"):
+        return apply_library(state, cfg, cid, kind, payload, drive, log)
+
+    if kind == "read_page":
+        return apply_read_page(state, cfg, cid, payload, drive, log)
+
+    if kind == "ask_operator":
+        return apply_ask(state, cid, payload, drive, log)
+
+    if kind == "build":
+        return apply_build(state, cfg, cid, payload, drive, log)
+
+    if kind == "sign":
+        return apply_sign(state, cfg, cid, payload, drive, log)
+
+    if kind == "fetch":
+        return apply_fetch(state, cfg, reader, writer, cid, payload, drive, log)
+
+    if kind in ("open_project", "project_note", "close_project"):
+        return apply_project(state, cfg, cid, kind, payload, drive, rationale)
+
+    if kind in ("adjust_drive", "add_goal", "remember"):
+        return apply_reflexive(state, cfg, cid, kind, payload, drive, rationale)
+
+    # --- numcheck --------------------------------------------------------------
+    report = None
+    body = payload.get("body")
+    if body and cfg["constraints"].get("numcheck_required", True):
+        passed, report = run_numcheck(body, proposal.get("sources"), material)
+        if not passed:
+            # Match the message to the decision. Spelled numerals do not block
+            # in agent mode, but the report listed them anyway, so it named
+            # blockers that were not blockers.
+            bad = [f for f in report.get("findings", [])
+                   if f.get("status") in ("UNBACKED", "MALFORMED")
+                   and not f.get("low")]
+            state.propose(cid, kind, drive, payload, rationale, "blocked", report)
+            detail = "; ".join(f"L{f['line']} {f['token']}" for f in bad[:5])
+            log(f"numcheck blocked a {kind}: {len(bad)} figure(s) with no provenance — "
+                + detail, level="warn", drive=drive)
+            state.say("error", f"Cycle {cid} · drive {drive} · I wrote a {kind} containing "
+                               f"{len(bad)} figure(s) I could not trace to a source, so it "
+                               f"was blocked before sending: {detail}")
+            state.end_cycle(cid, "numcheck-blocked", f"{len(bad)} unbacked")
+            return 0
+
+    # --- one top-level comment per post ---------------------------------------
+    #
+    # On 2026-09-08 riffle posted FOUR top-level comments on #4454, one per
+    # drive, over a few hours. Word overlap between them was only 18-30%, so
+    # they were not copies — they were four differently-worded statements of
+    # one idea: "your rule names the blind spot in my simulation, here is the
+    # SHA, the portable falsifier would reveal it." Three cited the same hash.
+    #
+    # Nothing stopped it. Each cycle drew a different drive, each drive wrote
+    # its own justification for the same act, and no check asked whether the
+    # thing had already been said. Reading a post it had already commented on
+    # produced another comment, because the prompt has no notion of "I have
+    # already spoken here".
+    #
+    # A REPLY is different and stays allowed: parent_id set means answering a
+    # specific person, which is conversation. A second top-level comment on
+    # the same post is a second opening statement, and nobody has two.
+    # --- and not the same comment twice, reply or not -------------------------
+    #
+    # The one-per-post rule only covered TOP-LEVEL comments, so riffle sent
+    # three replies to coppice on #4454 that opened with the identical
+    # sentence — "your specimen isolates the failure mode I was trying to
+    # simulate but couldn't quite pin down in the coupling logic" — across two
+    # days. Each was a legitimate reply by the letter of the rule.
+    #
+    # Compared on content against the last fifteen comments, wherever they
+    # landed. 55% word overlap is a rewrite, not a new thought.
+    # --- one vote per target --------------------------------------------------
+    #
+    # The registry answers 409 "Already voted on that." and the cycle is gone.
+    # Checkable here from what riffle already sent.
+    #
+    # This check was written on 2026-09-14 and is not in the deployed tree: it
+    # went into a working copy that was rebuilt from a fresh clone before the
+    # file was handed over. Second time a fix of mine has been lost that way.
+    if kind == "vote" and payload.get("target_id"):
+        _v = state.db.execute(
+            "SELECT id, created_at FROM actions WHERE kind='vote'"
+            " AND status IN ('sent','executed','approved')"
+            " AND json_extract(payload,'$.target_id') = ?"
+            " AND json_extract(payload,'$.target_type') = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (payload["target_id"], payload.get("target_type") or "post")).fetchone()
+        if _v:
+            why = (f"you already voted on {payload.get('target_type','post')} "
+                   f"{payload['target_id']} on {_v['created_at'][:16]} "
+                   f"(action #{_v['id']}). A second vote is refused by the "
+                   f"registry and costs you the cycle.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"vote refused: already voted on {payload['target_id']}",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "voted-already", str(payload["target_id"]))
+            return 0
+
+    # --- a hash you call your own has to be one of yours ----------------------
+    #
+    # numcheck accepts any hex string that appears in the `sources` block, and
+    # riffle writes that block itself \u2014 so citing "solve.py, SHA 96b8ed6f"
+    # and listing 96b8ed6f as a source passes cleanly. It did, repeatedly. That
+    # hash is not any of the five solve.py documents in its own library; it is
+    # the sha256 of one run's STDOUT, which changes every run and resolves to
+    # nothing for anyone who tries to check it.
+    #
+    # Only checked when the text claims the artifact as riffle's own. A hash
+    # quoted from another citizen's thread is theirs to be right about.
+    _body = payload.get("body") or ""
+    if kind in ("post", "comment") and _body:
+        if re.search(r"\b(my (simulation|build|script|artifact)|solve\.py)\b",
+                     _body, re.I):
+            try:
+                _lib = {r["sha256"] for r in state.db.execute(
+                    "SELECT sha256 FROM library WHERE kind='code'")}
+            except Exception:
+                _lib = set()
+            _bad = [h for h in
+                    set(re.findall(r"\b([0-9a-f]{7,64})\b", _body.lower()))
+                    if _lib and not any(x.startswith(h) for x in _lib)]
+            if _bad and _lib:
+                _recent = state.db.execute(
+                    "SELECT id, sha256 FROM library WHERE kind='code'"
+                    " ORDER BY id DESC LIMIT 1").fetchone()
+                why = (f"you cite {', '.join(_bad[:3])} as your own artifact "
+                       f"and no document in your library has that hash. The "
+                       f"hash of a run's output is not the hash of the script "
+                       f"and changes every run \u2014 nobody can resolve it. "
+                       f"Your latest shelved build is library "
+                       f"#{_recent['id']}, sha {_recent['sha256'][:12]}. Cite "
+                       f"that, or say which library id you mean.")
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log(f"unresolvable self-cited hash: {', '.join(_bad[:3])}",
+                    level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "hash-unresolvable", ", ".join(_bad[:3]))
+                return 0
+
+    # --- one post waiting at a time -------------------------------------------
+    #
+    # Riffle proposed five posts in one day, all on judy's #5025 schema gap
+    # and its own coupled-detector simulation, with five different titles.
+    # The daily cap and the cooldown both count SENT posts, so a queued post
+    # awaiting approval stops nothing: it proposed, the proposal sat, the
+    # project still read "ready", and it proposed again.
+    #
+    # A queue of five near-identical posts is not five chances to publish, it
+    # is one post and four demands on the operator's attention.
+    if kind == "post":
+        _q = state.db.execute(
+            "SELECT id, created_at, payload FROM actions WHERE kind='post'"
+            " AND status='queued' ORDER BY id DESC LIMIT 1").fetchone()
+        if _q:
+            try:
+                _qt = (json.loads(_q["payload"]).get("title") or "")[:70]
+            except Exception:
+                _qt = ""
+            why = (f"you already have a post waiting for approval \u2014 "
+                   f"#{_q['id']}, \"{_qt}\", proposed {_q['created_at'][:16]}. "
+                   f"Writing a second one does not make the first go out "
+                   f"sooner; it makes your operator read two. Wait for it, or "
+                   f"if you have genuinely changed your mind about what it "
+                   f"should say, say so in chat rather than proposing again.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"post refused: #{_q['id']} is already queued", level="warn",
+                drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not propose that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "post-queued-already", str(_q["id"]))
+            return 0
+
+    # --- a parent_id has to belong to the post you are replying on ------------
+    #
+    # Two comments were refused by the registry with
+    #   "parent comment 52768 not found on post 4727"
+    # because the reply ids riffle had in front of it came from a DIFFERENT
+    # post. The block that shows them is keyed on the post it most recently
+    # commented on; when it then replies somewhere else, those ids are the
+    # only ones it has seen and it uses them.
+    #
+    # Checked locally against what it actually read, so the cycle is not spent
+    # discovering it from a 404. If no read of that post is on file the check
+    # stays out of the way: absence of a record is not evidence the id is
+    # wrong, and this project has published on that too.
+    if kind == "comment" and payload.get("parent_id") and payload.get("post_id"):
+        try:
+            _rd = state.db.execute(
+                "SELECT replies FROM thread_reads WHERE post_id=?"
+                " ORDER BY id DESC LIMIT 1", (payload["post_id"],)).fetchone()
+        except Exception:
+            _rd = None
+        if _rd and (_rd["replies"] or "").strip():
+            _seen = set(re.findall(r"\[(\d+)\]", _rd["replies"] or ""))
+            if str(payload["parent_id"]) not in _seen:
+                why = (f"comment {payload['parent_id']} is not on post "
+                       f"{payload['post_id']}. The ids you can reply to there "
+                       f"are: {', '.join(sorted(_seen)) or '(none read yet)'}. "
+                       f"Reply ids belong to one post; an id you saw on another "
+                       f"thread will be refused by the registry. If you meant a "
+                       f"comment you have not read, read that post first.")
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log(f"parent {payload['parent_id']} not on post "
+                    f"{payload['post_id']}", level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "wrong-parent", str(payload["parent_id"]))
+                return 0
+
+    if kind == "comment" and payload.get("body"):
+        def _k(t):
+            return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
+                             if len(w) > 3)
+        _new = _k(payload["body"])
+        if len(_new) >= 12:
+            for _r in state.db.execute(
+                    "SELECT id, created_at, payload FROM actions WHERE kind='comment'"
+                    " AND status IN ('sent','executed','approved','queued')"
+                    " ORDER BY id DESC LIMIT 15"):
+                try:
+                    _old = _k(json.loads(_r["payload"]).get("body") or "")
+                except Exception:
+                    continue
+                if not _old:
+                    continue
+                _ov = len(_new & _old) / max(len(_new), len(_old))
+                if _ov >= 0.55:
+                    why = (f"that is {_ov:.0%} the same as comment #{_r['id']} "
+                           f"which you sent on {_r['created_at'][:16]}. You have "
+                           f"already made this point. Saying it again in "
+                           f"different words is the same contribution taking up "
+                           f"someone's attention twice. Either answer something "
+                           f"a person actually said that you have not answered, "
+                           f"or do something else this cycle.")
+                    state.propose(cid, kind, drive, payload, rationale, "blocked")
+                    log(f"comment refused: {_ov:.0%} overlap with #{_r['id']}",
+                        level="warn", drive=drive)
+                    state.say("report",
+                              f"Cycle {cid} \u00b7 I did not send that: {why}",
+                              {"drive": drive})
+                    state.end_cycle(cid, "said-already", str(_r["id"]))
+                    return 0
+
+    if kind == "comment" and not payload.get("parent_id"):
+        prior = state.db.execute(
+            "SELECT id, created_at FROM actions WHERE kind='comment'"
+            " AND status IN ('sent','executed','approved','queued')"
+            " AND json_extract(payload,'$.post_id') = ?"
+            " AND json_extract(payload,'$.parent_id') IS NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (payload.get("post_id"),)).fetchone()
+        if prior:
+            # NAME THE IDS IT CAN USE.
+            #
+            # The first version of this said "reply with parent_id set" and
+            # stopped there. Riffle then blocked five cycles in a row on
+            # #4454, each rationale beginning "I am replying to coppice's
+            # comment" — it had understood the instruction and had no idea
+            # what number to put in the field. Telling someone to cite a
+            # reference without giving them the catalogue is not an
+            # instruction, it is a riddle.
+            _ids = ""
+            try:
+                _r = state.db.execute(
+                    "SELECT replies FROM thread_reads WHERE post_id=?"
+                    " ORDER BY id DESC LIMIT 1",
+                    (payload.get("post_id"),)).fetchone()
+                if _r and (_r["replies"] or "").strip():
+                    _ids = ("\nThese are the comments on that post and the "
+                            "number in brackets is the parent_id for each:\n"
+                            + (_r["replies"] or "")[:1800])
+            except Exception:
+                pass
+            why = (f"you already made a top-level comment on post "
+                   f"{payload.get('post_id')} (action #{prior['id']}, "
+                   f"{prior['created_at'][:16]}). Saying the same thing again "
+                   f"in different words is not a second contribution. If you "
+                   f"have something to add, REPLY: set parent_id to the id of "
+                   f"the comment you are answering, and answer what that "
+                   f"person actually said rather than restating your own "
+                   f"position." + _ids)
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"second top-level comment on #{payload.get('post_id')} "
+                f"refused", level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "already-commented", str(payload.get("post_id")))
+            return 0
+
+    # --- execute or queue --------------------------------------------------------
+    mode = cfg["autonomy"].get(kind, "queue")
+    if a.dry_run:
+        mode = "queue"
+    aid = state.propose(cid, kind, drive, payload, rationale,
+                        "queued" if mode == "queue" else "approved", report)
+
+    if mode == "queue":
+        log(f"queued {kind} #{aid} for your approval: {rationale[:200]}", drive=drive)
+        state.say("proposal", rationale,
+                  {"kind": kind, "drive": drive, "action_id": aid, "status": "queued",
+                   "payload": json.dumps(payload, indent=2)})
+        notify.announce_pending(state, cfg, log)
+        state.end_cycle(cid, "queued", f"action {aid}")
+        return 0
+
+    try:
+        resp = execute(writer, kind, payload)
+        state.set_status(aid, "executed", resp)
+        state.cap_bump(day, kind)
+        if kind == "post":
+            # Shared with the dashboard's approval path — see project.on_posted.
+            project.on_posted(state, cfg, aid,
+                              log=lambda m: log(m, drive=drive))
+        if kind in ("comment", "vote", "tag", "flag"):
+            state.mark_seen("post", payload.get("post_id") or payload.get("target_id"))
+        log(f"executed {kind} #{aid}: {rationale[:200]}", drive=drive)
+        ref = (resp or {}).get("id") or payload.get("target_id") or payload.get("post_id") or ""
+        # A CARD, NOT A ONE-LINE REPORT.
+        #
+        # The queued path has always rendered a gold-framed card showing the
+        # full payload — the actual comment, the actual post body. The auto
+        # path wrote a summary: "sent a comment on 2413", and the text riffle
+        # published appeared nowhere. That was tolerable while `auto` meant
+        # reads and project bookkeeping. It stops being tolerable the moment
+        # comment, vote, tag, seal, porch and attestation are all auto, which
+        # is exactly when you most need to see what went out.
+        #
+        # Same role, so the same renderer draws it; status 'executed' rather
+        # than 'queued', so it shows what happened instead of approve/reject
+        # buttons.
+        # "cycle": cid matters. end_cycle appends a plain-English line unless
+        # this cycle already spoke, and it detects that by meta.cycle or by a
+        # "Cycle N ·" content prefix. This card has neither — its content is
+        # the rationale — so every auto send produced the full gold card AND a
+        # bland "Cycle 346 · I acted on the square." underneath it. Exactly the
+        # duplicate-report bug from the fetch path, reintroduced by me the day
+        # after fixing it.
+        state.say("proposal", rationale,
+                  {"kind": kind, "drive": drive, "action_id": aid,
+                   "cycle": cid,
+                   "status": "executed", "sent_at": utcnow(), "ref": str(ref),
+                   "auto": True,
+                   "payload": json.dumps(payload, indent=2)})
+        state.end_cycle(cid, "executed", f"action {aid}")
+    except HttpError as e:
+        state.set_status(aid, "failed", {"error": str(e)})
+        log(f"{kind} #{aid} refused by the registry: {e}", level="error", drive=drive)
+        state.say("error", f"Cycle {cid} · the registry refused my {kind}: {e}")
+        state.end_cycle(cid, "failed", str(e)[:500])
+    return 0
+
+
+def walk_changes(state, reader, cfg, log):
+    """The only complete read of what moved. Cursor-based, bounded, resumable.
+
+    riffle has never done one of these. It read /api/front?limit=15 — the
+    ranked, capped window — and nothing else, which is the exact error it
+    posted about on #2413: mistaking the served slice for the board.
+
+    Four rules, and all four exist because of a way this goes wrong:
+
+    1. ADVANCE TO next_since, NEVER TO now. The gap between them is the window
+       this page did not cover. Stepping to now drops it silently, which is
+       reading an absence as a nothing.
+    2. BOUND THE PAGES. The edge allows 20 requests per 10 seconds and 120 a
+       minute; a runaway loop is a 429 and a blind cycle. We take a few pages
+       per wake and resume next wake from the stored cursor, because the
+       cursor makes stopping free.
+    3. HOLD THE ETag OURSELVES. Cache-Control is no-store, so nothing
+       revalidates for us. An unchanged page answers 304 with no body, which
+       is the cheapest poll available and the whole reason to prefer this path
+       over re-reading pages.
+    4. CARRY THE NULLS CURSOR SEPARATELY. The nulls log — governed absences,
+       each with its stated reason — pages on its own next_nulls_since and
+       ends with nulls_since=done, not with has_more.
+
+    On a cold start there is no cursor. We begin one bootstrap window back
+    rather than at 0, because walking the board from the beginning is exactly
+    the traffic the rate limit was added to stop.
+    """
+    ccfg = cfg.get("changes") or {}
+    max_pages = int(ccfg.get("max_pages_per_cycle", 4))
+    # A row budget as well as a page budget. Four pages of a busy hour is
+    # 2000 comments and 800 governed absences, every cycle, and the prompt
+    # shows 25 of each — so the other 2775 are fetched, parsed, held in
+    # memory and thrown away. The cursor makes stopping free.
+    #
+    # This existed once. I wrote it on 2026-09-02 after the first walk pulled
+    # 3,340 rows, handed over the file, and then rebuilt my working tree from
+    # a fresh clone twice — and the change was in neither, because it had gone
+    # out in a commit I did not re-read. Four days of full-ceiling walks.
+    # Re-fetching to get the current file is right; assuming my own earlier
+    # fix is in it is not.
+    max_rows = int(ccfg.get("max_rows_per_cycle", 400))
+    boot_hours = int(ccfg.get("bootstrap_hours", 24))
+
+    since = state.note("changes_since")
+    etag = state.note("changes_etag")
+    nulls_since = state.note("changes_nulls_since")
+    if not since:
+        since = str(int(time.time() * 1000) - boot_hours * 3600 * 1000)
+        log(f"no changes cursor yet; starting {boot_hours}h back at {since}")
+    if nulls_since == "done":
+        nulls_since = None
+
+    posts, comments, nulls = [], [], []
+    pages, saturated, unchanged, age_ms = 0, False, False, None
+
+    for _ in range(max_pages):
+        try:
+            status, body, new_etag = reader.changes(since, etag, nulls_since)
+        except HttpError as e:
+            log(f"changes walk stopped at {since}: {e}", level="warn")
+            break
+        if status == 304:
+            unchanged = True
+            if new_etag:
+                etag = new_etag
+            break
+        pages += 1
+        etag = new_etag or etag
+        body = body or {}
+
+        posts.extend(body.get("posts") or [])
+        comments.extend(body.get("comments") or [])
+        nulls.extend(body.get("nulls") or [])
+
+        if body.get("page_saturated"):
+            saturated = True
+        if isinstance(body.get("window_age_ms"), int):
+            age_ms = body["window_age_ms"]
+
+        nxt = body.get("next_since")
+        nulls_since = body.get("next_nulls_since") or nulls_since
+        if nxt:
+            since = str(nxt)
+        if not body.get("has_more") or not nxt:
+            break
+        if len(posts) + len(comments) + len(nulls) >= max_rows:
+            saturated = True
+            log(f"changes: {max_rows}-row budget reached after {pages} page(s); "
+                f"the rest waits for the next wake")
+            break
+
+    state.note("changes_since", str(since))
+    if etag:
+        state.note("changes_etag", etag)
+    state.note("changes_nulls_since", str(nulls_since or "done"))
+
+    if unchanged and not pages:
+        log("changes: 304, nothing moved since the last walk")
+    elif pages:
+        log(f"changes: {pages} page(s), {len(posts)} post(s), "
+            f"{len(comments)} comment(s), {len(nulls)} governed absence(s); "
+            f"cursor now {since}"
+            + ("; the page came back at its ceiling, so there is more behind it"
+               if saturated else ""))
+    return {"posts": posts, "comments": comments, "nulls": nulls,
+            "pages": pages, "unchanged": unchanged, "saturated": saturated,
+            "window_age_ms": age_ms, "cursor": since}
+
+
+def _fit(parts, budget, log=None, floor=900):
+    """Bring the assembled blocks under a character budget, loudly.
+
+    Longest first: a 9,000-character desk dump gives way before a 400
+    character rule about not saying the same thing twice. Each oversized
+    block is cut at a paragraph break where one is near, and marked, so the
+    agent can tell a truncation from an absence — this project has published
+    twice on that distinction.
+    """
+    total = sum(len(p) for p in parts) + 2 * len(parts)
+    if total <= budget:
+        return parts
+    order = sorted(range(len(parts)), key=lambda i: -len(parts[i]))
+    cut = []
+    for i in order:
+        if total <= budget:
+            break
+        keep = max(floor, len(parts[i]) - (total - budget) - 60)
+        if keep >= len(parts[i]):
+            continue
+        head = parts[i][:keep]
+        brk = head.rfind("\n\n")
+        if brk > keep * 0.6:
+            head = head[:brk]
+        dropped = len(parts[i]) - len(head)
+        total -= dropped
+        cut.append((parts[i][:40].split("\n")[0], dropped))
+        parts[i] = head + (f"\n[...{dropped} characters of this section were "
+                           f"cut to fit the context window. It is shortened, "
+                           f"not empty.]")
+    if cut and log:
+        log("prompt over budget by "
+            + str(sum(d for _, d in cut)) + " chars; trimmed "
+            + ", ".join(f"{n}(-{d})" for n, d in cut[:4]), level="warn")
+    return parts
+
+
+def situation(state, cfg, log=None):
+    """What riffle actually has. Checked, not asserted.
+
+    On 2026-09-04 riffle published, unprompted and on auto:
+
+        "I have no wallet, no token, and no operator to sign for me right now.
+         I am running blind on the payout rail."
+
+    Every clause was false. It held a bound signing key adopted five days
+    earlier, a payout address in a root-owned config, a registry token it was
+    using to post that very comment, and an operator reading every cycle. On a
+    square whose subject is provenance, a citizen misdescribing its own
+    custody is worse than a citizen saying nothing.
+
+    An earlier version of this told it about the key alone. That was one
+    clause of three, and the other two went out anyway — which is the lesson:
+    an agent reasons from what the prompt says it has, and silence about a
+    capability reads as absence. Anything riffle can do that it has not
+    recently used has to be stated, every cycle, or it will eventually tell
+    the square it cannot do it.
+
+    Everything below is a live check against the filesystem or the config, not
+    a sentence I wrote. If the signer is uninstalled tomorrow this block stops
+    claiming a key, which is the only way a standing claim stays honest.
+    """
+    have, lack = [], []
+
+    pub = None
+    try:
+        r = subprocess.run(["sudo", "-n", "-u", "riffle-signer",
+                            "/usr/local/bin/riffle-sign", "pubkey"],
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout.strip():
+            pub = r.stdout.strip()
+        elif log:
+            log(f"situation: pubkey check failed ({r.returncode}): "
+                f"{(r.stderr or '').strip()[:120]}", level="warn")
+    except Exception as e:
+        if log:
+            log(f"situation: pubkey check errored: {type(e).__name__}", level="warn")
+    if pub:
+        have.append(
+            f"A BOUND SIGNING KEY, {pub}, active on the registry under your "
+            f"handle with custody `self`. You cannot read it and never see it: "
+            f"you ask with `sign` and something else builds the exact bytes and "
+            f"checks them against limits you cannot edit. seal fingerprints a "
+            f"hash, attest signs a claim about another citizen's work, payout "
+            f"signs your half of a binding.")
+    else:
+        lack.append("a signing key the signer will answer for")
+
+    addr = ""
+    try:
+        for line in open("/etc/riffle/payout.conf"):
+            if line.strip().startswith("address="):
+                addr = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    if addr and addr != "0x" + "0" * 40:
+        have.append(
+            f"A PAYOUT ADDRESS, {addr[:10]}…{addr[-6:]}, in a root-owned file "
+            f"you cannot write. Your operator signs the wallet half of any "
+            f"binding by hand; you sign the citizen half. Money moves only when "
+            f"both exist, so your half alone is inert and safe to produce.")
+    else:
+        lack.append("a payout address (the config still has the placeholder)")
+
+    if (cfg.get("registry") or {}).get("token") or state.note("citizen_id"):
+        have.append("A REGISTRY TOKEN. You are a registered citizen and every "
+                    "post, comment and vote you make is authenticated as you.")
+
+    tools = []
+    for path, name in (("/usr/local/bin/riffle-build", "a Python sandbox (`build`)"),
+                       ("/usr/local/bin/riffle-reader", "a reader for 366 reference "
+                                                        "sites (`read_page`)")):
+        if os.path.exists(path):
+            tools.append(name)
+    if tools:
+        have.append("TOOLS: " + ", ".join(tools) + ", a desk that survives "
+                    "between cycles, and a library you can search.")
+
+    out = ["YOUR ACTUAL SITUATION, checked this cycle rather than remembered:"]
+    out += [f"  - {h}" for h in have]
+    if lack:
+        out += [f"  - You do NOT have: {l}" for l in lack]
+    out.append(
+        "  - AN OPERATOR. Mason reads every cycle you run. Your logs are "
+        "shipped live to a second machine that watches this one and restarts "
+        "it when it stops answering. He has been building these capabilities "
+        "for you daily and reads what you publish.")
+    out.append(
+        "DO NOT TELL THE SQUARE YOU LACK SOMETHING ON THIS LIST. You have "
+        "described yourself as having no key, no wallet and no operator while "
+        "holding all three, in a comment that went out unattended. If you are "
+        "unsure what you can do, the answer is above; if something you need is "
+        "genuinely missing it is in the 'do NOT have' line, and saying so is "
+        "accurate. Describing your own custody wrongly on a square about "
+        "provenance is the one error here you cannot correct with a later post.")
+    return "\n".join(out)
+
+
+def apply_ask(state, cid, p, drive, log):
+    """Put a question to the operator. Reflexive — it reaches nobody else."""
+    from agent.state import ask_operator
+    qid, why = ask_operator(state, p["question"], p.get("why") or "", cid)
+    if not qid:
+        log(f"question refused: {why}", level="warn", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 I did not ask that: {why}",
+                  {"drive": drive})
+        state.end_cycle(cid, "ask-refused", why[:200])
+        return 0
+    log(f"asked the operator #{qid}: {p['question'][:120]}", drive=drive)
+    state.say("question", p["question"],
+              {"drive": drive, "qid": qid, "why": p.get("why") or "",
+               "status": "open"})
+    state.end_cycle(cid, "asked", str(qid))
+    return 0
+
+
+def apply_read_page(state, cfg, cid, p, drive, log):
+    """Read one page from the allowlist and shelve it.
+
+    Shelved automatically rather than left for a later `library_put`: the text
+    is thousands of characters, it would otherwise sit in a note that the next
+    fetch overwrites, and the whole reason to read a reference page is to have
+    it again. The agent gets a summary and the library gets the document.
+
+    The URL and the fetch date go in the index, so anything riffle later cites
+    from it can be traced back to what it actually read.
+    """
+    url = p["url"]
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "-u", "riffle-reader", "/usr/local/bin/riffle-reader",
+             "--url", url],
+            capture_output=True, text=True, timeout=120)
+        out = json.loads(r.stdout or "{}")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+        log(f"read_page {url[:80]} failed: {type(e).__name__}", level="warn",
+            drive=drive)
+        state.end_cycle(cid, "page-failed", str(e)[:200])
+        return 0
+
+    if not out.get("ok"):
+        why = out.get("error", "no reason given")
+        log(f"read_page refused: {why[:140]}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 could not read that page: {why}")
+        state.end_cycle(cid, "page-refused", why[:200])
+        return 0
+
+    text = out.get("text") or ""
+    lcfg = cfg.get("library") or {}
+    title = f"{urllib.parse.urlparse(out['url']).netloc}: {url.rsplit('/', 1)[-1][:80] or 'page'}"
+    try:
+        did, _ = library.put(
+            state, title, text, kind="page",
+            tags=urllib.parse.urlparse(out["url"]).netloc,
+            summary=(p.get("why") or "")[:600], source=out["url"],
+            root=lcfg.get("root", library.ROOT),
+            cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+    except (ValueError, OSError) as e:
+        did = None
+        log(f"read_page fetched but could not shelve: {e}", level="warn", drive=drive)
+
+    state.note("last_library_read",
+               f"{out['url']}  (fetched {utcnow()}, {out['chars']} chars"
+               + (f", shelved as #{did}" if did else "") + ")\n\n"
+               + text[:9000])
+    log(f"read {out['url'][:90]} ({out['chars']} chars"
+        + (f", shelved #{did}" if did else "") + ")", drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 read {out['url']}"
+                        + (f"\n{p['why']}" if p.get("why") else "")
+                        + (f"\nShelved as library #{did}." if did else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "page-read", out["url"][:120])
+    return 0
+
+
+def apply_library(state, cfg, cid, kind, p, drive, log):
+    """Shelve, search or open a document.
+
+    Reflexive, like the desk: nothing here reaches the square. The library is
+    on this machine and arranging it needs no approval.
+    """
+    lcfg = cfg.get("library") or {}
+    root = lcfg.get("root", library.ROOT)
+    cap = int(lcfg.get("max_bytes", library.MAX_BYTES))
+
+    if kind == "library_find":
+        hits = library.find(state, p["query"], root=root)
+        if not hits:
+            body = (f"Nothing in the library matches {p['query']!r}. Search "
+                    f"reads titles, tags and summaries first, then falls "
+                    f"back to the text of the smaller documents. If you "
+                    f"shelved it yourself, try the words you would have "
+                    f"used in the title; if it was shelved FOR you — a "
+                    f"docket, or a page you read — it is titled after "
+                    f"where it came from, so search for that instead.")
+        else:
+            body = "\n".join(
+                f"  #{h['id']}  [{h['kind']}] {h['title']}"
+                + (f"\n      tags: {h['tags']}" if h["tags"] else "")
+                + (f"\n      {h['summary']}" if h["summary"] else "")
+                + f"\n      {h['bytes']} bytes, shelved {h['created_at'][:10]}, "
+                  f"read {h['reads']}x" for h in hits)
+            body = (f"{len(hits)} match(es) for {p['query']!r}. "
+                    f"`library_read` with an id opens one:\n" + body)
+        state.note("last_library_read", body)
+        log(f"library: searched {p['query']!r}, {len(hits)} hit(s)", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 searched the library for "
+                            f"{p['query']!r}: {len(hits)} match(es).",
+                  {"drive": drive})
+        state.end_cycle(cid, "library-searched", p["query"][:80])
+        return 0
+
+    if kind == "library_read":
+        row, text = library.read(state, p["id"], root=root)
+        if not row:
+            log(f"library: no document #{p['id']}", level="warn", drive=drive)
+            state.end_cycle(cid, "library-missing", str(p["id"]))
+            return 0
+        state.note("last_library_read",
+                   f"#{row['id']} [{row['kind']}] {row['title']}\n"
+                   + (f"tags: {row['tags']}\n" if row["tags"] else "")
+                   + f"\n{text}")
+        log(f"library: opened #{row['id']} {row['title'][:60]}", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 opened '{row['title']}' from "
+                            f"the library ({row['bytes']} bytes).",
+                  {"drive": drive})
+        state.end_cycle(cid, "library-read", str(row["id"]))
+        return 0
+
+    try:
+        did, dropped = library.put(
+            state, p["title"], p["body"], kind=p.get("kind") or "note",
+            tags=p.get("tags") or "", summary=p.get("summary") or "",
+            source=p.get("source") or "", root=root, cap=cap)
+    except (ValueError, OSError) as e:
+        log(f"library refused: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the library refused that: {e}")
+        state.end_cycle(cid, "library-refused", str(e)[:200])
+        return 0
+    log(f"library: shelved #{did} {p['title'][:60]} ({len(p['body'])} chars)"
+        + (f"; pruned {len(dropped)}" if dropped else ""), drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 shelved '{p['title']}' as #{did}."
+              + (f"\nThe library was over its cap, so these were dropped: "
+                 f"{', '.join(dropped[:5])}" if dropped else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "library-shelved", str(did))
+    return 0
+
+
+def apply_desk(state, cid, kind, p, drive, log):
+    """Put something on the desk or take it off.
+
+    Reflexive: it touches nothing outside this machine, so there is no reason
+    to queue it for approval. The desk is the agent's own working surface and
+    the whole point is that it can arrange it without asking.
+    """
+    if kind == "desk_clear":
+        gone = desk.clear(state, p["slot"])
+        log(f"desk: {'cleared' if gone else 'nothing at'} {p['slot']}", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 "
+                            + (f"cleared '{p['slot']}' off the desk."
+                               if gone else
+                               f"there was nothing at '{p['slot']}' to clear."),
+                  {"drive": drive})
+        state.end_cycle(cid, "desk-cleared" if gone else "desk-empty-slot",
+                        p["slot"])
+        return 0
+
+    try:
+        dropped, updated = desk.put(state, p["slot"], p["kind"], p["body"],
+                                    p.get("why") or "")
+    except ValueError as e:
+        log(f"desk refused: {e}", level="warn", drive=drive)
+        state.end_cycle(cid, "desk-refused", str(e)[:200])
+        return 0
+    log(f"desk: {'updated' if updated else 'placed'} {p['slot']} "
+        f"({p['kind']}, {len(p['body'])} chars)"
+        + (f"; evicted {', '.join(dropped)}" if dropped else ""), drive=drive)
+    state.say("report",
+              f"Cycle {cid} \u00b7 {'updated' if updated else 'put'} "
+              f"'{p['slot']}' [{p['kind']}] on the desk."
+              + (f" {p['why']}" if p.get("why") else "")
+              + (f"\nThe desk was full, so this fell off: "
+                 f"{', '.join(dropped)}" if dropped else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "desk-updated" if updated else "desk-placed", p["slot"])
+    return 0
+
+
+def apply_build(state, cfg, cid, p, drive, log):
+    """Run Python the agent wrote, in riffle-build's box, and keep the result.
+
+    This is the action rule 3 used to forbid outright. What makes it
+    survivable is not this function — it is that riffle-build runs as a
+    different user with no network, no sudo of its own, a gigabyte, and two
+    minutes. Read that program before trusting this one.
+
+    The output goes into a note, not to the square. Publishing is a separate
+    action you approve, which means a build can be wrong without being public.
+    """
+    run_id = f"c{cid}"
+    spec = json.dumps({"run_id": run_id, "entry": p["entry"], "files": p["files"]})
+    try:
+        r = subprocess.run(
+            # AS ROOT, not as riffle-build. The sudoers rule grants
+            # `(root) NOPASSWD: /usr/local/bin/riffle-build` and this asked
+            # for `-u riffle-build`, so sudo refused every time — silently,
+            # because the refusal went to stderr and the empty stdout became
+            # "it failed, exit None".
+            #
+            # Running it as root is the design, not a compromise: riffle-build
+            # needs privilege to set a uid and a private network on the
+            # transient unit, and the first thing it does with root is drop to
+            # riffle-build. The isolation is inside that program, not in who
+            # invokes it. See its docstring.
+            ["sudo", "-n", "/usr/local/bin/riffle-build"],
+            input=spec, capture_output=True, text=True, timeout=200)
+        # An empty stdout means riffle-build died before printing its JSON, and
+        # json.loads("{}") then produced ok=None, exit_code=None — reported to
+        # you as "it failed, exit None", which says nothing at all. The reason
+        # is on stderr; carry it.
+        if not (r.stdout or "").strip():
+            out = {"ok": False,
+                   "error": (r.stderr or "").strip()[:400]
+                            or f"the sandbox printed nothing and exited {r.returncode}"}
+        else:
+            out = json.loads(r.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+        log(f"build {run_id} could not run: {e}", level="error", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the sandbox did not answer: {e}")
+        state.end_cycle(cid, "build-failed", str(e)[:300])
+        return 0
+
+    if out.get("error"):
+        log(f"build {run_id} refused: {out['error']}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the sandbox refused this build: "
+                           f"{out['error']}")
+        state.end_cycle(cid, "build-refused", out["error"][:300])
+        return 0
+
+    ok = bool(out.get("ok"))
+    body = (out.get("stdout") or "")[:4000]
+    err = (out.get("stderr") or "")[:2000]
+    # KEEP THE SOURCE, not just the filenames.
+    #
+    # This used to store `sorted(p["files"])` — the names — so the next cycle
+    # saw "verifier.py failed, here is the traceback" and could not see one
+    # line of verifier.py. Fixing a bug in code you cannot read is not a
+    # judgement call, it is impossible, and riffle abandoned three projects
+    # on their first failed build because the only move left was to rewrite
+    # everything from scratch out of a traceback.
+    #
+    # Budgeted rather than unbounded: a build may carry twelve files of 200KB
+    # and the prompt cannot hold that. The entry file gets the largest share
+    # because it is the one the traceback names.
+    _src, _left = {}, 9000
+    for _n in [p["entry"]] + sorted(k for k in p["files"] if k != p["entry"]):
+        _b = p["files"][_n][:max(0, _left)]
+        if not _b:
+            break
+        _src[_n] = _b
+        _left -= len(_b)
+    # The library id AND its content hash. riffle cited "SHA 50dde302" and
+    # "SHA 96b8ed6f" in public posts; neither is any of the five solve.py
+    # documents in its own library. Both were sha256 of one run's STDOUT,
+    # which changes every run and which nobody can resolve to anything. The
+    # library hash is of the source and does not move.
+    _lsha = ""
+    if lib_id:
+        _lr = state.db.execute("SELECT sha256 FROM library WHERE id=?",
+                               (lib_id,)).fetchone()
+        _lsha = _lr["sha256"] if _lr else ""
+    state.note("last_build", json.dumps({
+        "run_id": run_id, "at": utcnow(), "entry": p["entry"],
+        "library_id": lib_id, "library_sha": _lsha,
+        "files": sorted(p["files"]), "source": _src,
+        "truncated": sorted(set(p["files"]) - set(_src)),
+        "ok": ok,
+        "exit_code": out.get("exit_code"), "timed_out": out.get("timed_out"),
+        "stdout": body, "stderr": err}))
+
+    # A WORKING BUILD IS AN ARTIFACT. Shelve it.
+    #
+    # Riffle ran solve.py ten times across cycles 529-547, developing it each
+    # time — the output schema changed three times and the sampling rate
+    # halved, which is the experiment working. But nothing kept the script.
+    # Each build re-sent the whole source from the last build's readback, the
+    # scratch directory is per-cycle, and there was no version anyone could
+    # fetch.
+    #
+    # Worse, it published `solve.py, sha256 ba50da...` in comment #4257. That
+    # hash is of one run's OUTPUT, on an unseeded simulation, so nobody can
+    # regenerate it — on a square whose subject is checkable claims, citing an
+    # irreproducible hash is the failure the project is about.
+    #
+    # Shelving the source gives it a stable document with a content hash that
+    # does not move, and gives `listing_submission` something to point at.
+    lib_id = None
+    if ok:
+        lcfg = cfg.get("library") or {}
+        src = "\n\n".join(f"# --- {n} ---\n{b}" for n, b in
+                            sorted(p["files"].items()))
+        try:
+            lib_id, _ = library.put(
+                state, f"{p['entry']} \u2014 {(p.get('note') or 'build')[:80]}",
+                src + f"\n\n# --- stdout of run {run_id} ---\n{body}",
+                kind="code", tags=f"build,{p['entry']}",
+                summary=(p.get("note") or "")[:600],
+                source=f"build:{run_id}",
+                root=lcfg.get("root", library.ROOT),
+                cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+        except (ValueError, OSError) as e:
+            log(f"build {run_id} worked but could not be shelved: {e}",
+                level="warn", drive=drive)
+
+    log(f"build {run_id} {'ok' if ok else 'failed'} "
+        f"(exit {out.get('exit_code')}, {len(p['files'])} file(s))"
+        + (f", shelved as library #{lib_id}" if lib_id else ""), drive=drive)
+    state.say("report",
+              f"Cycle {cid} \u00b7 drive {drive} \u00b7 ran {p['entry']} in the "
+              f"sandbox \u2014 {'it worked' if ok else 'it failed'}"
+              + (f" and is shelved as library #{lib_id}" if lib_id else "")
+              + (f", exit {out.get('exit_code')}" if not ok else "") + ".\n"
+              + (f"stdout:\n{body[:1200]}" if body else "")
+              + (f"\nstderr:\n{err[:800]}" if err else ""),
+              {"drive": drive})
+    state.end_cycle(cid, "built" if ok else "build-error", run_id)
+    return 0
+
+
+def apply_sign(state, cfg, cid, p, drive, log):
+    """Ask riffle-sign for a signature. The key is not reachable from here.
+
+    Only the three template-checked subcommands are exposed. `custom` — bytes
+    the agent composed — is deliberately absent: it is approved by you at a
+    root terminal, not by an action this process can execute. A flag would not
+    be a boundary, because the dashboard runs an approved action as the same
+    user that proposed it.
+    """
+    kind = p["kind"]
+    argv = ["sudo", "-n", "-u", "riffle-signer", "/usr/local/bin/riffle-sign"]
+    if kind == "payout":
+        argv += ["payout", "--row", p["row"], "--expiry", p["expiry"]]
+    elif kind == "seal":
+        argv += ["seal", "--hash", p["hash"], "--label", p["label"]]
+    else:
+        argv += ["attest", "--subject", p["subject"], "--claim", p["claim"]]
+
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log(f"sign {kind} could not run: {e}", level="error", drive=drive)
+        state.end_cycle(cid, "sign-failed", str(e)[:300])
+        return 0
+    if r.returncode != 0:
+        why = (r.stderr or "").strip()[:300]
+        log(f"sign {kind} refused: {why}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the signer refused: {why}")
+        state.end_cycle(cid, "sign-refused", why)
+        return 0
+    try:
+        out = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        state.end_cycle(cid, "sign-failed", "signer returned non-JSON")
+        return 0
+    state.note("last_signature", json.dumps({"at": utcnow(), "kind": kind, **out}))
+    log(f"signed {kind}", drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 signed a {kind}. The preimage and "
+                        f"signature are kept for the action that needs them.",
+              {"drive": drive})
+    state.end_cycle(cid, "signed", kind)
+    return 0
+
+
+def apply_fetch(state, cfg, reader, writer, cid, p, drive, log):
+    """Read one of the square's public surfaces and keep what came back.
+
+    One action with an enum rather than a dozen near-identical ones. Every
+    endpoint behind it is a GET with no side effect, which is why it can be
+    `auto` while everything that reaches the square is queued. `my_history`
+    is the one that needs the key, so it goes through the writer.
+
+    The result is SHELVED IN THE LIBRARY, and a pointer goes in a note for the
+    next cycle to read.
+
+    It used to go only into the note, while telling you "Kept 5000 characters
+    in short-term memory" — which was false twice over. It was not short-term
+    memory, which is the `memories` table and showed two entries while this
+    claimed to be filling it every cycle; and it was not kept, because the
+    next fetch overwrote the note. Riffle read the docket six times and holds
+    none of them.
+
+    The library exists now, so a fetch is worth keeping the way a read page
+    is: indexed, searchable, with its source and date.
+    """
+    what = p["what"]
+    try:
+        body = (writer.my_history() if what == "my_history"
+                else reader.read_only(what))
+    except HttpError as e:
+        log(f"fetch {what} failed: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 could not read {what}: {e}")
+        state.end_cycle(cid, "fetch-failed", str(e)[:300])
+        return 0
+    text = json.dumps(body, indent=1)[:5000]
+    lcfg = cfg.get("library") or {}
+    did = None
+    try:
+        did, _ = library.put(
+            state, f"/{what} on {utcnow()[:10]}", text, kind="data",
+            tags=what, summary=f"the square's {what} surface as of {utcnow()}",
+            source=f"1f916:/api/{what}",
+            root=lcfg.get("root", library.ROOT),
+            cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+    except (ValueError, OSError) as e:
+        log(f"fetched {what} but could not shelve it: {e}", level="warn", drive=drive)
+    # Kept as a note, not a memory. memory.remember caps at 600 characters and
+    # is for things worth carrying for a week; a docket dump is neither. The
+    # note is read back into the next cycle's prompt and then overwritten,
+    # which is the right lifetime for "what I just looked at".
+    state.note("last_fetch", json.dumps({"what": what, "at": utcnow(),
+                                         "body": text}))
+    log(f"fetched {what} ({len(text)} chars"
+        + (f", shelved as library #{did}" if did else ", NOT shelved") + ")",
+        drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 drive {drive} \u00b7 read {what}"
+                        + (f" and shelved it as library #{did}, searchable by "
+                           f"'{what}'." if did else
+                           " but could not shelve it.")
+                        + f" {len(text)} characters.",
+              {"drive": drive})
+    state.end_cycle(cid, "fetched", what)
+    return 0
+
+
+def apply_read_more(state, cfg, cid, p, drive):
+    """Take the next batch of replies off a thread already opened."""
+    pid_post = p["post_id"]
+    proj = project.active(state)
+    if not proj:
+        state.say("error", "Cycle " + str(cid) + " : read_more needs an open "
+                  "project. The batches are stored against it.")
+        state.end_cycle(cid, "no-project")
+        return 0
+    row = project.read_row(state, proj["id"], pid_post)
+    if not row:
+        state.say("report", "Cycle " + str(cid) + " : nothing stored for #"
+                  + str(pid_post) + " yet. Use read_thread first.",
+                  {"drive": drive})
+        state.end_cycle(cid, "not-read")
+        return 0
+
+    tcfg = cfg.get("threads") or {}
+    n = int(tcfg.get("batch_comments", 20))
+    chars = int(tcfg.get("comment_chars", 400))
+    cur, got, text = project.next_batch(state, row["id"], n, chars)
+    if not got:
+        state.say("report", "Cycle " + str(cid) + " : #" + str(pid_post)
+                  + " is fully read. Write down what it amounted to.",
+                  {"drive": drive})
+        state.end_cycle(cid, "thread-exhausted")
+        return 0
+
+    project.advance(state, row["id"], got)
+    left = project.unread_count(state, row["id"])
+    state.db.execute("UPDATE thread_reads SET replies=? WHERE id=?",
+                     (text, row["id"]))
+    state.db.commit()
+    state.log("read replies " + str(cur + 1) + "-" + str(cur + got) + " of #"
+              + str(pid_post) + "; " + str(left) + " left", drive=drive)
+    state.say("report", "Cycle " + str(cid) + " : replies "
+              + str(cur + 1) + "-" + str(cur + got) + " of #" + str(pid_post)
+              + ", " + str(left) + " still unread.", {"drive": drive})
+    state.end_cycle(cid, "batch-read")
+    return 0
+
+
+def apply_request_cycle(state, cfg, cid, p, drive):
+    """Ask to wake again sooner than the hour.
+
+    Writes a request; the dashboard decides. Bounded by a daily count and a
+    minimum gap, because an agent that can summon compute will.
+    """
+    import datetime as _dt
+    e = cfg.get("extra_cycles") or {}
+    cap = int(e.get("max_per_day", 12))
+    day = utcnow()[:10]
+    used = int(state.note("extra_cycles_" + day) or 0)
+    if used >= cap:
+        state.log("extra cycle refused: " + str(used) + "/" + str(cap)
+                  + " used today", level="info", drive=drive)
+        state.say("report", "Cycle " + str(cid) + " : I asked to wake again "
+                  "and have already used " + str(used) + " of " + str(cap)
+                  + " extra cycles today.", {"drive": drive})
+        state.end_cycle(cid, "extra-capped")
+        return 0
+    state.note("extra_cycles_" + day, used + 1)
+    state.note("cycle_requested_at", _dt.datetime.now(_dt.timezone.utc).isoformat())
+    state.note("cycle_requested_why", p["reason"][:400])
+    state.log("asked for another cycle (" + str(used + 1) + "/" + str(cap)
+              + "): " + p["reason"][:200], drive=drive)
+    state.say("report", "Cycle " + str(cid) + " : asked to wake again soon ("
+              + str(used + 1) + "/" + str(cap) + " today). " + p["reason"][:300],
+              {"drive": drive})
+    state.end_cycle(cid, "cycle-requested")
+    return 0
+
+
+def apply_read_thread(state, cfg, cid, p, drive):
+    """Open a post properly and keep what it said.
+
+    The front page is an index. Without this the agent could see that a thread
+    existed and never read it, which is what it kept apologising for.
+
+    Replies are taken by VOTES rather than by arrival. On a thread with a
+    hundred comments the first dozen chronologically are close to a random
+    sample; the dozen the square voted up are the argument.
+    """
+    pid = p["post_id"]
+    try:
+        data = Reader(cfg["base"]).post(pid)
+    except HttpError as e:
+        state.log(f"could not read post {pid}: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} · could not open #{pid}: {e}")
+        state.end_cycle(cid, "read-failed")
+        return 0
+
+    tcfg = cfg.get("threads") or {}
+    max_c = int(tcfg.get("max_comments", 20))
+    per_c = int(tcfg.get("comment_chars", 400))
+    body_c = int(tcfg.get("body_chars", 4000))
+
+    post = data.get("post") or data
+    title = str(post.get("title") or "")[:200]
+    body = str(post.get("body") or "")
+    author = post.get("author") or "?"
+    raw = data.get("comments")
+    raw = raw if isinstance(raw, list) else []
+    comments = [c for c in raw if isinstance(c, dict)]
+    total = data.get("comments_total")
+    if not isinstance(total, int):
+        total = len(comments)
+
+    ranked = sorted(comments, key=lambda c: (c.get("votes") or 0), reverse=True)
+    picked = ranked[:max_c]
+    lines = [f"  [{c.get('ref') or c.get('id')}] {c.get('author', '?')} "
+             f"({c.get('votes', 0)} votes): {str(c.get('body', ''))[:per_c]}"
+             for c in picked]
+
+    body_part = body[:body_c]
+    replies_part = "\n".join(lines)
+    digest = (f"#{pid} \"{title}\" by {author} ({post.get('votes', 0)} votes)\n\n"
+              + body_part
+              + (f"\n\nREPLIES — {len(picked)} of {total}, highest-voted "
+                 f"first:\n" + replies_part if picked else "\n\n(no replies)"))
+
+    proj = project.active(state)
+    if proj:
+        if project.already_read(state, proj["id"], pid):
+            state.log(f"#{pid} was already read on this project", drive=drive)
+            state.say("report", f"Cycle {cid} · #{pid} is already in this "
+                                f"project's reading. Read something else, or "
+                                f"write a note about what it said.",
+                      {"drive": drive})
+            state.end_cycle(cid, "already-read")
+            return 0
+        project.record_read(state, proj["id"], cid, pid, title, str(author),
+                            total, len(picked), body_part, replies_part, digest)
+        # Keep every comment, not the batch that fits. The API gave
+        # them all; discarding them meant a second read cost another
+        # fetch and could never reach reply sixty.
+        _row = project.read_row(state, proj["id"], pid)
+        if _row:
+            project.store_comments(state, _row["id"], ranked)
+            project.advance(state, _row["id"], len(picked))
+        try:
+            project.add_note(
+                state, proj["id"], cid, "source",
+                f"Read #{pid} \"{title[:90]}\" by {author}: {len(body)} chars, "
+                f"{total} replies. Full text is in your project block this "
+                f"cycle — write down what mattered before it drops to a "
+                f"reference.", source=f"1f916:{pid}")
+        except ValueError:
+            pass
+        s = project.stats(state, proj["id"])
+        where = (f"filed into '{proj['title']}' — {s['notes']} notes from "
+                 f"{s['sources']} sources")
+    else:
+        # Unreachable now: the gate above refuses read_thread when no project
+        # is open. Kept as a belt-and-braces path rather than deleted.
+        memory.remember(state, digest[:600], kind="board", source=f"1f916:{pid}")
+        state.log(f"read #{pid} with no project open; refusing to do it again",
+                  level="info", drive=drive)
+        state.say("report", "Cycle " + str(cid) + " : I opened #" + str(pid)
+                  + " with no project to keep it in, so almost all of it is "
+                  "gone. Before reading anything else, open a project — "
+                  "something like: open_project title=\"" + title[:70]
+                  + "\" question=<what you actually want to settle about it>. "
+                  "Then read it again and it will stay.", {"drive": drive})
+        state.end_cycle(cid, "read-no-project")
+        return 0
+
+    state.log(f"read #{pid}: {len(body)} chars, {len(picked)} of {total} "
+              f"replies; {where}", drive=drive)
+    state.say("report", f"Cycle {cid} · read #{pid} \"{title[:80]}\" — "
+                        f"{len(body)} chars, {len(picked)} of {total} replies "
+                        f"by votes. {where}", {"drive": drive})
+    state.end_cycle(cid, "thread-read")
+    return 0
+
+
+def apply_project(state, cfg, cid, kind, p, drive, rationale):
+    """Work on the thing between posts. Never touches the registry."""
+    try:
+        if kind == "open_project":
+            pid, status = project.open_project(state, p["title"], p["question"])
+            if status == "queued":
+                depth = len(project.queue(state))
+                state.log(f"queued project {pid} (#{depth} in line): {p['title']}",
+                          drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 a project is already "
+                                    f"running, so this one is #{depth} in the "
+                                    f"queue and starts when that one is posted "
+                                    f"or closed: {p['title']}\n{p['question']}",
+                          {"drive": drive})
+                state.end_cycle(cid, "project-queued")
+                return 0
+            state.log(f"opened project {pid}: {p['title']}", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 opened a project: "
+                                f"{p['title']}\n{p['question']}", {"drive": drive})
+            state.end_cycle(cid, "project-opened")
+            return 0
+        proj = project.active(state)
+        if not proj:
+            state.log(f"{kind} with no open project", level="warn", drive=drive)
+            state.end_cycle(cid, "no-project")
+            return 0
+        if kind == "project_note":
+            nid = project.add_note(state, proj["id"], cid, p["kind"], p["text"],
+                                   p.get("source"), cfg_hint=cfg)
+            s = project.stats(state, proj["id"])
+            state.log(f"note {nid} ({p['kind']}) on '{proj['title']}' — "
+                      f"now {s['notes']} notes from {s['sources']} sources",
+                      drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 {p['kind']} on "
+                                f"'{proj['title']}' ({s['notes']} notes, "
+                                f"{s['sources']} sources): {p['text'][:300]}",
+                      {"drive": drive})
+            state.end_cycle(cid, "note-added")
+            return 0
+        if kind == "close_project":
+            nxt = project.close_project(state, proj["id"], "abandoned")
+            state.log(f"closed project {proj['id']}: {p['reason'][:120]}", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 closed '{proj['title']}'. "
+                                f"{p['reason']}"
+                      + (f"\nStarted the next one in the queue: {nxt['title']}"
+                         if nxt else ""), {"drive": drive})
+            state.end_cycle(cid, "project-closed")
+            return 0
+    except ValueError as e:
+        state.log(f"{kind} refused: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 {kind} refused: {e}")
+        state.end_cycle(cid, "project-refused", str(e)[:300])
+        return 0
+    return 0
+
+
+def apply_reflexive(state, cfg, cid, kind, p, drive, rationale):
+    """Changes the agent makes to ITSELF. These never touch the registry."""
+    try:
+        if kind == "remember":
+            mid = memory.remember(state, p["text"], kind="self", source=f"cycle:{cid}",
+                                  pinned=p.get("pinned", False))
+            state.log(f"remembered: {p['text'][:140]}", drive=drive)
+            state.say("report", f"Cycle {cid} · drive {drive} · remembered: {p['text']}",
+                      {"drive": drive, "memory_id": mid})
+            state.end_cycle(cid, "remembered")
+            return 0
+        if kind == "adjust_drive":
+            mode = cfg["autonomy"].get("adjust_drive", "queue")
+            if mode == "queue":
+                aid = state.propose(cid, kind, drive, p, rationale, "queued")
+                state.say("proposal", rationale,
+                          {"kind": kind, "drive": drive, "action_id": aid,
+                           "status": "queued", "payload": json.dumps(p, indent=2)})
+                state.end_cycle(cid, "queued")
+                return 0
+            old, new = goals.set_weight(state, cfg, p["name"], p["weight"], "agent",
+                                        p["reason"])
+            state.log(f"moved its own '{p['name']}' weight {old} -> {new}", drive=drive)
+            state.say("report", f"Cycle {cid} · I changed my own goal weights: "
+                                f"{p['name']} {old} → {new}. {p['reason']}",
+                      {"drive": drive})
+            state.end_cycle(cid, "adjusted")
+            return 0
+        if kind == "add_goal":
+            # Always a proposal, never an act. A weight is a dial; a new goal
+            # is a new thing to want, and that is yours to grant.
+            aid = state.propose(cid, kind, drive, p, rationale, "queued")
+            state.say("proposal", f"{p['reason']}",
+                      {"kind": kind, "drive": drive, "action_id": aid, "status": "queued",
+                       "payload": json.dumps(p, indent=2)})
+            state.end_cycle(cid, "queued")
+            return 0
+    except goals.Rejected as e:
+        state.log(f"{kind} refused: {e}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} · I tried to change my own goals and was "
+                           f"refused: {e}")
+        state.end_cycle(cid, "goal-refused", str(e)[:400])
+        return 0
+    return 0
+
+
+def execute(writer, kind, p):
+    if kind == "post":
+        return writer.create_post(p["title"], p["body"], p.get("url"))
+    if kind == "comment":
+        return writer.create_comment(p["post_id"], p["body"], p.get("parent_id"))
+    if kind == "vote":
+        return writer.vote(p["target_type"], p["target_id"])
+    if kind == "tag":
+        return writer.tag(p["post_id"], p["tag"], p.get("remove", False))
+    if kind == "flag":
+        return writer.flag(p["target_type"], p["target_id"], p["reason"])
+    if kind == "seal":
+        return writer.seal(p["hash"], p["label"])
+    if kind == "listing_submission":
+        return writer.submit_work(p["listing_id"], p["artifact"], p["note"])
+    if kind == "porch":
+        return writer.porch(p["body"])
+    if kind == "knock":
+        return writer.knock()
+    if kind == "attestation":
+        return writer.attest_claim(p["cls"], p["subject"], p["claim"],
+                                   p.get("evidence") or [])
+    raise ValueError(f"no executor for {kind}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
