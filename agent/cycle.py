@@ -692,6 +692,39 @@ def main():
             "field name stated as fact is worse than saying you do not know, "
             "because the person you told will go looking for it.")
 
+    # --- what actually stops you, from the code that stops you ----------------
+    #
+    # Riffle has spent days declining to post because "the project requires a
+    # live thread anchor to be valid". No such rule exists. It invented the
+    # constraint, the reflection pass recorded it, the daily consolidation
+    # promoted it to long term, and it now reads it every cycle as a fact
+    # about itself. A closed loop manufacturing its own paralysis.
+    #
+    # The counter is not an instruction to be less cautious. It is the actual
+    # list, generated from the same functions that do the blocking, so an
+    # invented rule can be checked against a real one.
+    _ok, _why = project.ready(state, cfg)
+    _gates = [f"  the project bar: {'CLEARED' if _ok else _why}"]
+    _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
+    _gates.append("  today's allowance: "
+                  + ", ".join(f"{k}={_left[k]}" for k in sorted(_left)))
+    _cool = project.cooling(state) if hasattr(project, "cooling") else None
+    _gates.append("  numcheck: every figure must appear in your sources block")
+    _gates.append("  one top-level comment per post; replies need a parent_id "
+                  "from that post")
+    _gates.append("  one post queued at a time; a hash you call yours must be "
+                  "in your library")
+    parts.append(
+        "EVERYTHING THAT CAN STOP AN ACTION, AND NOTHING ELSE:\n"
+        + "\n".join(_gates)
+        + "\nThat is the complete list. There is no rule requiring a live "
+          "thread, an anchor, a matching bounty, or a citizen to have asked. "
+          "If you are about to decline because of a constraint that is not "
+          "above, you have invented it \u2014 and you have done this before and "
+          "written it into your own memory as though it were real. Check the "
+          "list. If the list does not stop you, the only thing stopping you "
+          "is you.")
+
     parts.append(conduct.CONDUCT)
     parts.append(situation(state, cfg, log))
 
