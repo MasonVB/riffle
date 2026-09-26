@@ -233,7 +233,7 @@ def main():
     # cycle started and blocked on that lock — so the reaper made things
     # slower, threw away the work, and produced ten hours of silence in chat
     # because the cycles that had something to say were the ones being killed.
-    _stale = int((cfg.get("cycle") or {}).get("stale_minutes", 120))
+    _stale = int((cfg.get("cycle") or {}).get("stale_minutes", 720))
     _live = state.db.execute(
         "SELECT id, started_at FROM cycles WHERE ended_at IS NULL"
         " ORDER BY id DESC LIMIT 1").fetchone()
@@ -242,15 +242,42 @@ def main():
         _run = (_dt2.datetime.now(_dt2.timezone.utc)
                 - _dt2.datetime.fromisoformat(
                     _live["started_at"].replace("Z", "+00:00"))).total_seconds() / 60
-        # The lock is the better evidence. A timestamp says when a cycle
-        # started; the lock says whether it is still working.
+        # A CYCLE THAT PREDATES THIS BOOT IS DEAD. No threshold needed.
+        #
+        # stale_minutes is now twelve hours, which is right for a slow build
+        # and badly wrong after a crash: this box has crashed sixteen times in
+        # three days, and a crash leaves a cycle row open. Without this, the
+        # machine would come back up and refuse to start any cycle until
+        # twelve hours after the one that died had begun.
+        #
+        # But we do not need to guess. If the cycle started before the current
+        # boot, the process that owned it does not exist — the kernel it ran
+        # under is gone. That is certainty, not a timeout.
+        _pre_boot = False
+        try:
+            with open("/proc/uptime") as _u:
+                _boot = (_dt2.datetime.now(_dt2.timezone.utc)
+                         - _dt2.timedelta(seconds=float(_u.read().split()[0])))
+            _started = _dt2.datetime.fromisoformat(
+                _live["started_at"].replace("Z", "+00:00"))
+            _pre_boot = _started < _boot
+        except Exception:
+            pass
+
+        # The lock is the better evidence for a cycle in THIS boot. A
+        # timestamp says when a cycle started; the lock says whether it is
+        # still working.
         _busy = False
         try:
             _busy = chat.ComposerLock(
                 os.path.join(data, "composer.lock")).held_by_someone_else()
         except Exception:
             pass
-        if _run < _stale or _busy:
+        if _pre_boot:
+            log(f"cycle {_live['id']} started before this boot; its process "
+                f"died with the machine. Closing it and carrying on.",
+                level="warn")
+        elif _run < _stale or _busy:
             log(f"cycle {_live['id']} has been running {_run:.0f} minute(s)"
                 + (" and still holds the composer" if _busy else "")
                 + "; not starting a second one beside it")
