@@ -112,6 +112,33 @@ def remember(state, text, kind="operator", source=None, pinned=0,
     return mid
 
 
+def forget_like(state, pattern, log=None):
+    """Delete every live memory whose text matches a SQL LIKE pattern.
+
+    Written for a specific mess. Riffle spent nine days recording, in 53
+    separate memories, that "there was no live thread to anchor" whatever it
+    was trying to do. No such refusal exists in the code. It reworded a
+    project-readiness message once, on 2026-09-08, and every reflection pass
+    since read its own reasoning back and wrote the invention down again.
+    Consolidation then promoted several of them to long term.
+    
+    Fifty-three forget clicks is not a reasonable ask, and the UI has no bulk
+    delete because until now nothing had produced a family of memories that
+    were all wrong in the same way.
+
+    Returns the ids removed.
+    """
+    rows = state.db.execute(
+        "SELECT id FROM memories WHERE superseded_by IS NULL AND text LIKE ?",
+        (pattern,)).fetchall()
+    ids = [r["id"] for r in rows]
+    for mid in ids:
+        forget(state, mid)
+    if ids and log:
+        log(f"forgot {len(ids)} memory(ies) matching {pattern!r}", level="warn")
+    return ids
+
+
 def forget(state, mid):
     state.db.execute("DELETE FROM memories WHERE id=?", (mid,))
     if _ensure_fts(state):
@@ -455,11 +482,34 @@ def reflect(state, cfg, log=None):
     front = state.note("last_front_digest")
     if front:
         material.append("WHAT WAS ON THE BOARD:\n" + front[:2500])
+    # THE REASON, not just the verdict.
+    #
+    # This said "and it was blocked" and stopped. The model, asked to write
+    # down what the cycle taught, had a refusal with no grounds and supplied
+    # plausible grounds — "there was no live thread to anchor the finding".
+    # No such rule exists. It wrote that 53 times over nine days, and
+    # consolidation promoted several to long term, because every pass read the
+    # last pass's invention back as history.
+    #
+    # The real reason is in what riffle said about the cycle at the time. It
+    # was sitting one table away the whole time.
+    _reasons = state.db.execute(
+        "SELECT content FROM messages WHERE role IN ('report','error')"
+        " AND content LIKE ? ORDER BY id LIMIT 4", (f"Cycle {cid} %",)).fetchall()
     for a in acts:
         line = f"YOU PROPOSED: {a['kind']} — {a['rationale']}"
         if a["status"] != "executed":
             line += f"\n  and it was {a['status']}"
         material.append(line)
+    if _reasons:
+        material.append(
+            "WHAT ACTUALLY HAPPENED, in your own words at the time:\n"
+            + "\n".join("  " + " ".join((r["content"] or "").split())[:400]
+                         for r in _reasons)
+            + "\nIf something was refused, the reason is above. Write THAT "
+              "down. Do not write a reason that is not in this material \u2014 "
+              "you have invented refusals before and then believed them for "
+              "nine days.")
     if jrn:
         material.append("LOG:\n" + "\n".join(
             f"  [{j['level']}] {j['text'][:220]}" for j in jrn))
