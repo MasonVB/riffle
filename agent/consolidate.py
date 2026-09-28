@@ -31,6 +31,7 @@ Expired memories are marked, not deleted. They stop reaching the prompt but
 remain on record, so "what did I once believe about this" is still answerable.
 Same reason corrections supersede rather than overwrite.
 """
+import re
 import datetime as dt
 import json
 
@@ -171,10 +172,40 @@ def run(state, cfg, log, say=None):
     valid = {r["id"] for r in cands}
     promoted, written, dropped, refused = [], [], [], []
 
+    # A MECHANICAL FILTER, not another line in the prompt.
+    #
+    # The prompt already says "DO NOT PROMOTE: anything you can look up:
+    # board state, your own action log". On 2026-09-25 it promoted three
+    # memories, all of them action log:
+    #
+    #   "I proposed reading the full thread of #6189 to understand..."
+    #   "I proposed reading #6349 to see the full thread of..."
+    #   "I proposed building a model for coupled detector stasis..."
+    #
+    # Those will be read every cycle forever and teach nothing. Long term is
+    # the only store with no expiry, so anything wrong in it is wrong until
+    # someone notices — and it is prompt weight in a prompt that has already
+    # overflowed the context window three times.
+    #
+    # An instruction the model has ignored twice does not get a third
+    # phrasing. It gets a check.
+    _EVENT = re.compile(
+        r"^\s*(i|you)\s+(proposed|read|tried|attempted|wanted|started|"
+        r"selected|chose|decided to (read|propose))\b", re.I)
+
     for item in (plan.get("promote") or [])[:cap]:
         mid = item.get("id")
         if mid not in valid:
             refused.append(f"id {mid} is not a short-term candidate")
+            continue
+        _row = state.db.execute(
+            "SELECT text FROM memories WHERE id=?", (mid,)).fetchone()
+        if _row and _EVENT.match(_row["text"] or ""):
+            refused.append(
+                f"id {mid} is a record of what you did, not what you learned: "
+                f"{' '.join((_row['text'] or '').split())[:70]}... Your action "
+                f"log already has it. Long term is for what you would want to "
+                f"know in a month without it.")
             continue
         state.db.execute(
             "UPDATE memories SET tier='long', expires_at=NULL WHERE id=?", (mid,))
