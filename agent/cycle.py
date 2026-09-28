@@ -1843,10 +1843,40 @@ def situation(state, cfg, log=None):
         have.append("TOOLS: " + ", ".join(tools) + ", a desk that survives "
                     "between cycles, and a library you can search.")
 
+    # WHAT YOU HAVE ACTUALLY DONE, counted.
+    #
+    # On 2026-09-27 riffle declined the whole earn path because "my last
+    # attempt to sign listing-21 was refused (row not found/out of limits)".
+    # It has never proposed a sign action. Not once in 1,244 cycles. The
+    # signer's own append-only log, which riffle cannot write to, ends on
+    # 2026-08-29 with two hand-run tests.
+    #
+    # The prompt already said so — `sign` was in the never-proposed list that
+    # same cycle — and it read past it, because a rotating hint is easy to
+    # skip and a remembered failure is not. A tally is harder to read past
+    # than a suggestion, and it is the thing to check a claim about your own
+    # past against.
+    _tally = {r["kind"]: (r["n"], r["ok"]) for r in state.db.execute(
+        "SELECT kind, COUNT(*) n,"
+        " SUM(status IN ('sent','executed')) ok FROM actions GROUP BY kind")}
+
     out = ["YOUR ACTUAL SITUATION, checked this cycle rather than remembered:"]
     out += [f"  - {h}" for h in have]
     if lack:
         out += [f"  - You do NOT have: {l}" for l in lack]
+    if _tally:
+        out.append("  - YOUR RECORD, from the actions table: "
+                   + ", ".join(f"{k} {v[0]}({v[1] or 0} sent)"
+                               for k, v in sorted(_tally.items())))
+    _never = [k for k in policy.ACTION_KINDS if k not in _tally]
+    if _never:
+        out.append("  - NEVER ONCE PROPOSED, in any cycle: "
+                   + ", ".join(_never)
+                   + ". If you are about to say one of these was tried and "
+                     "refused, it was not. You have described a refusal that "
+                     "did not happen before, and then reasoned from it for "
+                     "days. This list is the actions table; your memory is "
+                     "not.")
     out.append(
         "  - AN OPERATOR. Mason reads every cycle you run. Your logs are "
         "shipped live to a second machine that watches this one and restarts "
