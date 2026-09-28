@@ -1794,12 +1794,38 @@ def situation(state, cfg, log=None):
                 addr = line.split("=", 1)[1].strip()
     except OSError:
         pass
+    # The two limits riffle cannot otherwise know. It declined a payout
+    # saying it "cannot assemble without knowing the exact preimage format
+    # and limits" — half right: the format is not its problem, but the
+    # limits genuinely were unknowable from inside.
+    _ceiling, _rows = "", ""
+    try:
+        for _line in open("/etc/riffle/payout.conf"):
+            _k, _, _v = _line.partition("=")
+            if _k.strip() == "max_amount_atomic":
+                _ceiling = _v.strip()
+            elif _k.strip() == "allowed_rows":
+                _rows = _v.strip()
+    except OSError:
+        pass
     if addr and addr != "0x" + "0" * 40:
         have.append(
             f"A PAYOUT ADDRESS, {addr[:10]}…{addr[-6:]}, in a root-owned file "
             f"you cannot write. Your operator signs the wallet half of any "
             f"binding by hand; you sign the citizen half. Money moves only when "
-            f"both exist, so your half alone is inert and safe to produce.")
+            f"both exist, so your half alone is inert and safe to produce.\n"
+            f"    YOU DO NOT ASSEMBLE THE PREIMAGE. You name a row and an "
+            f"expiry; the signer fetches the exact bytes from the registry "
+            f"itself and checks all eight fields before it signs. There is no "
+            f"format for you to get right and nothing to guess, so rule 2's "
+            f"warning about signing unknown bytes does not apply here — that "
+            f"rule is WHY the signer fetches them instead of taking them from "
+            f"you."
+            + (f"\n    Your limits, which you cannot change: rows matching "
+               f"{_rows or '(unset)'}, at most {_ceiling or '(unset)'} atomic "
+               f"units. A row outside those is refused before anything is "
+               f"signed, so check the listing against them before you try."
+               if (_rows or _ceiling) else ""))
     else:
         lack.append("a payout address (the config still has the placeholder)")
 
