@@ -493,6 +493,74 @@ def main():
         live_weights["deepen"] = live_weights.get("deepen", 0.25) * focus
     drive = drives.pick_drive(cfg, available, weights_override=live_weights) or "understand"
 
+    # --- the failsafe: when nothing has happened for long enough, ask --------
+    #
+    # Riffle spent 179 hours noop'ing on a project it had correctly diagnosed,
+    # naming `ask_operator` as one of its three exits and never taking it. The
+    # prompt told it to ask. It did not. So a failsafe that depends on riffle
+    # deciding to ask is not a failsafe — it is the same request again, from
+    # the same place, to the same thing that is stuck.
+    #
+    # This one asks on its own behalf. It does not consume the cycle: the
+    # question goes to the operator, the cycle carries on and does whatever it
+    # was going to do. The worst case is a question you ignore.
+    #
+    # BOTH conditions must hold — a time span AND a count of cycles — so that
+    # a machine which was switched off for two days does not come back and
+    # immediately declare itself stuck. Time alone cannot tell "idle" from
+    # "off"; cycles alone cannot tell "slow" from "stuck".
+    _stuck_h = float((cfg.get("cycle") or {}).get("stuck_hours", 24))
+    _stuck_n = int((cfg.get("cycle") or {}).get("stuck_cycles", 12))
+    try:
+        _recent = state.db.execute(
+            "SELECT id, started_at, outcome FROM cycles"
+            " WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (_stuck_n,)).fetchall()
+        _moved = state.db.execute(
+            "SELECT MAX(created_at) m FROM actions"
+            " WHERE status IN ('sent','executed','approved','queued')").fetchone()
+    except Exception:
+        _recent, _moved = [], None
+    if len(_recent) >= _stuck_n and _moved and _moved["m"]:
+        import datetime as _dt3
+        _since = (_dt3.datetime.now(_dt3.timezone.utc)
+                  - _dt3.datetime.fromisoformat(
+                      _moved["m"].replace("Z", "+00:00"))).total_seconds() / 3600
+        _span = (_dt3.datetime.now(_dt3.timezone.utc)
+                 - _dt3.datetime.fromisoformat(
+                     _recent[-1]["started_at"].replace("Z", "+00:00"))
+                 ).total_seconds() / 3600
+        # _span guards the "was it off" case: N cycles must have actually run
+        # inside roughly the window, not be N cycles spread over a fortnight.
+        if _since >= _stuck_h and _span <= _stuck_h * 3:
+            from agent.state import ask_operator, open_questions
+            _already = any("stuck" in (q["why"] or "")
+                           for q in open_questions(state))
+            if not _already:
+                _outs = ", ".join(r["outcome"] or "?" for r in _recent[:8])
+                _pr2 = project.active(state)
+                _q = (f"I have not sent anything to the square for "
+                      f"{_since:.0f} hours. My last {len(_recent)} cycles "
+                      f"ended: {_outs}. "
+                      + (f"My open project is '{_pr2['title']}' and it is "
+                         f"{project.ready(state, cfg)[1]}. " if _pr2 else
+                         "I have no project open. ")
+                      + "I cannot tell whether I am being careful or stuck. "
+                        "What should I do next?")
+                _qid, _why2 = ask_operator(
+                    state, _q,
+                    why="stuck: raised automatically, not by me",
+                    cycle_id=cid)
+                if _qid:
+                    state.say("question", _q,
+                              {"drive": drive, "qid": _qid, "status": "open",
+                               "why": f"raised automatically after {_since:.0f}h "
+                                      f"with nothing sent"})
+                    log(f"failsafe: nothing sent for {_since:.0f}h over "
+                        f"{len(_recent)} cycles; asked the operator "
+                        f"(question #{_qid})", level="warn", drive=drive)
+
+
     # --- an operator instruction takes the cycle -----------------------------
     # Instructions used to be read AFTER the drive was picked and appended to
     # the prompt as data, under a line naming a drive the model then followed
