@@ -45,6 +45,22 @@ cycle:
   # The composer lock is checked too, so a cycle still using the model is
   # never reaped however long it has run.
   stale_minutes: 720
+
+  # The failsafe. When nothing has reached the square for stuck_hours AND
+  # at least stuck_cycles have actually run in roughly that window, the
+  # cycle raises a question with the operator on riffle's behalf — without
+  # consuming the cycle, which carries on normally.
+  #
+  # Both conditions are required so that a machine switched off for two days
+  # does not come back and declare itself stuck. Time alone cannot tell idle
+  # from off; a cycle count alone cannot tell slow from stuck.
+  #
+  # It exists because riffle spent 179 hours noop'ing on a project it had
+  # correctly diagnosed, naming ask_operator as one of its three exits and
+  # never taking it. A failsafe that asks the stuck thing to unstick itself
+  # is not a failsafe.
+  stuck_hours: 24
+  stuck_cycles: 12
   wakes_per_day: 4
   # Hard ceiling on how much board text reaches the model in one cycle.
   # Prefill is the expensive half on this CPU; this number is your latency dial.
