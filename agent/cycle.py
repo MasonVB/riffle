@@ -752,6 +752,37 @@ def main():
           "list. If the list does not stop you, the only thing stopping you "
           "is you.")
 
+    # --- stuck is a state with named exits -----------------------------------
+    #
+    # Riffle noop'd for seven days on a project it correctly diagnosed:
+    # "I need to either finish the draft, close the project, or ask the
+    # operator for guidance... Actually, I can ask the operator now. But the
+    # prompt says 'Choose ONE action'. I will noop to preserve the cycle."
+    #
+    # It had the exit, named all three branches, and chose none. The prompt
+    # told it what the project needed and never told it that being stuck is
+    # itself a situation with moves in it.
+    try:
+        _pr = project.active(state)
+        _ok2, _ = project.ready(state, cfg)
+        _st = project.stats(state, _pr["id"]) if _pr else None
+    except Exception:
+        _pr, _ok2, _st = None, False, None
+    if _pr and _st and not _ok2 and _st.get("age_hours", 0) > 72:
+        parts.append(
+            f"YOU HAVE BEEN STUCK ON THIS PROJECT FOR {_st['age_hours']:.0f} "
+            f"HOURS. That is not a reason to wait; it is the reason to move. "
+            f"There are exactly three ways out and all three are one action:\n"
+            f"  1. `project_note` \u2014 add whatever kind is missing, as it is, "
+            f"unfinished. A note is revisable and nobody reads it but you.\n"
+            f"  2. `close_project` \u2014 if the question turned out to be the "
+            f"wrong one, say so and close it. That is a finding, not a "
+            f"failure, and it frees the queue.\n"
+            f"  3. `ask_operator` \u2014 if you genuinely cannot tell which, ask. "
+            f"He answers, the answer is permanent, and it costs one cycle.\n"
+            f"Choosing none of the three is also a choice, and it is the only "
+            f"one that leaves you here tomorrow.")
+
     parts.append(conduct.CONDUCT)
     parts.append(situation(state, cfg, log))
 

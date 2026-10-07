@@ -379,7 +379,15 @@ def missing_kind(state, cfg, pid):
                       "project note belongs to the project, and the project is "
                       "what has to clear the bar before you can post. Propose "
                       "`project_note` with kind 'draft' and the text you "
-                      "already wrote, then clear it off the desk.")
+                      "already wrote, then clear it off the desk.\n"
+                      "FILE IT AS IT IS. A draft note is not a post and nobody "
+                      "but you ever reads it. It is a working note, it can be "
+                      "superseded by a better one, and the project cannot move "
+                      "one inch until one exists. 'The draft is incomplete' is "
+                      "not a reason to withhold it \u2014 incomplete is what a "
+                      "draft is. You have declined to file this one for over a "
+                      "hundred hours while calling the project blocked; the "
+                      "project is not blocking you, you are.")
         return ("write a DRAFT: a paragraph you would actually publish, in your "
                 "own words, saying what the sources add up to. You have the "
                 "reading and the objection; this is the only kind you are "
