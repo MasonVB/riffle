@@ -547,10 +547,14 @@ def main():
                          "I have no project open. ")
                       + "I cannot tell whether I am being careful or stuck. "
                         "What should I do next?")
+                # No cycle_id: `cid` is not in scope here — this runs while
+                # the drive is being chosen, before the cycle row exists. It
+                # was an undefined name, so the failsafe would have raised
+                # NameError the first time it ever fired, which is exactly
+                # when nobody is watching.
                 _qid, _why2 = ask_operator(
                     state, _q,
-                    why="stuck: raised automatically, not by me",
-                    cycle_id=cid)
+                    why="stuck: raised automatically, not by me")
                 if _qid:
                     state.say("question", _q,
                               {"drive": drive, "qid": _qid, "status": "open",
@@ -803,7 +807,12 @@ def main():
     _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
     _gates.append("  today's allowance: "
                   + ", ".join(f"{k}={_left[k]}" for k in sorted(_left)))
-    _cool = project.cooling(state) if hasattr(project, "cooling") else None
+    # in_cooldown, and USED. `project.cooling` does not exist; the hasattr
+    # guard swallowed that, so _cool was always None and never read — which
+    # left the cooldown off a list whose entire claim is "and nothing else".
+    # A gate list missing a gate is worse than no gate list.
+    _cd, _cu, _cl = project.in_cooldown(state)
+    _gates.append(f"  posting: {'CLOSED for %.1fh' % _cl if _cd else 'open'}")
     _gates.append("  numcheck: every figure must appear in your sources block")
     _gates.append("  one top-level comment per post; replies need a parent_id "
                   "from that post")
@@ -2261,14 +2270,14 @@ def apply_build(state, cfg, cid, p, drive, log):
     # documents in its own library. Both were sha256 of one run's STDOUT,
     # which changes every run and which nobody can resolve to anything. The
     # library hash is of the source and does not move.
-    _lsha = ""
-    if lib_id:
-        _lr = state.db.execute("SELECT sha256 FROM library WHERE id=?",
-                               (lib_id,)).fetchone()
-        _lsha = _lr["sha256"] if _lr else ""
+    # NOTE WRITTEN AFTER THE SHELVING, because it records the shelving.
+    #
+    # This block read lib_id at line 2265 and the shelving that assigns it is
+    # at 2294 — thirty lines later. Every successful build raised NameError
+    # here, so no build has ever recorded its library id, which is the whole
+    # point of the citable-hash fix. Moved below.
     state.note("last_build", json.dumps({
         "run_id": run_id, "at": utcnow(), "entry": p["entry"],
-        "library_id": lib_id, "library_sha": _lsha,
         "files": sorted(p["files"]), "source": _src,
         "truncated": sorted(set(p["files"]) - set(_src)),
         "ok": ok,
@@ -2308,6 +2317,20 @@ def apply_build(state, cfg, cid, p, drive, log):
         except (ValueError, OSError) as e:
             log(f"build {run_id} worked but could not be shelved: {e}",
                 level="warn", drive=drive)
+
+    # Now that lib_id exists, put it in the note the next cycle reads. This
+    # is the citable hash — of the SOURCE, which does not change between
+    # runs, unlike the sha256 the script prints.
+    if lib_id:
+        _lr = state.db.execute("SELECT sha256 FROM library WHERE id=?",
+                               (lib_id,)).fetchone()
+        try:
+            _nb = json.loads(state.note("last_build") or "{}")
+            _nb["library_id"] = lib_id
+            _nb["library_sha"] = _lr["sha256"] if _lr else ""
+            state.note("last_build", json.dumps(_nb))
+        except (ValueError, TypeError):
+            pass
 
     log(f"build {run_id} {'ok' if ok else 'failed'} "
         f"(exit {out.get('exit_code')}, {len(p['files'])} file(s))"

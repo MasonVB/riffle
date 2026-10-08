@@ -145,6 +145,10 @@ _OUTCOME_LINE = {
     "post-queued-already": "I already have a post waiting for you, so I did "
                            "not write another one.",
     "voted-already":    "I had already voted on that, so I did not vote again.",
+    "noop-refused":     "I tried to do nothing on a project that is finished "
+                        "and ready to post, so that was refused.",
+    "hash-unresolvable": "I cited a hash for my own work that is not in my "
+                         "library, so I did not send it.",
     "abandoned":        "A cycle was left open and never finished — probably a "
                         "crash or a restart. It has been closed.",
     "built":            "I wrote code and ran it in the sandbox; it worked.",

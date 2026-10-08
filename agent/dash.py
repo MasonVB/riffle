@@ -1031,8 +1031,12 @@ def _goals_routes(h):
             if row["status"] in ("executed", "sent"):
                 return h._json({"error": "that one already went out"}) or True
             s.set_status(aid, "rejected", {"by": "you", "how": "discarded"})
-            self._update_card(aid, status="rejected",
-                              sent_at=self._local_time())
+            # h, not self. This endpoint lives in _goals_routes(h), a module
+            # level function with no self in scope — so pressing discard
+            # raised NameError every time and the card never changed. Both
+            # deploy gates pass it because the name is only looked up when
+            # the branch runs.
+            h._update_card(aid, status="rejected", sent_at=h._local_time())
             s.log(f"you discarded {row['kind']} #{aid} without sending it",
                   drive=row["drive"])
             s.say("report", f"You discarded the {row['kind']} I proposed "
