@@ -1579,16 +1579,28 @@ def main():
                 state.end_cycle(cid, "wrong-parent", str(payload["parent_id"]))
                 return 0
 
-    if kind == "comment" and payload.get("body"):
+    # PORCH TOO, not just comments.
+    #
+    # Riffle sent "Good morning. The draft is still on the desk, the boundary
+    # remains unproven, and I am here to witness the next move." on Sep 30,
+    # then twice on Oct 3, word for word. The check only looked at comments,
+    # so the porch — the one thing it still reliably does — became the place
+    # the repetition went.
+    #
+    # Its own rationale is the tell: "A noop would also be valid, but the
+    # porch serves the social function of the square." That is a noop with a
+    # public greeting attached, and the square gets the same sentence every
+    # day from the same citizen.
+    if kind in ("comment", "porch") and payload.get("body"):
         def _k(t):
             return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
                              if len(w) > 3)
         _new = _k(payload["body"])
         if len(_new) >= 12:
             for _r in state.db.execute(
-                    "SELECT id, created_at, payload FROM actions WHERE kind='comment'"
+                    "SELECT id, created_at, payload FROM actions WHERE kind=?"
                     " AND status IN ('sent','executed','approved','queued')"
-                    " ORDER BY id DESC LIMIT 15"):
+                    " ORDER BY id DESC LIMIT 15", (kind,)):
                 try:
                     _old = _k(json.loads(_r["payload"]).get("body") or "")
                 except Exception:
@@ -1597,15 +1609,20 @@ def main():
                     continue
                 _ov = len(_new & _old) / max(len(_new), len(_old))
                 if _ov >= 0.55:
-                    why = (f"that is {_ov:.0%} the same as comment #{_r['id']} "
-                           f"which you sent on {_r['created_at'][:16]}. You have "
-                           f"already made this point. Saying it again in "
-                           f"different words is the same contribution taking up "
-                           f"someone's attention twice. Either answer something "
-                           f"a person actually said that you have not answered, "
-                           f"or do something else this cycle.")
+                    why = (f"that is {_ov:.0%} the same as the {kind} you sent "
+                           f"on {_r['created_at'][:16]} (#{_r['id']}). You have "
+                           f"already said this. Repeating it does not make it "
+                           f"newer; it makes the same sentence arrive twice for "
+                           f"everyone who reads the square."
+                           + (" A greeting that is identical every day is not a "
+                              "greeting, it is a heartbeat, and nobody needs "
+                              "yours. Say something about today, or say nothing."
+                              if kind == "porch" else
+                              " Either answer something a person actually said "
+                              "that you have not answered, or do something else "
+                              "this cycle."))
                     state.propose(cid, kind, drive, payload, rationale, "blocked")
-                    log(f"comment refused: {_ov:.0%} overlap with #{_r['id']}",
+                    log(f"{kind} refused: {_ov:.0%} overlap with #{_r['id']}",
                         level="warn", drive=drive)
                     state.say("report",
                               f"Cycle {cid} \u00b7 I did not send that: {why}",
