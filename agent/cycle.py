@@ -191,6 +191,12 @@ def main():
     _iv = max(5, min(1440, _iv))
     _last = state.db.execute(
         "SELECT started_at FROM cycles ORDER BY id DESC LIMIT 1").fetchone()
+    # Whichever is later: the last cycle that actually began, or the last wake
+    # that got this far. Without the second, a wake that dies before
+    # begin_cycle() is invisible to the gate and repeats every tick.
+    _wake = state.note("last_wake_at")
+    if _wake and (not _last or _wake > _last["started_at"]):
+        _last = {"started_at": _wake}
     if _last and not a.force:
         import datetime as _dt
         _age = (_dt.datetime.now(_dt.timezone.utc)
@@ -199,6 +205,25 @@ def main():
         if _age < _iv - 0.5:
             log(f"not due: {_age:.0f} of {_iv} minutes since the last cycle")
             return 0
+
+    # MARK THE ATTEMPT, not just the completed cycle.
+    #
+    # The interval gate reads cycles.started_at, and the cycle row is created
+    # by begin_cycle() two hundred lines below — after the witness pass, the
+    # inbox, the changes walk and the whole prompt build. A wake that dies
+    # anywhere in between leaves no row at all, so the gate still sees the
+    # previous cycle, the next tick five minutes later is also "due", and it
+    # runs the witness pass again.
+    #
+    # That is 54 witness passes in six hours with almost no cycles: not a
+    # scheduler fault, a wake that fails silently after the one thing that
+    # writes to chat. The witness pass was the only visible symptom of a loop
+    # that produced nothing else.
+    #
+    # A note is written here, before anything can fail, and the gate reads
+    # whichever is later. An attempt now costs the interval whether or not it
+    # finishes.
+    state.note("last_wake_at", utcnow())
 
     # --- and never two at once ----------------------------------------------
     # The interval check above measures time since the last cycle STARTED,
