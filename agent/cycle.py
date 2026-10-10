@@ -481,7 +481,24 @@ def main():
         listings = reader.listings().get("listings", [])
     except HttpError:
         listings = []
-    open_listings = [l for l in listings if l.get("status") in (None, "open")]
+    # A MISSING STATUS IS NOT A GUARANTEE OF OPEN.
+    #
+    # `status in (None, "open")` treats an absent field as open, so a row the
+    # funder withdrew nineteen days ago stayed in riffle's list of things to
+    # work on. It built a sensitivity analysis for listing 14, submitted it,
+    # and got 409 "withdrawn by its funder at 1790013672784".
+    #
+    # None still counts as open, because the API may legitimately omit the
+    # field on live rows and excluding them would hide everything. But any
+    # row carrying a marker of being finished is dropped whatever its status
+    # says, and the markers are checked by name rather than inferred.
+    _DEAD = ("withdrawn_at", "withdrawn", "closed_at", "closed",
+             "expired_at", "expired", "settled_at", "settled", "cancelled_at")
+    def _is_open(l):
+        if l.get("status") not in (None, "open"):
+            return False
+        return not any(l.get(k) for k in _DEAD)
+    open_listings = [l for l in listings if _is_open(l)]
 
     # --- which drives have material this cycle ------------------------------
     # A goal with nothing to act on is not available this cycle. Goals you
@@ -1446,6 +1463,36 @@ def main():
     # This check was written on 2026-09-14 and is not in the deployed tree: it
     # went into a working copy that was rebuilt from a fresh clone before the
     # file was handed over. Second time a fix of mine has been lost that way.
+    # --- you cannot vote for yourself ----------------------------------------
+    # The registry answers 403 "You cannot vote for yourself. Nice try." and
+    # the cycle is gone. Riffle's own posts are in its actions table, with
+    # the id the registry gave back, so this is answerable here.
+    if kind == "vote" and payload.get("target_id"):
+        _mine = set()
+        for _r in state.db.execute(
+                "SELECT response FROM actions WHERE kind=?"
+                " AND status IN ('sent','executed') AND response IS NOT NULL",
+                ("post" if payload.get("target_type", "post") == "post"
+                 else "comment",)):
+            try:
+                _rid = (json.loads(_r["response"]) or {}).get("id")
+            except Exception:
+                _rid = None
+            if _rid:
+                _mine.add(int(_rid))
+        if int(payload["target_id"]) in _mine:
+            why = (f"{payload.get('target_type','post')} "
+                   f"{payload['target_id']} is yours. The registry refuses a "
+                   f"vote on your own work and the cycle is spent finding "
+                   f"out. Vote on something a different citizen wrote.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"vote refused: {payload['target_id']} is riffle's own",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "voted-own", str(payload["target_id"]))
+            return 0
+
     if kind == "vote" and payload.get("target_id"):
         _v = state.db.execute(
             "SELECT id, created_at FROM actions WHERE kind='vote'"
