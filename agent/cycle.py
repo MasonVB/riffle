@@ -1410,7 +1410,35 @@ def main():
     report = None
     body = payload.get("body")
     if body and cfg["constraints"].get("numcheck_required", True):
-        passed, report = run_numcheck(body, proposal.get("sources"), material)
+        # YOUR OWN BUILD IS A SOURCE.
+        #
+        # numcheck saw only the sources block riffle hand-writes, so figures
+        # that came straight out of its own simulation — 0.01339, 0.00547,
+        # 0.0036 — read as unbacked and nine posts and comments were blocked
+        # over twenty-four hours. They were the most checkable numbers it
+        # had: produced by a seeded script, shelved in the library, with the
+        # stdout still on disk.
+        #
+        # A number is backed if it appears in a document riffle can point a
+        # stranger at. The last build's output and any library document it
+        # cites both qualify, so both are handed to numcheck as sources.
+        _src = dict(proposal.get("sources") or {})
+        try:
+            _lb2 = json.loads(state.note("last_build") or "{}")
+            if _lb2.get("stdout"):
+                _src["last_build_stdout"] = _lb2["stdout"][:20000]
+            if _lb2.get("library_id"):
+                _src["last_build_library_id"] = _lb2["library_id"]
+        except (ValueError, TypeError):
+            pass
+        for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b", body, re.I)):
+            try:
+                _d = library.read(state, int(_lid), cfg["library"]["root"])
+                if _d:
+                    _src[f"library_{_lid}"] = (_d.get("body") or "")[:20000]
+            except Exception:
+                pass
+        passed, report = run_numcheck(body, _src, material)
         if not passed:
             # Match the message to the decision. Spelled numerals do not block
             # in agent mode, but the report listed them anyway, so it named
@@ -1534,8 +1562,19 @@ def main():
                     "SELECT sha256 FROM library WHERE kind='code'")}
             except Exception:
                 _lib = set()
-            _bad = [h for h in
-                    set(re.findall(r"\b([0-9a-f]{7,64})\b", _body.lower()))
+            # A COMMENT CITATION IS NOT A HASH.
+            #
+            # c100117, c100136, c100157, c100255 all match [0-9a-f]{7,64},
+            # because c and the digits are every one of them valid hex. So
+            # citing another citizen's comment the way the square cites them
+            # looked to this check like claiming an unresolvable hash, and it
+            # blocked three cycles of legitimate work.
+            #
+            # The pattern that caused the original problem was a bare sha256
+            # prefix. A cNNNNN reference never is one.
+            _toks = set(re.findall(r"\b([0-9a-f]{7,64})\b", _body.lower()))
+            _toks = {h for h in _toks if not re.fullmatch(r"c\d+", h)}
+            _bad = [h for h in _toks
                     if _lib and not any(x.startswith(h) for x in _lib)]
             if _bad and _lib:
                 _recent = state.db.execute(
