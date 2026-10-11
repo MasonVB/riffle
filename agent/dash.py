@@ -853,10 +853,67 @@ def _run_cycle_detached(cls):
 POLICY_NOTES = {'post': 'one per UTC day, and only after a project clears the bar', 'comment': 'the main way it takes part', 'read_thread': 'opens a post and files it into the project', 'read_more': 'the next batch of replies on a thread already opened', 'request_cycle': 'asks to wake again sooner; capped daily', 'open_project': 'starts the thing a post has to come out of', 'project_note': 'an observation, source, draft, objection or correction', 'adjust_drive': 'moves its own goal weights, within goal_policy bounds', 'add_goal': 'always a proposal, never an act', 'remember': 'writes a durable memory', 'listing_submission': 'the only way it can be paid'}
 
 
+def _uptime_report():
+    """How long this boot has lasted, and the boots before it.
+
+    riffle has been power-cycling itself every couple of hours since
+    September: no panic, no MCE, nothing in pstore, cores at 34 C and load
+    at 0.01 when it goes. Every diagnosis has needed `last -x` over ssh,
+    which means it only gets looked at when something already looks wrong.
+
+    `last -x` reports a boot as "crash" whenever it was not preceded by a
+    clean shutdown, so that word covers a power cut, a reset and a panic
+    alike. It is reported as "unclean" here rather than "crash" because
+    the log cannot tell those apart and should not pretend to.
+    """
+    out = {"uptime_s": 0, "boots": [], "unclean": 0, "error": None}
+    try:
+        with open("/proc/uptime") as fh:
+            out["uptime_s"] = float(fh.read().split()[0])
+    except OSError as e:
+        out["error"] = str(e)
+    try:
+        r = subprocess.run(["last", "-x", "--time-format=iso", "reboot",
+                            "shutdown"],
+                           capture_output=True, text=True, timeout=10)
+        for line in r.stdout.splitlines():
+            if not line.strip() or line.startswith("wtmp"):
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            kind = "boot" if parts[0] == "reboot" else "shutdown"
+            stamp = next((p for p in parts if p[:2] == "20" and "T" in p), "")
+            if not stamp:
+                continue
+            ended = "still running" if "still running" in line else (
+                "unclean" if "crash" in line else "clean")
+            if kind == "boot" and ended == "unclean":
+                out["unclean"] += 1
+            out["boots"].append({"at": stamp, "kind": kind, "ended": ended})
+        out["boots"] = out["boots"][:40]
+    except (OSError, subprocess.SubprocessError) as e:
+        out["error"] = (out["error"] or "") + f" last: {e}"
+    # Pair each boot with the one after it to get a length.
+    boots = [b for b in out["boots"] if b["kind"] == "boot"]
+    for i, b in enumerate(boots):
+        try:
+            a = dt.datetime.fromisoformat(b["at"])
+            z = (dt.datetime.now(a.tzinfo) if b["ended"] == "still running"
+                 else dt.datetime.fromisoformat(boots[i - 1]["at"]))
+            b["hours"] = round(max(0.0, (z - a).total_seconds() / 3600), 2)
+        except (ValueError, IndexError):
+            b["hours"] = None
+    out["boots"] = boots
+    return out
+
+
 def _goals_routes(h):
     """Extra routes bolted onto Handler. Returns True if it handled the path."""
     u = urllib.parse.urlparse(h.path)
     s, cfg = h.state, h.cfg
+    if h.command == "GET" and u.path == "/api/uptime":
+        return h._json(_uptime_report()) or True
     if h.command == "GET" and u.path in ("/settings", "/goals"):
         b = GOALS_PAGE.encode()
         h.send_response(200)

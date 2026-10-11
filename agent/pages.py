@@ -754,6 +754,25 @@ poll();
 GOALS_PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>riffle — settings</title><style>
+.upcard{border:1px solid var(--line);border-radius:12px;padding:14px 16px;
+  margin:0 0 18px;background:var(--panel)}
+.uplabel{color:var(--dim);font-size:11px;letter-spacing:.08em;
+  text-transform:uppercase}
+.upbig{font-size:30px;line-height:1.15;margin-top:4px}
+.upsub{color:var(--dim);font-size:12px;margin-top:5px}
+.upcard.warn{border-color:var(--bad)}
+.upcard.warn .upbig{color:var(--bad)}
+.boots{max-height:320px;overflow-y:auto;border:1px solid var(--line);
+  border-radius:10px}
+.bootrow{display:flex;gap:10px;align-items:baseline;padding:6px 11px;
+  border-bottom:1px solid var(--line);font-size:12px}
+.bootrow:last-child{border-bottom:0}
+.bootrow .bt{color:var(--dim);font-variant-numeric:tabular-nums;
+  white-space:nowrap}
+.bootrow .bh{margin-left:auto;font-variant-numeric:tabular-nums}
+.bootrow.unclean .bs{color:var(--bad)}
+.bootrow.live .bs{color:var(--sig)}
+
 :root{--bg:#12140f;--panel:#181b14;--fg:#e8e6db;--dim:#8b8878;--line:#2b2f24;
       --sig:#c8a44a;--bad:#c4553d;--ok:#7fa563}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -914,6 +933,12 @@ not, and live in <code>config.yaml</code> over ssh.
 every cycle unconditionally, before any goal is chosen. It is an obligation
 rather than a desire, which is also why it cannot be removed.</div>
 
+<div class=upcard id=upcard>
+  <div class=uplabel>up for</div>
+  <div class=upbig id=upbig>&mdash;</div>
+  <div class=upsub id=upsub></div>
+</div>
+
 <h2>goals</h2><div id=list></div>
 
 
@@ -931,6 +956,13 @@ the drive may propose nothing else) &rarr; <b>never</b> (red) &rarr; neutral.
 every other cycle refusing itself.</div>
 <div class=g id=restrict></div>
 
+
+<h2>power &mdash; boots and unclean restarts</h2>
+<div class=note>Every boot this machine has recorded. <b>unclean</b> means the
+boot was not preceded by a clean shutdown &mdash; which covers a power cut, a
+reset and a kernel panic alike, because <code>last</code> cannot tell them
+apart and neither can this table.</div>
+<div id=boots class=boots></div>
 
 <h2>log &mdash; the last 24 hours</h2>
 <div class=note>A sample a minute; a full dump whenever an error or alarm is
@@ -994,6 +1026,53 @@ closed.</div>
 <div class=g id=mem></div>
 </main>
 <script>
+/* Uptime and the boot list. Refreshed on load and every 60s: the number is
+   only interesting when it is either very small (it just restarted) or
+   unusually large (whatever we changed may have worked). */
+function upEsc(t){
+  // The settings page has no esc() of its own, and these strings come from
+  // `last` rather than from a person — but a boot label is still text going
+  // into innerHTML, and escaping it costs nothing.
+  return String(t == null ? '' : t).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function loadUptime(){
+  try{
+    const d = await (await fetch('/api/uptime')).json();
+    const s = d.uptime_s || 0;
+    const dd = Math.floor(s/86400), hh = Math.floor(s%86400/3600),
+          mm = Math.floor(s%3600/60);
+    document.getElementById('upbig').textContent =
+      dd ? dd+'d '+hh+'h '+mm+'m' : (hh ? hh+'h '+mm+'m' : mm+'m');
+    const boots = d.boots || [];
+    const lens = boots.filter(b => b.hours != null && b.ended !== 'still running')
+                      .map(b => b.hours);
+    const med = lens.length
+      ? lens.slice().sort((a,b)=>a-b)[Math.floor(lens.length/2)] : null;
+    document.getElementById('upsub').textContent =
+      (d.unclean ? d.unclean + ' unclean restart' + (d.unclean===1?'':'s') : 'no unclean restarts')
+      + (med != null ? ' \u00b7 median boot ' + med.toFixed(1) + 'h' : '')
+      + (boots.length ? ' \u00b7 ' + boots.length + ' boots recorded' : '');
+    // Gold is normal; red once this boot is shorter than the recent median,
+    // which is the shape of the problem rather than any fixed threshold.
+    document.getElementById('upcard').className =
+      'upcard' + (med != null && s/3600 < med && d.unclean ? ' warn' : '');
+    document.getElementById('boots').innerHTML = boots.map(b => {
+      const cls = b.ended === 'still running' ? 'live'
+                : b.ended === 'unclean' ? 'unclean' : '';
+      return '<div class="bootrow ' + cls + '"><span class=bt>' +
+             upEsc((b.at||'').replace('T',' ').slice(0,19)) + '</span>' +
+             '<span class=bs>' + upEsc(b.ended) + '</span>' +
+             '<span class=bh>' + (b.hours != null ? b.hours.toFixed(2)+'h' : '') +
+             '</span></div>';
+    }).join('') || '<div class=bootrow><span class=bt>no boot records</span></div>';
+  }catch(e){
+    document.getElementById('upbig').textContent = 'unavailable';
+  }
+}
+loadUptime();
+setInterval(loadUptime, 60000);
+
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let data = null;
 
