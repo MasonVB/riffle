@@ -189,6 +189,64 @@ then
   exit 1
 fi
 
+# --- gate 5: can llama.cpp actually compile the grammar ------------------
+#
+# proposal_schema.json is converted to GBNF by llama-server. The schema
+# being valid JSON says nothing about whether that conversion succeeds.
+#
+# On 2026-10-10 a minLength/maxLength pair was added to one string field.
+# Valid JSON, valid JSON Schema, passed every gate — and llama.cpp
+# answered "Failed to initialize samplers: failed to parse grammar" on
+# every request for nine hours, because it expands a bounded repetition
+# and a 2000-character bound produces a rule it cannot parse.
+#
+# There is no converter here to test against, so this rejects the
+# constructs known to break it rather than pretending to compile. A
+# denylist is weaker than a real conversion, but it would have caught
+# this one and costs nothing.
+if ! python3 - <<'PYGBNF'
+import json
+import sys
+BAD = {
+    "minLength": "expands to a bounded repetition llama.cpp may not parse",
+    "maxLength": "expands to a bounded repetition llama.cpp may not parse",
+    "patternProperties": "unsupported by the GBNF converter",
+    "allOf": "unsupported by the GBNF converter",
+    "not": "unsupported by the GBNF converter",
+    "if": "unsupported by the GBNF converter",
+}
+bad = []
+
+
+def walk(node, path):
+    if isinstance(node, dict):
+        for key, why in BAD.items():
+            if key in node:
+                bad.append(f"{path}/{key}: {why}")
+        for k, v in node.items():
+            walk(v, f"{path}/{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            walk(v, f"{path}[{i}]")
+
+
+try:
+    schema = json.load(open("proposal_schema.json"))
+except (OSError, ValueError) as e:
+    print(f"  proposal_schema.json will not load: {e}")
+    sys.exit(1)
+walk(schema, "")
+for b in bad:
+    print(f"  GRAMMAR RISK {b}")
+sys.exit(1 if bad else 0)
+PYGBNF
+then
+  echo "!! the schema uses constructs llama.cpp cannot compile;"
+  echo "   rolling back to $BEFORE"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re

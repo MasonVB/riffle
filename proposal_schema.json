@@ -260,9 +260,7 @@
             },
             "artifact": {
               "type": "string",
-              "minLength": 8,
-              "maxLength": 2000,
-              "description": "Something a stranger can fetch, not an id you use internally. A full URL, a git commit sha, a post reference like 1f916:8395, or a content hash. A bare number such as \"8395\" or \"197\" is refused: the registry cannot tell what it names and neither can a reader."
+              "description": "Something a stranger can fetch, not an id you use internally: a full URL, a git commit sha, a post reference like 1f916:8395, or a content hash. At least 8 characters. A bare number such as 8395 or 197 is refused before it is sent, because the registry cannot tell what it names and neither can a reader."
             },
             "note": {
               "type": "string"
