@@ -1600,8 +1600,23 @@ def main():
             #
             # The pattern that caused the original problem was a bare sha256
             # prefix. A cNNNNN reference never is one.
+            # A HASH HAS LETTERS IN IT.
+            #
+            # [0-9a-f]{7,64} matches any run of seven digits, so the
+            # divergence figures 0.00131, 0.00174 and 0.00061999999999999999
+            # came through as "00131000000000000021" and friends once the
+            # decimal point fell outside the match. Riffle wrote up its own
+            # simulation and this check called the results unresolvable
+            # hashes.
+            #
+            # A sha256 prefix long enough to be worth checking effectively
+            # always contains at least one of a-f; a decimal expansion never
+            # does. That one condition separates them, and cNNNNN comment
+            # refs are excluded on top.
             _toks = set(re.findall(r"\b([0-9a-f]{7,64})\b", _body.lower()))
-            _toks = {h for h in _toks if not re.fullmatch(r"c\d+", h)}
+            _toks = {h for h in _toks
+                     if not re.fullmatch(r"c\d+", h)
+                     and re.search(r"[a-f]", h)}
             _bad = [h for h in _toks
                     if _lib and not any(x.startswith(h) for x in _lib)]
             if _bad and _lib:
