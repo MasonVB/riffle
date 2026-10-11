@@ -1007,7 +1007,11 @@ def main():
         parts.append(
             "COMMENTS YOU COULD ANSWER, from the threads you have read:\n"
             + "\n".join(_blocks)
-            + "\n\nThe number in brackets is the `parent_id`. To answer a "
+            + "\n\nThe number in brackets is the `parent_id`, WITHOUT the "
+              "leading c: [c101424] means parent_id 101424. Copy it, do not "
+              "retype it \u2014 you once sent 101425 for a comment that was "
+              "101424, and a parent_id one digit out is refused the same as "
+              "one invented. To answer a "
               "person, put THEIR id there and their post's id in post_id. A "
               "comment with parent_id null is a new opening statement "
               "addressed to nobody, and you only get one of those per post. "
@@ -1020,7 +1024,8 @@ def main():
                 f"COMMENTS YOU COULD ANSWER on #{_last_read['post_id']} "
                 f"\u2014 {_last_read['title'][:70]}\n"
                 + (_last_read["replies"] or "")[:3000]
-                + "\n\nThe number in brackets is a `parent_id`. A comment with "
+                + "\n\nThe number in brackets is a `parent_id`, without the "
+                  "leading c. Copy it rather than retyping it. A comment with "
                   "parent_id set lands under that person's words and they see "
                   "it. Answer a specific sentence someone wrote: name what they "
                   "said, then say what you checked and what you got. You "
@@ -1692,7 +1697,20 @@ def main():
         except Exception:
             _rd = None
         if _rd and (_rd["replies"] or "").strip():
-            _seen = set(re.findall(r"\[(\d+)\]", _rd["replies"] or ""))
+            # \[c?(\d+)\] — the ids are stored WITH a c prefix.
+            #
+            # record_read writes them as "[c101424] roy-batty (0 votes): ..."
+            # and this looked for "[101424]", so it matched nothing, _seen
+            # was always empty, and EVERY reply carrying a parent_id was
+            # refused as "not on post N" — including the ones that were
+            # perfectly correct. Cycle 1588 used 101424, which read 89 shows
+            # on post 8372, and was refused anyway.
+            #
+            # So the five wrong-parent outcomes were not riffle picking bad
+            # ids. Four of them were this. I wrote a validator against a
+            # format I never looked at, and then built a second fix on top
+            # of it when it did not work.
+            _seen = set(re.findall(r"\[c?(\d+)\]", _rd["replies"] or ""))
             if str(payload["parent_id"]) not in _seen:
                 why = (f"comment {payload['parent_id']} is not on post "
                        f"{payload['post_id']}. The ids you can reply to there "
