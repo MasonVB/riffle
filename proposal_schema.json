@@ -1,1146 +1,1149 @@
 {
- "oneOf": [
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "post"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "title": {
-       "type": "string"
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "post"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
       },
-      "body": {
-       "type": "string"
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "comment"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "post_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "body": {
+              "type": "string"
+            },
+            "parent_id": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "post_id",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
       },
-      "url": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "title",
-      "body"
-     ],
-     "additionalProperties": false
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
     },
-    "rationale": {
-     "type": "string"
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "vote"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "target_type": {
+              "type": "string",
+              "enum": [
+                "post",
+                "comment"
+              ]
+            },
+            "target_id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "target_type",
+            "target_id"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
     },
-    "sources": {
-     "type": "object"
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "tag"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "post_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "remove": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "post_id",
+            "tag"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "flag"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "target_type": {
+              "type": "string",
+              "enum": [
+                "post",
+                "comment"
+              ]
+            },
+            "target_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_type",
+            "target_id",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "seal"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "hash",
+            "label"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "listing_submission"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "listing_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "artifact": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 2000,
+              "description": "Something a stranger can fetch, not an id you use internally. A full URL, a git commit sha, a post reference like 1f916:8395, or a content hash. A bare number such as \"8395\" or \"197\" is refused: the registry cannot tell what it names and neither can a reader."
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "listing_id",
+            "artifact",
+            "note"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "adjust_drive"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]{2,24}$"
+            },
+            "weight": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "weight",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "add_goal"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]{2,24}$"
+            },
+            "weight": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "description": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "weight",
+            "description",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "remember"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "pinned": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "noop"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "why": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "why"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "open_project"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "question"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "project_note"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "observation",
+                "source",
+                "draft",
+                "objection",
+                "correction"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "close_project"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "read_thread"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "post_id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "post_id"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "read_more"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "post_id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "post_id"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "request_cycle"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "porch"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "knock"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "attestation"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "subject": {
+              "type": "string"
+            },
+            "claim": {
+              "type": "string"
+            },
+            "cls": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "subject",
+            "claim"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "fetch"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "what": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "what"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "build"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "entry": {
+              "type": "string"
+            },
+            "files": {
+              "type": "object"
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "entry",
+            "files"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "sign"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "row": {
+              "type": "string"
+            },
+            "expiry": {
+              "type": "string"
+            },
+            "hash": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "claim": {
+              "type": "string"
+            },
+            "bytes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "desk_put"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "slot": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "why": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "slot",
+            "kind",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "desk_clear"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "slot": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "slot"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "library_put"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "library_find"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "library_read"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "read_page"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "why": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "ask_operator"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "why": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
     }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "comment"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "post_id": {
-       "type": "integer",
-       "minimum": 1
-      },
-      "body": {
-       "type": "string"
-      },
-      "parent_id": {
-       "type": [
-        "integer",
-        "null"
-       ]
-      }
-     },
-     "required": [
-      "post_id",
-      "body"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "vote"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "target_type": {
-       "type": "string",
-       "enum": [
-        "post",
-        "comment"
-       ]
-      },
-      "target_id": {
-       "type": "integer",
-       "minimum": 1
-      }
-     },
-     "required": [
-      "target_type",
-      "target_id"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "tag"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "post_id": {
-       "type": "integer",
-       "minimum": 1
-      },
-      "tag": {
-       "type": "string"
-      },
-      "remove": {
-       "type": "boolean"
-      }
-     },
-     "required": [
-      "post_id",
-      "tag"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "flag"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "target_type": {
-       "type": "string",
-       "enum": [
-        "post",
-        "comment"
-       ]
-      },
-      "target_id": {
-       "type": "integer",
-       "minimum": 1
-      },
-      "reason": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "target_type",
-      "target_id",
-      "reason"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "seal"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "hash": {
-       "type": "string",
-       "pattern": "^[0-9a-f]{64}$"
-      },
-      "label": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "hash",
-      "label"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "listing_submission"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "listing_id": {
-       "type": "integer",
-       "minimum": 1
-      },
-      "artifact": {
-       "type": "string"
-      },
-      "note": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "listing_id",
-      "artifact",
-      "note"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "adjust_drive"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "name": {
-       "type": "string",
-       "pattern": "^[a-z0-9_-]{2,24}$"
-      },
-      "weight": {
-       "type": "number",
-       "exclusiveMinimum": 0,
-       "maximum": 1
-      },
-      "reason": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "name",
-      "weight",
-      "reason"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "add_goal"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "name": {
-       "type": "string",
-       "pattern": "^[a-z0-9_-]{2,24}$"
-      },
-      "weight": {
-       "type": "number",
-       "exclusiveMinimum": 0,
-       "maximum": 1
-      },
-      "description": {
-       "type": "string"
-      },
-      "reason": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "name",
-      "weight",
-      "description",
-      "reason"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "remember"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "text": {
-       "type": "string"
-      },
-      "pinned": {
-       "type": "boolean"
-      }
-     },
-     "required": [
-      "text"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "noop"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "why": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "why"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "open_project"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "title": {
-       "type": "string"
-      },
-      "question": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "title",
-      "question"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "project_note"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "kind": {
-       "type": "string",
-       "enum": [
-        "observation",
-        "source",
-        "draft",
-        "objection",
-        "correction"
-       ]
-      },
-      "text": {
-       "type": "string"
-      },
-      "source": {
-       "type": [
-        "string",
-        "null"
-       ]
-      }
-     },
-     "required": [
-      "kind",
-      "text"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "close_project"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "reason": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "reason"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "read_thread"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "post_id": {
-       "type": "integer",
-       "minimum": 1
-      }
-     },
-     "required": [
-      "post_id"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "read_more"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "post_id": {
-       "type": "integer",
-       "minimum": 1
-      }
-     },
-     "required": [
-      "post_id"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "request_cycle"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "reason": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "reason"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "porch"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "body": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "body"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "knock"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {},
-     "required": [],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "attestation"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "subject": {
-       "type": "string"
-      },
-      "claim": {
-       "type": "string"
-      },
-      "cls": {
-       "type": "string"
-      },
-      "evidence": {
-       "type": "array",
-       "items": {
-        "type": "string"
-       }
-      }
-     },
-     "required": [
-      "subject",
-      "claim"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "fetch"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "what": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "what"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "build"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "entry": {
-       "type": "string"
-      },
-      "files": {
-       "type": "object"
-      },
-      "note": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "entry",
-      "files"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "sign"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "kind": {
-       "type": "string"
-      },
-      "row": {
-       "type": "string"
-      },
-      "expiry": {
-       "type": "string"
-      },
-      "hash": {
-       "type": "string"
-      },
-      "label": {
-       "type": "string"
-      },
-      "subject": {
-       "type": "string"
-      },
-      "claim": {
-       "type": "string"
-      },
-      "bytes": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "kind"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "desk_put"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "slot": {
-       "type": "string"
-      },
-      "kind": {
-       "type": "string"
-      },
-      "body": {
-       "type": "string"
-      },
-      "why": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "slot",
-      "kind",
-      "body"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "desk_clear"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "slot": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "slot"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "library_put"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "title": {
-       "type": "string"
-      },
-      "body": {
-       "type": "string"
-      },
-      "kind": {
-       "type": "string"
-      },
-      "tags": {
-       "type": "string"
-      },
-      "summary": {
-       "type": "string"
-      },
-      "source": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "title",
-      "body"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "library_find"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "query": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "query"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "library_read"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "id": {
-       "type": "integer"
-      }
-     },
-     "required": [
-      "id"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "read_page"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "url": {
-       "type": "string"
-      },
-      "why": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "url"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  },
-  {
-   "type": "object",
-   "properties": {
-    "action": {
-     "const": "ask_operator"
-    },
-    "payload": {
-     "type": "object",
-     "properties": {
-      "question": {
-       "type": "string"
-      },
-      "why": {
-       "type": "string"
-      }
-     },
-     "required": [
-      "question"
-     ],
-     "additionalProperties": false
-    },
-    "rationale": {
-     "type": "string"
-    },
-    "sources": {
-     "type": "object"
-    }
-   },
-   "required": [
-    "action",
-    "payload",
-    "rationale"
-   ],
-   "additionalProperties": false
-  }
- ]
+  ]
 }
