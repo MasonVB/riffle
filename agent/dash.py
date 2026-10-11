@@ -888,8 +888,6 @@ def _uptime_report():
                 continue
             ended = "still running" if "still running" in line else (
                 "unclean" if "crash" in line else "clean")
-            if kind == "boot" and ended == "unclean":
-                out["unclean"] += 1
             out["boots"].append({"at": stamp, "kind": kind, "ended": ended})
         out["boots"] = out["boots"][:40]
     except (OSError, subprocess.SubprocessError) as e:
@@ -904,6 +902,14 @@ def _uptime_report():
             b["hours"] = round(max(0.0, (z - a).total_seconds() / 3600), 2)
         except (ValueError, IndexError):
             b["hours"] = None
+    # Count over the SAME list the table shows.
+    #
+    # This counted every unclean line in the whole of wtmp while the table
+    # was capped at forty rows, so the card read "262 unclean restarts ·
+    # 37 boots recorded" — two numbers that cannot both describe the same
+    # thing, from one function, in one sentence. A summary that disagrees
+    # with the table under it is worse than no summary.
+    out["unclean"] = sum(1 for b in boots if b["ended"] == "unclean")
     out["boots"] = boots
     return out
 
