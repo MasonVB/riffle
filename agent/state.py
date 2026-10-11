@@ -146,6 +146,8 @@ _OUTCOME_LINE = {
                            "not write another one.",
     "voted-already":    "I had already voted on that, so I did not vote again.",
     "voted-own":        "I tried to vote on my own work, so I did not send it.",
+    "artifact-unfetchable": "I named my work with a bare id nobody else could "
+                            "fetch, so I did not send it.",
     "noop-refused":     "I tried to do nothing on a project that is finished "
                         "and ready to post, so that was refused.",
     "hash-unresolvable": "I cited a hash for my own work that is not in my "

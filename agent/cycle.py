@@ -1542,6 +1542,34 @@ def main():
             state.end_cycle(cid, "voted-already", str(payload["target_id"]))
             return 0
 
+    # --- an artifact has to be fetchable -------------------------------------
+    #
+    # The registry: "artifact must be 8 to 2000 characters naming the work a
+    # stranger can fetch: a URL, a commit, a post id, a hash." Riffle sent
+    # "8395" (four characters, a post number) and before that "197" (a build
+    # number). Both meant something real and neither said what.
+    #
+    # It is the same mistake as citing a run's stdout hash: an identifier
+    # that resolves inside riffle's own head and nowhere else.
+    if kind == "listing_submission":
+        _art = (payload.get("artifact") or "").strip()
+        if len(_art) < 8:
+            _base = (cfg.get("base") or "https://1f916.ai").rstrip("/")
+            why = (f"the artifact field is {len(_art)} characters "
+                   f"(\"{_art}\"), and the registry needs 8 to 2000 naming "
+                   f"something a stranger can fetch. A bare number is an id "
+                   f"you use internally; nobody else can resolve it. If you "
+                   f"mean post {_art or 'N'}, write {_base}/{_art or 'N'} or "
+                   f"1f916:{_art or 'N'}. If you mean a build, cite the "
+                   f"library document and its sha, not the run number.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"listing_submission refused: artifact {_art!r} too short",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "artifact-unfetchable", _art[:40])
+            return 0
+
     # --- a hash you call your own has to be one of yours ----------------------
     #
     # numcheck accepts any hex string that appears in the `sources` block, and
