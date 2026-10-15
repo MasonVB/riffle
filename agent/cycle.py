@@ -118,44 +118,159 @@ def run_numcheck(body, sources, context=None):
             return False, {"error": f"numcheck failed to run: {e}"}
 
 
-def do_witness(state, reader, log):
-    """The obligation that is not a desire."""
-    prior_i, prior_t = state.last_head("identity"), state.last_head("treasury")
-    if prior_i and prior_t:
+def _verdict(block):
+    """What one chain's attest block actually tells you.
+
+    Returns (verdict, detail). Verdicts: "ok", "alarm", "incomplete",
+    "inconclusive".
+
+    Written because the old inline ladder had three holes, all silent:
+
+    - It treated any status it did not recognise as fine. The registry now
+      returns "incomplete" when the log is longer than it will verify in one
+      call (20,000 rows against 26,728), and nothing here knew that word. The
+      pass then saved only treasury, re-checked identity against a mark from
+      2026-09-22, and reported success for three weeks.
+    - It missed `verified` with `expect_matches: false`, which witness.py
+      alarms on and which means the segment hashed to something other than
+      what was saved. That is the exact condition the whole ritual exists to
+      detect.
+    - An unknown status now reads as inconclusive, not as success. A witness
+      that cannot tell "checked and fine" from "did not check" is not a
+      witness.
+    """
+    st = block.get("status")
+    em = block.get("expect_matches")
+    vt = block.get("verified_through_id")
+    detail = f"status={st}, expect_matches={em}, through={vt}"
+    if st == "broken":
+        return "alarm", detail
+    if st == "mismatch" and vt is not None and em is False:
+        return "alarm", detail
+    if st == "verified" and em is False:
+        # The hole witness.py covered and this did not.
+        return "alarm", detail
+    if st == "incomplete":
+        return "incomplete", detail
+    if st == "verified":
+        return "ok", detail
+    if st in ("empty", "unsealed_anchor") or (st == "mismatch" and vt is None):
+        return "inconclusive", detail
+    return "inconclusive", detail + " (unrecognised status)"
+
+
+def do_witness(state, reader, log, max_pages=8):
+    """The obligation that is not a desire.
+
+    Re-check the saved marks, then walk forward and save new ones. Nothing is
+    saved unless BOTH chains verify cleanly in the same pass, and nothing is
+    saved at all while a re-check is in alarm — overwriting the mark that
+    detected a problem destroys the evidence of it.
+    """
+    prior = {"identity": state.last_head("identity"),
+             "treasury": state.last_head("treasury")}
+    alarms = []
+    if prior["identity"] and prior["treasury"]:
         try:
-            chk = reader.attest(identity_from=prior_i["through_id"], identity_expect=prior_i["head"],
-                                ledger_from=prior_t["through_id"], ledger_expect=prior_t["head"])
-            for name, key in (("identity", "identity_log"), ("treasury", "treasury")):
-                b = chk.get(key, {})
-                st, em, vt = b.get("status"), b.get("expect_matches"), b.get("verified_through_id")
-                if st == "broken" or (st == "mismatch" and vt is not None and em is False):
-                    notify.alarm(state, _CFG or {}, f"{name} chain: status={st}, "
-                                 f"expect_matches={em}, through={vt}", log)
-                    log(f"ALARM on {name}: status={st} expect_matches={em} through={vt}. "
-                        f"The segment witnessed at id {prior_i['through_id']} no longer hashes "
-                        f"to what was saved.", level="alarm", drive="witness")
-                elif st in ("empty", "unsealed_anchor") or (st == "mismatch" and vt is None):
-                    log(f"{name}: INCONCLUSIVE (status={st}, verified_through_id={vt}) — this "
-                        f"call hashed nothing, so expect_matches carries no information",
-                        level="warn", drive="witness")
-        except HttpError as e:
-            log(f"re-check failed: {e}", level="warn", drive="witness")
+            chk = reader.attest(
+                identity_from=prior["identity"]["through_id"],
+                identity_expect=prior["identity"]["head"],
+                ledger_from=prior["treasury"]["through_id"],
+                ledger_expect=prior["treasury"]["head"])
+            for name, key in (("identity", "identity_log"),
+                              ("treasury", "treasury")):
+                verdict, detail = _verdict(chk.get(key, {}))
+                if verdict == "alarm":
+                    alarms.append(name)
+                    notify.alarm(state, _CFG or {},
+                                 f"{name} chain: {detail}", log)
+                    # The id from THIS chain, not identity's. The treasury
+                    # alarm used to print identity's through_id, which sent
+                    # anyone reading it to the wrong place in the wrong log.
+                    log(f"ALARM on {name}: {detail}. The segment witnessed at "
+                        f"id {prior[name]['through_id']} no longer hashes to "
+                        f"what was saved.", level="alarm", drive="witness")
+                elif verdict in ("inconclusive", "incomplete"):
+                    log(f"{name}: {verdict.upper()} ({detail}) — this call "
+                        f"carries no information about whether the saved mark "
+                        f"still holds", level="warn", drive="witness")
+        except (HttpError, OSError, ValueError) as e:
+            # Unguarded before: a registry error here killed the whole wake,
+            # before the cycle row existed, so it left no trace anywhere.
+            log(f"re-check failed: {type(e).__name__}: {e}",
+                level="warn", drive="witness")
 
-    att = reader.attest()
-    saved = []
-    for name, key in (("identity", "identity_log"), ("treasury", "treasury")):
-        b = att.get(key, {})
-        if b.get("status") == "verified" and b.get("head"):
-            state.save_head(name, b["head"], b["verified_through_id"])
-            saved.append(f"{name}@{b['verified_through_id']}")
-    if saved:
-        log(f"marks saved: {', '.join(saved)} (head + index + read time, all three)",
-            drive="witness")
-        state.say("report", "Witness pass: " + ", ".join(saved)
-                  + ". Re-checked yesterday's marks against the chain and the GitHub log.",
-                  {"drive": "witness"})
+    # --- walk forward -------------------------------------------------------
+    #
+    # A bare attest() on a log of 26,728 rows returns "incomplete" at 20,000
+    # and the old code simply never saved. Page from the last mark until the
+    # chain reports verified or we run out of patience.
+    att, fresh, walked = {}, {}, 0
+    cursor = {n: (prior[n]["through_id"] if prior[n] else None)
+              for n in ("identity", "treasury")}
+    try:
+        for _ in range(max_pages):
+            kw = {}
+            if cursor["identity"] is not None:
+                kw["identity_from"] = cursor["identity"]
+            if cursor["treasury"] is not None:
+                kw["ledger_from"] = cursor["treasury"]
+            att = reader.attest(**kw) if kw else reader.attest()
+            walked += 1
+            done = True
+            for name, key in (("identity", "identity_log"),
+                              ("treasury", "treasury")):
+                b = att.get(key, {})
+                verdict, detail = _verdict(b)
+                if verdict == "ok" and b.get("head"):
+                    fresh[name] = (b["head"], b["verified_through_id"])
+                elif verdict == "incomplete" and b.get("verified_through_id"):
+                    cursor[name] = b["verified_through_id"]
+                    done = False
+                else:
+                    fresh.pop(name, None)
+            if done:
+                break
+        else:
+            log(f"witness: still incomplete after {max_pages} pages; the log "
+                f"is longer than this many calls can verify. Raise max_pages "
+                f"or check the registry's page_size.",
+                level="warn", drive="witness")
+    except (HttpError, OSError, ValueError) as e:
+        log(f"witness walk failed: {type(e).__name__}: {e}",
+            level="warn", drive="witness")
+        return att
+
+    # BOTH, and not while something is in alarm.
+    if alarms:
+        log(f"not saving new marks: {', '.join(alarms)} is in alarm, and "
+            f"overwriting the mark that caught it would destroy the evidence",
+            level="warn", drive="witness")
+        return att
+    if len(fresh) != 2:
+        missing = [n for n in ("identity", "treasury") if n not in fresh]
+        log(f"not saving: {', '.join(missing)} did not verify this pass. A "
+            f"mark is only worth saving when both chains verified together.",
+            level="warn", drive="witness")
+        return att
+
+    for name, (head, through) in fresh.items():
+        state.save_head(name, head, through)
+    saved = [f"{n}@{t}" for n, (_, t) in sorted(fresh.items())]
+    log(f"marks saved: {', '.join(saved)} (head + index + read time, all "
+        f"three){f'; walked {walked} page(s)' if walked > 1 else ''}",
+        drive="witness")
+    # SAY WHAT WAS ACTUALLY DONE.
+    #
+    # This claimed a cross-check "against the chain and the GitHub log". No
+    # code here reads any GitHub log. It was posted on every pass, including
+    # the three weeks when identity was not being verified at all — a daily
+    # public assertion of a check that was not happening, on a board whose
+    # subject is checkable claims.
+    state.say("report", "Witness pass: " + ", ".join(saved)
+              + ". Both chains verified from the saved marks forward.",
+              {"drive": "witness"})
     return att
-
 
 def main():
     ap = argparse.ArgumentParser()

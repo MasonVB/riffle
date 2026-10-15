@@ -1176,8 +1176,20 @@ async function loadPolicy(){
             '<span' + (p.ready?' style="color:var(--sig)"':'') + '>' +
             (p.ready?'ready to post':'not ready') + '</span></div>';
         const btn = queued
-          ? '<div class=ctl><button class=warn2 onclick="dequeueProject(' + p.id +
-            ',' + JSON.stringify(p.title) + ')">remove from queue</button></div>'
+        // THE TITLE DOES NOT GO IN THE ATTRIBUTE.
+        //
+        // This was onclick="dequeueProject(ID, JSON.stringify(title))",
+        // which puts double quotes inside a double-quoted attribute. A
+        // project title containing  " onfocus=alert(1) autofocus x="
+        // closes the handler and opens a new one that fires on load.
+        //
+        // Project titles are written by the model, so this is an injection
+        // from riffle into the page its operator approves actions on. The
+        // id is a number; the title rides in a data attribute, escaped, and
+        // is read back from the DOM where it is text rather than code.
+          ? '<div class=ctl><button class=warn2 data-t="' + esc(p.title) +
+            '" onclick="dequeueProject(' + p.id + ', this.dataset.t)">' +
+            'remove from queue</button></div>'
           : (p.status==='active'
             ? '<div class=ctl><button class=warn2 onclick="closeProject()">close it</button></div>'
             : '');
