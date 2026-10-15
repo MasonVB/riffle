@@ -1996,19 +1996,52 @@ def walk_changes(state, reader, cfg, log):
             "window_age_ms": age_ms, "cursor": since}
 
 
+# Blocks that are RULES, not data. Never trimmed.
+#
+# "Longest first" sounded fair and was not. The rules are among the longest
+# blocks, so every cycle for a week the trimmer cut HOW YOU TAKE PART HERE by
+# 7,063 characters — down to its 900-char floor — and the project block by
+# 4,667. riffle has not seen the sections on not repeating itself, on
+# describing how something works, on being wrong, or on what not to do, for
+# as long as those log lines have been appearing.
+#
+# The journal said so on almost every cycle ("prompt over budget by 26,837
+# chars; trimmed HOW YOU TAKE PART HERE(-7063)") and nobody followed it up.
+#
+# Data can be cut: the board digest is a sample of a larger thing and losing
+# some of it costs detail. A rule that is half present is not a rule.
+_NEVER_TRIM = (
+    "HOW YOU TAKE PART HERE",
+    "YOUR ACTUAL SITUATION",
+    "EVERYTHING THAT CAN STOP AN ACTION",
+    "THE FIELDS THE API ACTUALLY RETURNS",
+    "WAITING ON YOUR OPERATOR",
+    "YOU HAVE BEEN STUCK ON THIS PROJECT",
+    "COMMENTS YOU COULD ANSWER",
+)
+
+
+def _is_rule(part):
+    head = (part or "")[:400]
+    return any(k in head for k in _NEVER_TRIM)
+
+
 def _fit(parts, budget, log=None, floor=900):
     """Bring the assembled blocks under a character budget, loudly.
 
-    Longest first: a 9,000-character desk dump gives way before a 400
-    character rule about not saying the same thing twice. Each oversized
-    block is cut at a paragraph break where one is near, and marked, so the
-    agent can tell a truncation from an absence — this project has published
-    twice on that distinction.
+    Longest data block first, and rules never. A 9,000-character desk dump
+    gives way before a board digest; neither gives way before the conduct
+    guide, which is the whole of what riffle knows about how to behave.
+
+    Each oversized block is cut at a paragraph break where one is near, and
+    marked, so the agent can tell a truncation from an absence — this project
+    has published twice on that distinction.
     """
     total = sum(len(p) for p in parts) + 2 * len(parts)
     if total <= budget:
         return parts
-    order = sorted(range(len(parts)), key=lambda i: -len(parts[i]))
+    order = [i for i in sorted(range(len(parts)), key=lambda i: -len(parts[i]))
+             if not _is_rule(parts[i])]
     cut = []
     for i in order:
         if total <= budget:
@@ -2030,6 +2063,21 @@ def _fit(parts, budget, log=None, floor=900):
         log("prompt over budget by "
             + str(sum(d for _, d in cut)) + " chars; trimmed "
             + ", ".join(f"{n}(-{d})" for n, d in cut[:4]), level="warn")
+    # SAY SO WHEN IT STILL DOES NOT FIT.
+    #
+    # Protecting the rules moves the problem rather than removing it: if the
+    # data blocks cannot give up enough, the prompt is still over and the
+    # model gets a request llama-server will refuse with a 400. That used to
+    # show up as a composer failure with no cause attached.
+    #
+    # This is an error, not a warning, because nothing downstream can recover
+    # from it and the fix is a config change.
+    if total > budget and log:
+        rules = sum(len(p) + 2 for p in parts if _is_rule(p))
+        log(f"prompt STILL over budget by {total - budget} chars after "
+            f"trimming every data block; {rules} chars of that is protected "
+            f"rules. Lower the data caps or raise max_prompt_chars \u2014 the "
+            f"model call is likely to be refused.", level="error")
     return parts
 
 

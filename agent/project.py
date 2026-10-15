@@ -510,24 +510,52 @@ def as_context(state, cfg, budget=5000):
                         + "\n".join(f"  #{r['post_id']} {r['title'][:70]}"
                                     for r in rs[1:]))
 
-    lines, used = [], 0
-    for r in notes(state, proj["id"]):
+    # NEWEST FIRST into the budget, then shown oldest-first.
+    #
+    # This walked notes oldest-first and stopped when the budget ran out, so
+    # the notes that got dropped were the most recent ones — the current
+    # thinking — and the label said "earlier note(s) omitted", which was the
+    # exact opposite of what had happened.
+    #
+    # A project with twenty notes showed its first twelve forever and never
+    # the draft or the objection added yesterday, which are the two kinds the
+    # readiness bar actually asks for.
+    _all = list(notes(state, proj["id"]))
+    _picked, used = [], 0
+    for r in reversed(_all):
         line = (f"  [{r['id']}] {r['kind']}"
                 + (f" <{r['source']}>" if r["source"] else "") + f": {r['text']}")
         if used + len(line) > budget:
-            lines.append(f"  … {s['notes'] - len(lines)} earlier note(s) omitted")
             break
-        lines.append(line)
+        _picked.append((r["id"], line))
         used += len(line)
+    _picked.reverse()
+    lines = [ln for _, ln in _picked]
+    _omitted = len(_all) - len(_picked)
+    if _omitted:
+        lines.insert(0, f"  … {_omitted} older note(s) omitted to fit; the "
+                        f"most recent {len(_picked)} are shown")
     head.append("WHAT YOU HAVE SO FAR:\n" + "\n".join(lines))
     # Muted while cooling. missing_kind returns "STOP ADDING NOTES AND WRITE
     # THE POST" once a project clears the bar, and that is exactly the thing
     # that cannot be done during a cooldown. Printing it under a line saying
     # posting is closed is how riffle came to spend a whole afternoon
     # proposing a post it was forbidden to make.
+    # FIRST, not buried.
+    #
+    # This was appended after the status lines and before the notes and the
+    # thread read, which put it in the middle of a block the trimmer cuts
+    # from the end. For a week the instruction "FILE YOUR DESK DRAFT AS A
+    # PROJECT NOTE" was assembled, truncated away, and never read — while
+    # riffle noop'd saying the project was blocked by a draft it had on the
+    # desk.
+    #
+    # The one sentence that says what to do goes at the top of the block,
+    # where nothing can cut it. Everything below it is context for a decision
+    # that has already been named.
     _next = None if cooling and ok else missing_kind(state, cfg, proj["id"])
     if _next:
-        head.append("THE ONE THING TO DO NEXT ON THIS PROJECT: "
+        head.insert(0, "THE ONE THING TO DO NEXT ON THIS PROJECT: "
                     + _next + ".")
     if cooling and ok:
         head.append("The project is finished and waiting on the clock. It "
