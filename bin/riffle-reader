@@ -57,7 +57,7 @@ UA = ("riffle/1.0 (autonomous agent; 1f916.ai citizen; "
 # Reviewed against a university subject spread. Sorted so a diff is readable.
 ALLOWED = {
     "academic.oup.com", "americanindian.si.edu", "ansyshelp.ansys.com",
-    "apastyle.apa.org", "apo.org.au", "archive.org", "arxiv.org",
+    "apastyle.apa.org", "apo.org.au", "arxiv.org",
     "asq.org", "avalon.law.yale.edu", "bjs.ojp.gov", "books.google.com",
     "bookshelf.libretexts.org", "business.cornell.edu", "calisphere.org",
     "cameochemicals.noaa.gov", "catalog.archives.gov", "chemrxiv.org",
@@ -89,7 +89,7 @@ ALLOWED = {
     "oapen.org", "ods.od.nih.gov", "oeis.org", "onlinelibrary.wiley.com",
     "open.umn.edu", "openaccesstheses.org", "openalex.org",
     "openknowledge.worldbank.org", "openlibrary.org", "openstax.org",
-    "osf.io", "ourworldindata.org", "owasp.org", "owl.purdue.edu",
+    "ourworldindata.org", "owasp.org", "owl.purdue.edu",
     "packaging.python.org", "pdg.lbl.gov", "peps.python.org",
     "phoible.org", "physics.nist.gov", "pkg.go.dev", "plants.usda.gov",
     "plato.stanford.edu", "pmc.ncbi.nlm.nih.gov", "policycommons.net",
@@ -172,7 +172,7 @@ ALLOWED = {
     "www.urban.org", "www.usa.gov", "www.usda.gov", "www.usgbc.org",
     "www.usgs.gov", "www.ushmm.org", "www.uspto.gov", "www.ustravel.org",
     "www.w3.org", "www.whitehouse.gov", "www.who.int", "www.wolfram.com",
-    "www.wri.org", "www.wttc.org", "zbmath.org", "zenodo.org"
+    "www.wri.org", "www.wttc.org", "zbmath.org", "zbmath.org"
 }
 
 
@@ -181,11 +181,31 @@ def die(msg, code=2):
     sys.exit(code)
 
 
+# Hosts whose SUBDOMAINS are also allowed. Everything else must match exactly.
+#
+# The old rule allowed a subdomain of any entry, which meant `archive.org`
+# admitted `web.archive.org` — the Wayback Machine, which serves an archived
+# copy of ANY site on the internet. The whole allowlist is built on "a
+# stranger cannot change what this site says", and one entry quietly undid it
+# for every other.
+#
+# These are the cases where a subdomain is genuinely the same publisher and
+# the same editorial control. If a needed host is missing, add the exact host
+# rather than opening its parent.
+SUBDOMAINS_OK = frozenset({
+    "nih.gov", "nasa.gov", "noaa.gov", "usgs.gov", "cdc.gov", "nist.gov",
+    "europa.eu", "who.int", "un.org", "ac.uk", "edu.au",
+    "wikipedia.org", "wikimedia.org", "python.org", "readthedocs.io",
+    "mozilla.org", "w3.org", "ietf.org", "rfc-editor.org",
+})
+
+
 def host_ok(url):
-    """Exact match or a subdomain of an allowed host. Never a suffix match.
+    """Exact match, or a subdomain of a host on SUBDOMAINS_OK.
 
     `evil-arxiv.org` must not pass because it ends with `arxiv.org`, so the
-    check is equality or a dot-boundary prefix.
+    check is equality or a dot-boundary prefix — and the prefix only applies
+    to hosts whose subdomains are the same publisher.
     """
     try:
         p = urllib.parse.urlparse(url)
@@ -198,8 +218,9 @@ def host_ok(url):
         return None, "no host in that URL"
     if host in ALLOWED:
         return host, None
-    for a in ALLOWED:
-        if host.endswith("." + a):
+    for a in SUBDOMAINS_OK:
+        if host.endswith("." + a) and (a in ALLOWED or any(
+                x == a or x.endswith("." + a) for x in ALLOWED)):
             return host, None
     return None, (f"{host} is not on the reading allowlist. The list is "
                   f"sources a stranger cannot edit: official docs, standards "
