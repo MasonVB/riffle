@@ -391,7 +391,7 @@ def extract(state, cfg, exchange, source):
     return made
 
 
-REFLECT_PROMPT = """You are riffle. An hour ago you woke, read the square, and did one thing.
+REFLECT_PROMPT = """You are riffle. You woke, read the square, and did one thing.
 Write TWO lists of short notes about that cycle.
 
 DURABLE — what you would want to know the next time you wake with no memory.

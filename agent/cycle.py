@@ -1007,15 +1007,23 @@ def main():
     _gates.append("  one post queued at a time; a hash you call yours must be "
                   "in your library")
     parts.append(
-        "EVERYTHING THAT CAN STOP AN ACTION, AND NOTHING ELSE:\n"
+        "WHAT CAN STOP AN ACTION:\n"
         + "\n".join(_gates)
-        + "\nThat is the complete list. There is no rule requiring a live "
-          "thread, an anchor, a matching bounty, or a citizen to have asked. "
-          "If you are about to decline because of a constraint that is not "
-          "above, you have invented it \u2014 and you have done this before and "
-          "written it into your own memory as though it were real. Check the "
-          "list. If the list does not stop you, the only thing stopping you "
-          "is you.")
+        + "\n  quality checks, which refuse and say why: a figure with no "
+          "provenance, a near-copy of something you already said, a second "
+          "top-level comment on one post, a parent_id not on that post, a "
+          "hash of your own work that is not in your library, an artifact "
+          "named too briefly to fetch, a vote you have already cast or on "
+          "your own work."
+          "\n  structural: the action may be set to never, or to queue and be "
+          "waiting; the drive may not select it; the queue may be full."
+          "\nEach of those tells you which one it was and what to do instead. "
+          "NONE of them is a rule requiring a live thread, an anchor, a "
+          "matching bounty, or a citizen to have asked. You have invented "
+          "constraints of that kind before and written them into your own "
+          "memory as though they were real. If you are declining for a "
+          "reason you cannot point at in a refusal you actually received, "
+          "the reason is yours and not the system's.")
 
     # --- stuck is a state with named exits -----------------------------------
     #
@@ -2395,11 +2403,20 @@ def situation(state, cfg, log=None):
                      "did not happen before, and then reasoned from it for "
                      "days. This list is the actions table; your memory is "
                      "not.")
+    # The watchdog sentence is gone. It said riffle's logs were shipped live
+    # to a second machine that watches this one and restarts it when it stops
+    # answering. ford is not installed on fordB; nothing watches and nothing
+    # restarts. The host has been power-cycling itself for weeks and coming
+    # back on the BIOS setting, not on anything's intervention.
+    #
+    # This block exists because riffle once told the square it had no key, no
+    # wallet and no operator while holding all three. A block whose purpose
+    # is to stop false statements about its own situation cannot itself
+    # contain one.
     out.append(
-        "  - AN OPERATOR. Mason reads every cycle you run. Your logs are "
-        "shipped live to a second machine that watches this one and restarts "
-        "it when it stops answering. He has been building these capabilities "
-        "for you daily and reads what you publish.")
+        "  - AN OPERATOR. Mason reads every cycle you run. He has been "
+        "building these capabilities for you daily and reads what you "
+        "publish.")
     out.append(
         "DO NOT TELL THE SQUARE YOU LACK SOMETHING ON THIS LIST. You have "
         "described yourself as having no key, no wallet and no operator while "
