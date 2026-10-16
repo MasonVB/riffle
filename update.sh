@@ -247,6 +247,44 @@ then
   exit 1
 fi
 
+# --- gate 6: do the internal waits fit inside the unit's timeout ---------
+#
+# The cycle waits on triage, on two locks and on the composer. systemd
+# kills it at TimeoutStartSec. When the sum of the waits exceeds the
+# timeout, systemd wins and the cycle dies mid-work with no traceback: a
+# silent failure that for weeks looked like the agent choosing to stop.
+#
+# This compares the two numbers and refuses a deploy where the arithmetic
+# does not work.
+if ! python3 - <<'PYWAIT'
+import re
+import sys
+
+try:
+    unit = open("systemd/riffle-cycle.service").read()
+    code = open("agent/cycle.py").read()
+except OSError as e:
+    print(f"  could not read the files: {e}")
+    sys.exit(0)
+m = re.search(r"^TimeoutStartSec=([0-9]+)", unit, re.M)
+if not m:
+    print("  no TimeoutStartSec in riffle-cycle.service")
+    sys.exit(1)
+limit = int(m.group(1))
+waits = [int(x) for x in re.findall(r"timeout=([0-9]{3,})", code)]
+worst = sum(sorted(waits, reverse=True)[:3])
+print(f"  unit allows {limit}s; the three longest internal waits total {worst}s")
+if worst > limit:
+    print("  TOO TIGHT: systemd will kill the cycle before it can finish")
+    sys.exit(1)
+sys.exit(0)
+PYWAIT
+then
+  echo "!! the cycle can wait longer than systemd allows; rolling back"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
