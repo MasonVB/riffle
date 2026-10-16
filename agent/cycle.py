@@ -573,48 +573,49 @@ def main():
         listings = reader.listings().get("listings", [])
     except HttpError:
         listings = []
-    # A MISSING STATUS IS NOT A GUARANTEE OF OPEN.
+    # --- which listings are actually open to work ---------------------------
     #
-    # `status in (None, "open")` treats an absent field as open, so a row the
-    # funder withdrew nineteen days ago stayed in riffle's list of things to
-    # work on. It built a sensitivity analysis for listing 14, submitted it,
-    # and got 409 "withdrawn by its funder at 1790013672784".
+    # Written against the real response this time. Four previous versions
+    # guessed the shape from one error message each, and the first three were
+    # wrong in ways nothing could detect:
     #
-    # None still counts as open, because the API may legitimately omit the
-    # field on live rows and excluding them would hide everything. But any
-    # row carrying a marker of being finished is dropped whatever its status
-    # says, and the markers are checked by name rather than inferred.
-    _DEAD = ("withdrawn_at", "withdrawn", "closed_at", "closed",
-             "expired_at", "expired", "settled_at", "settled", "cancelled_at")
-    # A LISTING CAN BE OPEN AND STILL CLOSED TO WORK.
+    #   `status` DOES NOT EXIST. The field is `lifecycle`. Every version of
+    #   this filter read l.get("status"), got None, and fell through to the
+    #   "None means open" branch — so the status check never ran at all, on
+    #   any listing, ever.
     #
-    # Listing 57 was refused with "stopped taking work at its declared
-    # submission_deadline 1791592319; the listing itself runs until
-    # 1792801919 so that decisions already owed can still be made". It had
-    # stopped accepting submissions four days before riffle tried, and
-    # carried no end-marker because the listing genuinely was still open —
-    # for deciding, not for submitting.
+    #   The timestamps are in mixed units. `expiry` and `submission_deadline`
+    #   are SECONDS; `created_at` and `withdrawn_at` are MILLISECONDS. One
+    #   comparison against time.time() cannot be right for both.
     #
-    # Two different questions. The end-markers answer "is this row alive";
-    # the deadline answers "may I still submit to it", and only the second
-    # one matters for the earn drive.
-    _now = time.time()
+    # Two questions, not one. "Is this row alive" is lifecycle, withdrawn_at
+    # and expiry. "May I still submit to it" is submission_deadline — listing
+    # 57 was open for deciding and closed to work for four days before riffle
+    # tried it.
+    _now_s = time.time()
 
-    def _past(l, key):
-        v = l.get(key)
+    def _past(v):
+        """True if v is a timestamp in the past, in whichever unit it is in."""
         try:
-            return v is not None and float(v) < _now
+            f = float(v)
         except (TypeError, ValueError):
             return False
+        # 1e11 seconds is the year 5138; anything above it is milliseconds.
+        return (f / 1000 if f > 1e11 else f) < _now_s
 
     def _is_open(l):
-        if l.get("status") not in (None, "open"):
+        if l.get("lifecycle") not in (None, "open"):
             return False
-        if any(l.get(k) for k in _DEAD):
+        if l.get("withdrawn_at") or l.get("cancelled_at"):
             return False
-        return not any(_past(l, k) for k in
-                       ("submission_deadline", "submissions_close_at",
-                        "accepting_until", "deadline"))
+        if _past(l.get("expiry")):
+            return False
+        # The one that matters for earn: the row may be alive and still
+        # refuse work.
+        if _past(l.get("submission_deadline")):
+            return False
+        return True
+
     open_listings = [l for l in listings if _is_open(l)]
 
     # --- which drives have material this cycle ------------------------------
