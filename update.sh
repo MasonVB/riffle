@@ -285,6 +285,52 @@ then
   exit 1
 fi
 
+# --- gate 7: no function whose only call is to itself ---------------------
+#
+# A patch meant to collapse a duplicated dispatch matched inside the new
+# dispatcher instead of at the call site, so apply_local() became a function
+# whose entire body was `return apply_local(...)`. It parsed, it imported,
+# every page rendered, the prompt fit, the grammar compiled, the timeouts
+# added up. It raised RecursionError the first time anyone approved a queued
+# action.
+#
+# Direct self-recursion with no other call and no obvious base case is never
+# intentional here. This finds it in the AST.
+if ! python3 - <<'PYREC'
+import ast
+import sys
+
+bad = []
+for path in ("agent/cycle.py", "agent/dash.py", "agent/project.py",
+             "agent/state.py", "agent/memory.py", "agent/library.py",
+             "numcheck.py"):
+    try:
+        tree = ast.parse(open(path).read())
+    except (OSError, SyntaxError):
+        continue
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        names = {c.func.id for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        # Builtins and exception constructors are not "work": a function
+        # whose only real call is itself still does nothing, whether or not
+        # it raises on the way out. The first version of this gate counted
+        # ValueError and so missed the very bug it was written for.
+        names -= set(dir(__builtins__)) | {
+            "ValueError", "TypeError", "OSError", "KeyError", "RuntimeError",
+            "len", "str", "int", "float", "dict", "list", "set", "sorted",
+            "print", "open", "range", "max", "min", "sum", "any", "all"}
+        if fn.name in names and len(names) == 1:
+            bad.append(f"{path}:{fn.lineno} {fn.name}() calls only itself")
+for b in bad:
+    print(f"  SELF-RECURSION {b}")
+sys.exit(1 if bad else 0)
+PYREC
+then
+  echo "!! a function calls only itself; rolling back to $BEFORE"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
