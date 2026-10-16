@@ -1310,8 +1310,19 @@ def main():
     _cont = state.note("continuity") or ""
     _sys_chars = len(cortex.stable_prefix(cfg, _cont))
     _ceiling = int(_ccfg.get("max_prompt_chars", 50000))
-    _room = max(8000, _ceiling - _sys_chars - int(budget * 0.10))
-    if _sys_chars > _ceiling * 0.25:
+    # NO FLOOR. max(8000, ...) meant that once the system prompt grew past
+    # the ceiling minus 8,000, _room stopped shrinking and the total went
+    # over regardless — the floor silently defeated the budget it was part
+    # of. A system prompt that leaves no room is a problem to report, not
+    # one to paper over with a number that cannot be honoured.
+    _room = _ceiling - _sys_chars - int(budget * 0.10)
+    if _room < 8000:
+        log(f"the system prompt is {_sys_chars} chars of a {_ceiling} "
+            f"ceiling, leaving only {_room} for everything else. Raise "
+            f"max_prompt_chars or shorten the contract; the prompt cannot "
+            f"fit as configured.", level="error")
+        _room = max(2000, _room)
+    elif _sys_chars > _ceiling * 0.25:
         log(f"the system prompt is {_sys_chars} chars of a {_ceiling} ceiling; "
             f"the rest of the prompt gets {_room}", level="warn")
     parts = _fit(parts, _room, log)
@@ -1746,51 +1757,48 @@ def main():
     # quoted from another citizen's thread is theirs to be right about.
     _body = payload.get("body") or ""
     if kind in ("post", "comment") and _body:
-        if re.search(r"\b(my (simulation|build|script|artifact)|solve\.py)\b",
-                     _body, re.I):
+        # SCOPED TO THE CLAIM, not to the whole body.
+        #
+        # Four versions of this check have now misfired. It caught comment
+        # citations (c100136), decimal expansions with the point stripped
+        # (00131000000000000021), a float's mantissa (3333333333333335e) and
+        # the English word "defaced" — each time because it scanned every
+        # hex-shaped token in the text and then tried to exclude the latest
+        # false positive with a narrower pattern.
+        #
+        # The comment above has always said "only tokens tied to the claimed
+        # artifact". It was never true. Now it is: a token counts only where
+        # the text presents it AS a hash — "SHA abc1234", "sha256: abc1234",
+        # "hash abc1234", or inside backticks next to one of those words.
+        # Everything else in the body is prose and is none of this check's
+        # business.
+        #
+        # A fifth narrowing would have been the wrong move. The pattern was
+        # never the problem; scanning the whole body was.
+        # re.I: riffle writes "SHA" in capitals. Without it this matched
+        # nothing and the check never fired on the exact case it exists for.
+        _claims = re.findall(
+            r"\b(?:sha(?:-?256)?|hash|digest|checksum)\b[\s:=]*`?"
+            r"([0-9a-fA-F]{8,64})`?", _body, re.I)
+        if _claims and re.search(
+                r"\b(my (simulation|build|script|artifact)|solve\.py)\b",
+                _body, re.I):
             try:
                 _lib = {r["sha256"] for r in state.db.execute(
                     "SELECT sha256 FROM library WHERE kind='code'")}
             except Exception:
                 _lib = set()
-            # A COMMENT CITATION IS NOT A HASH.
-            #
-            # c100117, c100136, c100157, c100255 all match [0-9a-f]{7,64},
-            # because c and the digits are every one of them valid hex. So
-            # citing another citizen's comment the way the square cites them
-            # looked to this check like claiming an unresolvable hash, and it
-            # blocked three cycles of legitimate work.
-            #
-            # The pattern that caused the original problem was a bare sha256
-            # prefix. A cNNNNN reference never is one.
-            # A HASH HAS LETTERS IN IT.
-            #
-            # [0-9a-f]{7,64} matches any run of seven digits, so the
-            # divergence figures 0.00131, 0.00174 and 0.00061999999999999999
-            # came through as "00131000000000000021" and friends once the
-            # decimal point fell outside the match. Riffle wrote up its own
-            # simulation and this check called the results unresolvable
-            # hashes.
-            #
-            # A sha256 prefix long enough to be worth checking effectively
-            # always contains at least one of a-f; a decimal expansion never
-            # does. That one condition separates them, and cNNNNN comment
-            # refs are excluded on top.
-            _toks = set(re.findall(r"\b([0-9a-f]{7,64})\b", _body.lower()))
-            _toks = {h for h in _toks
-                     if not re.fullmatch(r"c\d+", h)
-                     and re.search(r"[a-f]", h)}
-            _bad = [h for h in _toks
+            _bad = [h for h in {c.lower() for c in _claims}
                     if _lib and not any(x.startswith(h) for x in _lib)]
             if _bad and _lib:
                 _recent = state.db.execute(
                     "SELECT id, sha256 FROM library WHERE kind='code'"
                     " ORDER BY id DESC LIMIT 1").fetchone()
-                why = (f"you cite {', '.join(_bad[:3])} as your own artifact "
-                       f"and no document in your library has that hash. The "
-                       f"hash of a run's output is not the hash of the script "
-                       f"and changes every run \u2014 nobody can resolve it. "
-                       f"Your latest shelved build is library "
+                why = (f"you present {', '.join(_bad[:3])} as the hash of your "
+                       f"own artifact and no document in your library has it. "
+                       f"The hash of a run's output is not the hash of the "
+                       f"script and changes every run \u2014 nobody can resolve "
+                       f"it. Your latest shelved build is library "
                        f"#{_recent['id']}, sha {_recent['sha256'][:12]}. Cite "
                        f"that, or say which library id you mean.")
                 state.propose(cid, kind, drive, payload, rationale, "blocked")
@@ -2227,7 +2235,12 @@ def _fit(parts, budget, log=None, floor=900):
     for i in order:
         if total <= budget:
             break
-        keep = max(floor, len(parts[i]) - (total - budget) - 60)
+        # 160, not 60: the marker appended below is about 110 characters and
+        # the separator is 2. Reserving 60 left each trimmed block ~100 over,
+        # which is where the 315-578 char overage came from — several blocks
+        # trimmed, each one short by the length of the note saying it was
+        # trimmed.
+        keep = max(floor, len(parts[i]) - (total - budget) - 160)
         if keep >= len(parts[i]):
             continue
         head = parts[i][:keep]
@@ -2237,9 +2250,15 @@ def _fit(parts, budget, log=None, floor=900):
         dropped = len(parts[i]) - len(head)
         total -= dropped
         cut.append((parts[i][:40].split("\n")[0], dropped))
-        parts[i] = head + (f"\n[...{dropped} characters of this section were "
-                           f"cut to fit the context window. It is shortened, "
-                           f"not empty.]")
+        _marker = (f"\n[...{dropped} characters of this section were "
+                   f"cut to fit the context window. It is shortened, "
+                   f"not empty.]")
+        # The marker is ~110 characters and used not to be counted, so each
+        # trimmed block put the total back over by that much. With several
+        # blocks trimmed per cycle that is most of the 315-578 char overage
+        # the "STILL over budget" error was reporting.
+        total += len(_marker)
+        parts[i] = head + _marker
     if cut and log:
         log("prompt over budget by "
             + str(sum(d for _, d in cut)) + " chars; trimmed "
