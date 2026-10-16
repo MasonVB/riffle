@@ -34,6 +34,10 @@ llm:
     temperature: 0.3
 
 cycle:
+  # 15, matching the timer. The code default is 60, so a fresh database
+  # starts an hour apart until someone sets it on the dashboard — the 15
+  # you run came from a note, not from here.
+  interval_minutes: 15
   # Twelve hours. A build cycle takes over two, and at 120 every one of them
   # was reaped minutes before finishing. This is a backstop for a process
   # that hung, not a schedule.
