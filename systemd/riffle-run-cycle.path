@@ -1,0 +1,28 @@
+[Unit]
+Description=watch for a cycle request from the dashboard
+
+[Path]
+# The dashboard used to launch cycles with subprocess.run, which made them
+# children of riffle-dash.service and gave them its sandbox: NoNewPrivileges,
+# a bounding set of CAP_NET_BIND_SERVICE, ProtectSystem=strict and no
+# ReadWritePaths.
+#
+# Every cycle started that way was quietly crippled. sudo refuses to run under
+# NoNewPrivileges, so build and sign were rejected; read_page failed with "no
+# reason given"; library writes hit a read-only filesystem; and situation()
+# could not read the public key, so the prompt told riffle it had no signing
+# key at all. That last one is the worst: a false statement about its own
+# capabilities, generated silently, which it then reasoned from.
+#
+# The run-cycle button, the cycle after every approved send, and every
+# request_cycle extra cycle all went through that path.
+#
+# Same interface as riffle-restart-composer.path: the dashboard touches a file
+# in its own state directory, and that is the whole of what it can say. There
+# is no argument and nothing to smuggle. The cycle then runs under
+# riffle-cycle.service with the privileges it was designed for.
+PathExists=/var/lib/riffle/run-cycle.request
+Unit=riffle-run-cycle.service
+
+[Install]
+WantedBy=paths.target
