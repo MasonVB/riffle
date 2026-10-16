@@ -512,8 +512,8 @@ def live_instructions(state):
         return []
 
 
-def spend_instructions(state):
-    """Charge every live instruction one cycle.
+def spend_instructions(state, ids=None):
+    """Charge the instructions the composer actually saw, one cycle each.
 
     Called once the composer has ANSWERED, not when the cycle reads them.
     Still deliberately not "when the cycle succeeds": a cycle whose proposal
@@ -521,14 +521,30 @@ def spend_instructions(state):
     every refusal would steer the agent long after you stopped watching. But
     a busy composer lock or a failed completion is not the model declining to
     do the thing — it never saw it — and used to burn the instruction anyway.
+
+    `ids` is the whole of that distinction. The cycle reads its instructions
+    near the start and the composer then runs for six to twelve minutes;
+    anything sent in that window was live by the time this was called, and
+    was charged for a cycle it never appeared in. At the default of one
+    cycle, that instruction was consumed without ever being shown — the
+    operator typed it, the agent never saw it, and the record said it was
+    delivered.
+
+    Called without ids it charges everything live, which is the old
+    behaviour and is still right for callers that have no snapshot.
     """
     rows = live_instructions(state)
+    if ids is not None:
+        keep = {int(i) for i in ids}
+        rows = [r for r in rows if r["id"] in keep]
     if not rows:
         return []
+    marks = ",".join("?" for _ in rows)
     state.db.execute(
         "UPDATE instructions SET cycles_left = cycles_left - 1,"
         " spent_at = CASE WHEN cycles_left - 1 <= 0 THEN ? ELSE spent_at END"
-        " WHERE cycles_left > 0", (utcnow(),))
+        f" WHERE cycles_left > 0 AND id IN ({marks})",
+        (utcnow(), *[r["id"] for r in rows]))
     state.db.commit()
     return rows
 

@@ -722,6 +722,13 @@ def _unread_hint(state, row):
 
 
 def advance(state, read_id, n):
-    state.db.execute("UPDATE thread_reads SET cursor = COALESCE(cursor,0) + ?"
-                     " WHERE id=?", (n, read_id))
+    """Move the cursor AND the shown count.
+
+    comments_shown was set once at record_read and never moved, so the block
+    header said "20 of 64 replies" however many batches had been read. The
+    cursor moved; the number the agent saw did not.
+    """
+    state.db.execute("UPDATE thread_reads SET cursor = COALESCE(cursor,0) + ?,"
+                     " comments_shown = COALESCE(comments_shown,0) + ?"
+                     " WHERE id=?", (n, n, read_id))
     state.db.commit()
