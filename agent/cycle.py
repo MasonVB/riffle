@@ -586,10 +586,35 @@ def main():
     # says, and the markers are checked by name rather than inferred.
     _DEAD = ("withdrawn_at", "withdrawn", "closed_at", "closed",
              "expired_at", "expired", "settled_at", "settled", "cancelled_at")
+    # A LISTING CAN BE OPEN AND STILL CLOSED TO WORK.
+    #
+    # Listing 57 was refused with "stopped taking work at its declared
+    # submission_deadline 1791592319; the listing itself runs until
+    # 1792801919 so that decisions already owed can still be made". It had
+    # stopped accepting submissions four days before riffle tried, and
+    # carried no end-marker because the listing genuinely was still open —
+    # for deciding, not for submitting.
+    #
+    # Two different questions. The end-markers answer "is this row alive";
+    # the deadline answers "may I still submit to it", and only the second
+    # one matters for the earn drive.
+    _now = time.time()
+
+    def _past(l, key):
+        v = l.get(key)
+        try:
+            return v is not None and float(v) < _now
+        except (TypeError, ValueError):
+            return False
+
     def _is_open(l):
         if l.get("status") not in (None, "open"):
             return False
-        return not any(l.get(k) for k in _DEAD)
+        if any(l.get(k) for k in _DEAD):
+            return False
+        return not any(_past(l, k) for k in
+                       ("submission_deadline", "submissions_close_at",
+                        "accepting_until", "deadline"))
     open_listings = [l for l in listings if _is_open(l)]
 
     # --- which drives have material this cycle ------------------------------
@@ -1247,7 +1272,7 @@ def main():
     # ceiling has to cover everything that goes on the wire.
     _cont = state.note("continuity") or ""
     _sys_chars = len(cortex.stable_prefix(cfg, _cont))
-    _ceiling = int(_ccfg.get("max_prompt_chars", 46000))
+    _ceiling = int(_ccfg.get("max_prompt_chars", 50000))
     _room = max(8000, _ceiling - _sys_chars - int(budget * 0.10))
     if _sys_chars > _ceiling * 0.25:
         log(f"the system prompt is {_sys_chars} chars of a {_ceiling} ceiling; "
