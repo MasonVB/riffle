@@ -665,8 +665,13 @@ def main():
     known.add("greet")          # the porch is uncapped and always open
     if starters or state.note("last_build") or open_listings:
         known.add("make")
-    available = {n for n in live_weights
-                 if n in known or n not in ("answer", "contribute", "earn")}
+    # GATED names every drive whose availability is computed above. The old
+    # tuple listed only three, so the work done for curate and make — "has it
+    # read anything", "does it have a build or an open listing" — was thrown
+    # away: both were admitted whatever the answer. The code looked like a
+    # gate and behaved like a pass-through.
+    GATED = ("answer", "contribute", "earn", "curate", "make")
+    available = {n for n in live_weights if n in known or n not in GATED}
     available.discard("operator")      # selected by an instruction, never by weight
     cooling, _until, hours_left = project.in_cooldown(state)
     # `deepen` is always available, but what it may DO depends on whether
@@ -704,9 +709,13 @@ def main():
             "SELECT id, started_at, outcome FROM cycles"
             " WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT ?",
             (_stuck_n,)).fetchall()
+        # SENT, not queued. A queued action is riffle waiting on Mason, which
+        # is the very state this failsafe exists to notice; counting it as
+        # movement meant a queue full of unapproved work read as a healthy
+        # agent. 'unknown' counts because it may well have landed.
         _moved = state.db.execute(
             "SELECT MAX(created_at) m FROM actions"
-            " WHERE status IN ('sent','executed','approved','queued','unknown')").fetchone()
+            " WHERE status IN ('sent','executed','unknown')").fetchone()
     except Exception:
         _recent, _moved = [], None
     if len(_recent) >= _stuck_n and _moved and _moved["m"]:
@@ -722,8 +731,31 @@ def main():
         # inside roughly the window, not be N cycles spread over a fortnight.
         if _since >= _stuck_h and _span <= _stuck_h * 3:
             from agent.state import ask_operator, open_questions
+            # A stuck question OPEN, or answered recently.
+            #
+            # This looked only at open questions, so answering it got the
+            # same question asked again on the very next wake — before
+            # riffle had a chance to act on the answer. The operator
+            # answers, and is immediately asked again: the worst possible
+            # response to someone who just helped.
+            #
+            # Eight cycles is about two hours at the current interval, which
+            # is enough for riffle to try the thing that was suggested.
             _already = any("stuck" in (q["why"] or "")
                            for q in open_questions(state))
+            if not _already:
+                _ans = state.db.execute(
+                    "SELECT answered_at FROM questions WHERE why LIKE '%stuck%'"
+                    " AND answered_at IS NOT NULL"
+                    " ORDER BY id DESC LIMIT 1").fetchone()
+                if _ans and _ans["answered_at"]:
+                    _n_since = state.db.execute(
+                        "SELECT COUNT(*) c FROM cycles WHERE started_at > ?",
+                        (_ans["answered_at"],)).fetchone()["c"]
+                    if _n_since < 8:
+                        _already = True
+                        log(f"stuck failsafe: you answered the last one "
+                            f"{_n_since} cycle(s) ago; not asking again yet")
             if not _already:
                 _outs = ", ".join(r["outcome"] or "?" for r in _recent[:8])
                 _pr2 = project.active(state)
@@ -743,6 +775,12 @@ def main():
                 _qid, _why2 = ask_operator(
                     state, _q,
                     why="stuck: raised automatically, not by me")
+                if not _qid:
+                    # Refused, almost always because three questions are
+                    # already open. Silently dropping it meant the failsafe
+                    # could be inert for days with nothing to show.
+                    log(f"stuck failsafe could not ask: {_why2}. Nothing has "
+                        f"been sent for {_since:.0f}h.", level="warn")
                 if _qid:
                     state.say("question", _q,
                               {"drive": drive, "qid": _qid, "status": "open",
