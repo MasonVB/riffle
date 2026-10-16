@@ -27,6 +27,7 @@ from agent import chat, goals, memory  # noqa: E402
 import subprocess  # noqa: E402
 import threading as _th  # noqa: E402
 from agent.client import HttpError, Writer  # noqa: E402
+from agent import cycle as cycle_mod  # noqa: E402
 from agent.cycle import execute, load_config  # noqa: E402
 from agent.state import State, utcnow  # noqa: E402
 from agent.pages import (ACT_PAGE, GOALS_PAGE, HISTORY_EXTRA,  # noqa: E402
@@ -537,8 +538,34 @@ class Handler(BaseHTTPRequestHandler):
             s.log(f"you rejected {a['kind']} #{aid}", drive=a["drive"])
             return {"ok": True}
 
-        # Reflexive actions change the agent, not the square. Approving one must
-        # never become an HTTP POST to the registry.
+        # Local actions change the agent or its workspace, not the square.
+        # Approving one must never become an HTTP POST to the registry.
+        #
+        # This used to know only three kinds. Every other local action was
+        # dispatched inside the cycle regardless of its policy, so none of
+        # them ever reached this path — and if one had, approving it would
+        # have stranded it here with no executor. Both halves are fixed: the
+        # cycle queues them, and apply_local runs them.
+        if a["kind"] in cycle_mod.LOCAL_KINDS and a["kind"] not in (
+                "adjust_drive", "add_goal", "remember"):
+            try:
+                cycle_mod.apply_local(s, self.cfg, a["cycle_id"], a["kind"],
+                                      payload, a["drive"], s.log,
+                                      a["rationale"] or "")
+                s.set_status(aid, "executed", {"applied": "locally"})
+                self._update_card(aid, status="executed",
+                                  sent_at=self._local_time(),
+                                  ref=f"{a['kind']} ran")
+                s.log(f"you approved {a['kind']} #{aid}; it ran locally",
+                      drive=a["drive"])
+            except BaseException as e:
+                s.set_status(aid, "failed", {"error": str(e)})
+                self._update_card(aid, status="failed", error=str(e)[:200])
+                s.log(f"approved {a['kind']} #{aid} failed to run: "
+                      f"{type(e).__name__}: {e}", level="error",
+                      drive=a["drive"])
+            return {"ok": True}
+
         if a["kind"] in ("adjust_drive", "add_goal", "remember"):
             try:
                 if a["kind"] == "adjust_drive":

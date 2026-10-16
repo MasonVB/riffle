@@ -44,6 +44,31 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CFG = None  # set in main(); do_witness needs it for alarm notifications
 _CYCLE_LOCK = None  # held for the life of the process; see main()
 
+# Actions that happen here rather than at the registry. One list, used by the
+# cycle to decide whether to queue and by the dashboard to run an approved
+# one, so the two cannot drift.
+LOCAL_KINDS = ("read_more", "request_cycle", "read_thread", "build", "sign",
+               "fetch", "open_project", "project_note", "close_project",
+               "adjust_drive", "add_goal", "remember",
+               "desk_put", "desk_clear",
+               "library_put", "library_find", "library_read", "read_page",
+               "ask_operator")
+
+
+def apply_local(state, cfg, cid, kind, payload, drive, log, rationale=""):
+    """Run one local action. The single dispatcher for both callers.
+
+    The cycle reaches this after the policy check; the dashboard reaches it
+    when you approve a queued local action. Before this existed the dash's
+    approval path knew only adjust_drive, add_goal and remember, so approving
+    any other local kind would have stranded it — which never came up only
+    because they were never queued in the first place.
+    """
+    if kind in LOCAL_KINDS:
+        return apply_local(state, cfg, cid, kind, payload, drive, log,
+                           rationale)
+    raise ValueError(f"{kind} is not a local action")
+
 
 def load_config(path):
     """Minimal YAML subset reader so the agent needs no pip install."""
@@ -1434,12 +1459,35 @@ def main():
     # Recorded once, here, after the gate accepted it and before the handler
     # runs. The non-reflexive kinds fall past this and are recorded further
     # down as they always were.
-    if kind in ("read_more", "request_cycle", "read_thread", "build", "sign",
-                "fetch", "open_project", "project_note", "close_project",
-                "adjust_drive", "add_goal", "remember",
-                "desk_put", "desk_clear",
-                "library_put", "library_find", "library_read", "read_page",
-                "ask_operator"):
+    # --- queue means queue, for local actions too ---------------------------
+    #
+    # This marked every local kind "accepted" and ran it, whatever the policy
+    # said. `sign` is not listed in config.yaml's autonomy block, and
+    # policy.ensure defaults an unlisted kind to "queue" precisely so a new
+    # action fails as "waiting for you" rather than "already sent". So the
+    # one action that can move money was configured to need approval and
+    # took itself.
+    #
+    # `close_project: queue` in config.example closed projects immediately
+    # for the same reason.
+    #
+    # Queued local actions are now really queued, and approving one runs the
+    # matching apply_* through apply_local() below — which the dashboard
+    # calls too, so there is one dispatcher rather than two lists that can
+    # drift apart.
+    if kind in LOCAL_KINDS:
+        _m = (policy.modes(state) or {}).get(kind, "queue")
+        if _m == "queue" and not getattr(a, "force", False):
+            aid = state.propose(cid, kind, drive, payload, rationale, "queued")
+            log(f"{kind} #{aid} is queued; {kind} is set to 'queue' and needs "
+                f"your approval", drive=drive)
+            state.say("proposal", rationale,
+                      {"kind": kind, "drive": drive, "action_id": aid,
+                       "cycle": cid, "status": "queued", "local": True,
+                       "payload": json.dumps(payload, indent=2)})
+            notify.announce_pending(state, cfg, log)
+            state.end_cycle(cid, "queued", f"action {aid}")
+            return 0
         state.propose(cid, kind, drive, payload, rationale, "accepted")
 
     if kind == "read_more":
