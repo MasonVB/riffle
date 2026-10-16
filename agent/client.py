@@ -43,6 +43,20 @@ def _req(url, method="GET", body=None, token=None, timeout=45):
             raise HttpError(e.code, json.loads(raw))
         except json.JSONDecodeError:
             raise HttpError(e.code, raw)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        # EVERYTHING ELSE BECOMES AN HttpError TOO.
+        #
+        # Only HTTPError was converted, so a DNS failure, a refused
+        # connection, the 45-second timeout, a reset mid-read or a non-JSON
+        # body escaped every `except HttpError` in the cycle. Before
+        # begin_cycle that silently lost the wake; after it, the cycle row
+        # stayed open and the next twelve hours of wakes refused to start
+        # beside a process that no longer existed.
+        #
+        # Code 0 means "never reached the registry", which is a different
+        # thing from any status it could have returned, and callers can tell
+        # the two apart.
+        raise HttpError(0, f"{type(e).__name__}: {e}")
 
 
 def _req_conditional(url, etag=None, timeout=45):
@@ -75,6 +89,10 @@ def _req_conditional(url, etag=None, timeout=45):
             raise HttpError(e.code, json.loads(raw))
         except json.JSONDecodeError:
             raise HttpError(e.code, raw)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        # Same reason as _req above: a transport failure in the changes walk
+        # escaped every handler and took the wake with it.
+        raise HttpError(0, f"{type(e).__name__}: {e}")
 
 
 def _no_duplicate_methods(cls):

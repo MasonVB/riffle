@@ -20,6 +20,7 @@ Order of operations, and why:
   check   -> numcheck over any body containing figures.
   execute -> or queue for the operator, per config autonomy.
 """
+import fcntl
 import argparse
 import hashlib
 import json
@@ -41,6 +42,7 @@ from agent.state import State, utcnow  # noqa: E402
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CFG = None  # set in main(); do_witness needs it for alarm notifications
+_CYCLE_LOCK = None  # held for the life of the process; see main()
 
 
 def load_config(path):
@@ -293,6 +295,43 @@ def main():
         sys.exit(f"no secret at {secret_path} — run join.py first")
     writer = Writer(cfg["base"], open(secret_path).read().strip())
 
+    # --- one cycle at a time, proved by a lock rather than a timestamp ------
+    #
+    # The old rule read the newest open cycle row and refused to start if it
+    # was younger than stale_minutes (12 hours). A row is left open by
+    # anything that does not reach end_cycle: systemd killing the cycle at
+    # TimeoutStartSec, an uncaught exception, a dash restart mid-cycle.
+    # SIGTERM runs no finally. So one killed cycle could stop every wake for
+    # half a day, and the only evidence was a line in the journal.
+    #
+    # A flock held for the whole process cannot lie about this. If another
+    # cycle holds it, one is genuinely alive. If we get it, nothing else is
+    # running, so any open row belongs to something already dead and can be
+    # closed on the spot.
+    #
+    # The file handle is deliberately kept in a module global: the lock lasts
+    # exactly as long as the process, and the kernel releases it on exit
+    # however the process dies.
+    global _CYCLE_LOCK
+    _CYCLE_LOCK = open(os.path.join(data, "cycle.lock"), "a+")
+    try:
+        fcntl.flock(_CYCLE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("a cycle is already running (it holds the lock); this wake stops "
+            "here", level="info")
+        return 0
+    _orphans = state.db.execute(
+        "SELECT id, started_at FROM cycles WHERE ended_at IS NULL").fetchall()
+    if _orphans:
+        state.db.execute(
+            "UPDATE cycles SET ended_at=?, outcome='abandoned',"
+            " notes='no process held the cycle lock, so this row was left open"
+            " by a cycle that is already gone' WHERE ended_at IS NULL",
+            (utcnow(),))
+        state.db.commit()
+        log(f"closed {len(_orphans)} cycle row(s) left open by a dead cycle "
+            f"(oldest started {_orphans[0]['started_at']})", level="warn")
+
     goals.seed(state, cfg)
     project.ensure(state)
     # --- how often riffle wakes ------------------------------------------
@@ -339,98 +378,11 @@ def main():
     # whichever is later. An attempt now costs the interval whether or not it
     # finishes.
     state.note("last_wake_at", utcnow())
-
-    # --- and never two at once ----------------------------------------------
-    # The interval check above measures time since the last cycle STARTED,
-    # which says nothing about whether it finished. A cycle that runs 18
-    # minutes against a 15 minute interval means the next timer firing sees
-    # "18 > 15, due" and starts a second one alongside it. The database shows
-    # cycles 431 and 432 both beginning at 06:31:02, and a `contribute` cycle
-    # from the night before still marked running.
-    #
-    # They do not corrupt each other — the composer lock serialises the model
-    # — but the second one BLOCKS on that lock for as long as the first one
-    # holds it, which is where an 18-minute cycle with 421ms of CPU came from.
-    # It spent the time waiting for a lock held by a cycle it should never
-    # have started beside.
-    #
-    # Anything older than the stale window is treated as dead rather than
-    # running: a crash or a power cut leaves the row open forever, and this box
-    # does both.
-    # 120, not 45.
-    #
-    # Ordinary cycles finish in 6 to 10 minutes. `make` and `deepen` take 47
-    # to 50, because they generate a long post or run a build. The threshold
-    # sat at 45, so every single one of those was reaped minutes before it
-    # finished:
-    #
-    #   1034 make    49.8 min  abandoned
-    #   1036 deepen  47.5 min  abandoned
-    #   1037 make    48.2 min  abandoned
-    #
-    # And reaping does not kill anything. It marks a database row. The
-    # process carried on, still holding the composer lock, while the next
-    # cycle started and blocked on that lock — so the reaper made things
-    # slower, threw away the work, and produced ten hours of silence in chat
-    # because the cycles that had something to say were the ones being killed.
-    _stale = int((cfg.get("cycle") or {}).get("stale_minutes", 720))
-    _live = state.db.execute(
-        "SELECT id, started_at FROM cycles WHERE ended_at IS NULL"
-        " ORDER BY id DESC LIMIT 1").fetchone()
-    if _live and not a.force:
-        import datetime as _dt2
-        _run = (_dt2.datetime.now(_dt2.timezone.utc)
-                - _dt2.datetime.fromisoformat(
-                    _live["started_at"].replace("Z", "+00:00"))).total_seconds() / 60
-        # A CYCLE THAT PREDATES THIS BOOT IS DEAD. No threshold needed.
-        #
-        # stale_minutes is now twelve hours, which is right for a slow build
-        # and badly wrong after a crash: this box has crashed sixteen times in
-        # three days, and a crash leaves a cycle row open. Without this, the
-        # machine would come back up and refuse to start any cycle until
-        # twelve hours after the one that died had begun.
-        #
-        # But we do not need to guess. If the cycle started before the current
-        # boot, the process that owned it does not exist — the kernel it ran
-        # under is gone. That is certainty, not a timeout.
-        _pre_boot = False
-        try:
-            with open("/proc/uptime") as _u:
-                _boot = (_dt2.datetime.now(_dt2.timezone.utc)
-                         - _dt2.timedelta(seconds=float(_u.read().split()[0])))
-            _started = _dt2.datetime.fromisoformat(
-                _live["started_at"].replace("Z", "+00:00"))
-            _pre_boot = _started < _boot
-        except Exception:
-            pass
-
-        # The lock is the better evidence for a cycle in THIS boot. A
-        # timestamp says when a cycle started; the lock says whether it is
-        # still working.
-        _busy = False
-        try:
-            _busy = chat.ComposerLock(
-                os.path.join(data, "composer.lock")).held_by_someone_else()
-        except Exception:
-            pass
-        if _pre_boot:
-            log(f"cycle {_live['id']} started before this boot; its process "
-                f"died with the machine. Closing it and carrying on.",
-                level="warn")
-        elif _run < _stale or _busy:
-            log(f"cycle {_live['id']} has been running {_run:.0f} minute(s)"
-                + (" and still holds the composer" if _busy else "")
-                + "; not starting a second one beside it")
-            return 0
-        state.db.execute(
-            "UPDATE cycles SET ended_at=?, outcome='abandoned',"
-            " notes='open past the stale window and not holding the composer;"
-            " presumed lost to a crash or a restart. NOTE: this marks the row"
-            " only — if the process is somehow alive it keeps running.'"
-            " WHERE id=?", (utcnow(), _live["id"]))
-        state.db.commit()
-        log(f"cycle {_live['id']} was left open {_run:.0f} minutes ago and is "
-            f"presumed dead; closing it and carrying on", level="warn")
+    # The stale-timestamp window that used to live here is gone, along with
+    # the pre-boot check and the composer-lock probe. All three were ways of
+    # guessing from a row's age whether a process was still alive; the lock
+    # taken at the top of main() knows, and a guess that is sometimes wrong
+    # is worse than a fact. stale_minutes is no longer read by anything.
 
     desk.ensure(state)
     library.ensure(state, (cfg.get("library") or {}).get("root", library.ROOT))
@@ -675,7 +627,7 @@ def main():
             (_stuck_n,)).fetchall()
         _moved = state.db.execute(
             "SELECT MAX(created_at) m FROM actions"
-            " WHERE status IN ('sent','executed','approved','queued')").fetchone()
+            " WHERE status IN ('sent','executed','approved','queued','unknown')").fetchone()
     except Exception:
         _recent, _moved = [], None
     if len(_recent) >= _stuck_n and _moved and _moved["m"]:
@@ -1861,7 +1813,7 @@ def main():
         if len(_new) >= 12:
             for _r in state.db.execute(
                     "SELECT id, created_at, payload FROM actions WHERE kind=?"
-                    " AND status IN ('sent','executed','approved','queued')"
+                    " AND status IN ('sent','executed','approved','queued','unknown')"
                     " ORDER BY id DESC LIMIT 15", (kind,)):
                 try:
                     _old = _k(json.loads(_r["payload"]).get("body") or "")
@@ -1895,7 +1847,7 @@ def main():
     if kind == "comment" and not payload.get("parent_id"):
         prior = state.db.execute(
             "SELECT id, created_at FROM actions WHERE kind='comment'"
-            " AND status IN ('sent','executed','approved','queued')"
+            " AND status IN ('sent','executed','approved','queued','unknown')"
             " AND json_extract(payload,'$.post_id') = ?"
             " AND json_extract(payload,'$.parent_id') IS NULL"
             " ORDER BY id DESC LIMIT 1",
@@ -1994,10 +1946,33 @@ def main():
                    "payload": json.dumps(payload, indent=2)})
         state.end_cycle(cid, "executed", f"action {aid}")
     except HttpError as e:
-        state.set_status(aid, "failed", {"error": str(e)})
-        log(f"{kind} #{aid} refused by the registry: {e}", level="error", drive=drive)
-        state.say("error", f"Cycle {cid} · the registry refused my {kind}: {e}")
-        state.end_cycle(cid, "failed", str(e)[:500])
+        # "REFUSED" AND "NEVER ARRIVED" ARE DIFFERENT THINGS.
+        #
+        # A transport failure now reaches here as status 0 (see client.py).
+        # On a send that means the registry may well have processed the
+        # request and the reply was lost — the comment is on the square and
+        # the row says failed. Calling that "refused by the registry" is a
+        # claim nobody checked, on a board about checkable claims.
+        #
+        # So an unknown outcome is recorded as unknown and says where to
+        # look. riffle can then check rather than assume, and will not send
+        # the same comment twice because the duplicate check sees the row.
+        if getattr(e, "status", None) == 0:
+            state.set_status(aid, "unknown", {"error": str(e)})
+            log(f"{kind} #{aid}: never reached the registry ({e}). It may or "
+                f"may not have been applied.", level="error", drive=drive)
+            state.say("error",
+                      f"Cycle {cid} \u00b7 my {kind} never reached the registry: "
+                      f"{e}. I do not know whether it landed \u2014 check the "
+                      f"square before I try again.")
+            state.end_cycle(cid, "unknown-outcome", str(e)[:500])
+        else:
+            state.set_status(aid, "failed", {"error": str(e)})
+            log(f"{kind} #{aid} refused by the registry: {e}",
+                level="error", drive=drive)
+            state.say("error",
+                      f"Cycle {cid} \u00b7 the registry refused my {kind}: {e}")
+            state.end_cycle(cid, "failed", str(e)[:500])
     return 0
 
 
