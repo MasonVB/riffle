@@ -64,9 +64,37 @@ def apply_local(state, cfg, cid, kind, payload, drive, log, rationale=""):
     any other local kind would have stranded it — which never came up only
     because they were never queued in the first place.
     """
-    if kind in LOCAL_KINDS:
-        return apply_local(state, cfg, cid, kind, payload, drive, log,
-                           rationale)
+    if kind == "read_more":
+        return apply_read_more(state, cfg, cid, payload, drive)
+    if kind == "request_cycle":
+        return apply_request_cycle(state, cfg, cid, payload, drive)
+    if kind == "read_thread":
+        return apply_read_thread(state, cfg, cid, payload, drive)
+    if kind in ("desk_put", "desk_clear"):
+        return apply_desk(state, cid, kind, payload, drive, log)
+    if kind in ("library_put", "library_find", "library_read"):
+        return apply_library(state, cfg, cid, kind, payload, drive, log)
+    if kind == "read_page":
+        return apply_read_page(state, cfg, cid, payload, drive, log)
+    if kind == "ask_operator":
+        return apply_ask(state, cid, payload, drive, log)
+    if kind == "build":
+        return apply_build(state, cfg, cid, payload, drive, log)
+    if kind == "sign":
+        return apply_sign(state, cfg, cid, payload, drive, log)
+    if kind == "fetch":
+        # Built here rather than passed in: the dashboard has no reader or
+        # writer in scope, and constructing them costs nothing next to the
+        # call they are about to make.
+        _secret = os.path.join(os.path.expanduser(cfg["data_dir"]),
+                               "riffle.secret")
+        return apply_fetch(state, cfg, Reader(cfg["base"]),
+                           Writer(cfg["base"], open(_secret).read().strip()),
+                           cid, payload, drive, log)
+    if kind in ("open_project", "project_note", "close_project"):
+        return apply_project(state, cfg, cid, kind, payload, drive, rationale)
+    if kind in ("adjust_drive", "add_goal", "remember"):
+        return apply_reflexive(state, cfg, cid, kind, payload, drive, rationale)
     raise ValueError(f"{kind} is not a local action")
 
 
@@ -1516,41 +1544,9 @@ def main():
             return 0
         state.propose(cid, kind, drive, payload, rationale, "accepted")
 
-    if kind == "read_more":
-        return apply_read_more(state, cfg, cid, payload, drive)
-
-    if kind == "request_cycle":
-        return apply_request_cycle(state, cfg, cid, payload, drive)
-
-    if kind == "read_thread":
-        return apply_read_thread(state, cfg, cid, payload, drive)
-
-    if kind in ("desk_put", "desk_clear"):
-        return apply_desk(state, cid, kind, payload, drive, log)
-
-    if kind in ("library_put", "library_find", "library_read"):
-        return apply_library(state, cfg, cid, kind, payload, drive, log)
-
-    if kind == "read_page":
-        return apply_read_page(state, cfg, cid, payload, drive, log)
-
-    if kind == "ask_operator":
-        return apply_ask(state, cid, payload, drive, log)
-
-    if kind == "build":
-        return apply_build(state, cfg, cid, payload, drive, log)
-
-    if kind == "sign":
-        return apply_sign(state, cfg, cid, payload, drive, log)
-
-    if kind == "fetch":
-        return apply_fetch(state, cfg, reader, writer, cid, payload, drive, log)
-
-    if kind in ("open_project", "project_note", "close_project"):
-        return apply_project(state, cfg, cid, kind, payload, drive, rationale)
-
-    if kind in ("adjust_drive", "add_goal", "remember"):
-        return apply_reflexive(state, cfg, cid, kind, payload, drive, rationale)
+    if kind in LOCAL_KINDS:
+        return apply_local(state, cfg, cid, kind, payload, drive,
+                           log, rationale)
 
     # --- numcheck --------------------------------------------------------------
     report = None
