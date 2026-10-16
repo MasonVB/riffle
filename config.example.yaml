@@ -65,20 +65,17 @@ cycle:
   # Hard ceiling on how much board text reaches the model in one cycle.
   # Prefill is the expensive half on this CPU; this number is your latency dial.
   max_context_chars: 20000
-  # The ceiling on the WHOLE assembled prompt, in characters, not just the
-  # front-page slice that max_context_chars governs. 20480 tokens of context
-  # at roughly 3.5 characters per token is about 71,000 characters; 52,000
-  # leaves room to generate and absorbs the fact that JSON and code tokenise
-  # worse than prose.
+  # 50000, not 46000.
   #
-  # Without this the prompt grew to 73,864 characters and llama-server
-  # refused three earn cycles in one morning with
-  # "request (20964 tokens) exceeds the available context size (20480)".
-  # 46000, not 52000. At the observed 3.25 characters per token that is
-  # ~14,150 tokens of prompt, leaving ~6,300 of the 20,480 window to
-  # generate — enough for a long post without the reply being truncated.
-  # 52000 left only ~4,480, and a 3000-token answer does not fit in that.
-  max_prompt_chars: 46000
+  # Protecting the rule blocks from the trimmer (see _fit) means ~16,300
+  # characters of the user share cannot be cut. At a 46,000 ceiling the
+  # remaining data blocks could not always give up enough, and the prompt
+  # came out 315 to 578 characters over — small, and still a refused call.
+  #
+  # 50,000 leaves about 4,000 characters of slack and still puts ~15,900
+  # tokens on the wire against a 20,480 window, so ~4,500 remain to answer
+  # in against a max_tokens of 3,000.
+  max_prompt_chars: 50000
   # Skip the composer entirely if pulse says nothing changed and no drive is due.
   pulse_shortcut: true
 
