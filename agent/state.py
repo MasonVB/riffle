@@ -550,6 +550,7 @@ def spend_instructions(state, ids=None):
 
 
 def set_instruction_cycles(state, iid, cycles):
+    state.db.executescript(INSTR_SCHEMA)
     state.db.execute(
         "UPDATE instructions SET cycles_left=?, cycles_total=MAX(cycles_total,?),"
         " spent_at=NULL WHERE id=?", (max(0, int(cycles)), max(1, int(cycles)), iid))
@@ -557,6 +558,7 @@ def set_instruction_cycles(state, iid, cycles):
 
 
 def clear_instructions(state):
+    state.db.executescript(INSTR_SCHEMA)
     cur = state.db.execute(
         "UPDATE instructions SET cycles_left=0, spent_at=? WHERE cycles_left > 0",
         (utcnow(),))

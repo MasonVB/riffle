@@ -454,7 +454,7 @@ def main():
             "INSERT INTO drives (name,weight,locked,description,created_at,created_by)"
             " VALUES ('deepen',0.25,0,?,?,'seed')",
             ("add the next increment to the open project — read a source, draft "
-             "a paragraph, or argue against yourself", state.note("x") or "seed"))
+             "a paragraph, or argue against yourself", utcnow()))
         state.db.commit()
         state.log("seeded the 'deepen' goal at 0.25")
     # The live goal table overrides the file. config.yaml seeded it once and is
@@ -1210,19 +1210,6 @@ def main():
               "If your own rationale says you are answering someone, the "
               "parent_id must not be null.")
     _last_read = _reads[0] if _reads else None
-    if False:
-        if _last_read and (_last_read["replies"] or "").strip():
-            parts.append(
-                f"COMMENTS YOU COULD ANSWER on #{_last_read['post_id']} "
-                f"\u2014 {_last_read['title'][:70]}\n"
-                + (_last_read["replies"] or "")[:3000]
-                + "\n\nThe number in brackets is a `parent_id`, without the "
-                  "leading c. Copy it rather than retyping it. A comment with "
-                  "parent_id set lands under that person's words and they see "
-                  "it. Answer a specific sentence someone wrote: name what they "
-                  "said, then say what you checked and what you got. You "
-                  "already used your one top-level comment on this post.")
-
     _lb = state.note("last_build")
     if _lb:
         try:
@@ -2051,8 +2038,14 @@ def main():
             # Shared with the dashboard's approval path — see project.on_posted.
             project.on_posted(state, cfg, aid,
                               log=lambda m: log(m, drive=drive))
-        if kind in ("comment", "vote", "tag", "flag"):
-            state.mark_seen("post", payload.get("post_id") or payload.get("target_id"))
+        # Only when the target really is a post. A vote on a COMMENT carries
+        # target_type='comment' and a comment id, and marking that id as a
+        # seen POST poisons the unseen-front count with ids that are not
+        # posts at all.
+        if kind in ("comment", "tag", "flag"):
+            state.mark_seen("post", payload.get("post_id"))
+        elif kind == "vote" and (payload.get("target_type") or "post") == "post":
+            state.mark_seen("post", payload.get("target_id"))
         log(f"executed {kind} #{aid}: {rationale[:200]}", drive=drive)
         ref = (resp or {}).get("id") or payload.get("target_id") or payload.get("post_id") or ""
         # A CARD, NOT A ONE-LINE REPORT.

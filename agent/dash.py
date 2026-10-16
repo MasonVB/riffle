@@ -605,6 +605,42 @@ class Handler(BaseHTTPRequestHandler):
         # Two places holding the same fact and only one of them updated. The
         # same shape as the hardcoded ACTS list and the two copies of the
         # brand selector.
+        # RE-CHECK BEFORE SENDING.
+        #
+        # A queued action can sit for hours. In that time the daily cap can
+        # fill, riffle can say the same thing another way, or it can vote on
+        # the same target from a later cycle. Approval ran none of those
+        # checks again — they all happened when the action was proposed, and
+        # approving meant sending whatever the state was now.
+        _day = utcnow()[:10]
+        _left = self.cfg["caps"].get(a["kind"])
+        if _left is not None and s.cap_used(_day, a["kind"]) >= _left:
+            s.set_status(aid, "rejected",
+                         {"by": "cap", "how": "the daily allowance was used up "
+                                              "while this waited"})
+            self._update_card(aid, status="rejected",
+                              error=f"today's {a['kind']} allowance was spent "
+                                    f"while this was waiting")
+            s.log(f"approved {a['kind']} #{aid} not sent: the {a['kind']} cap "
+                  f"filled while it waited", level="warn", drive=a["drive"])
+            return {"error": f"today's {a['kind']} allowance is used up"}
+        if a["kind"] == "vote" and payload.get("target_id"):
+            _dupe = s.db.execute(
+                "SELECT id FROM actions WHERE kind='vote' AND id<>?"
+                " AND status IN ('sent','executed','unknown')"
+                " AND json_extract(payload,'$.target_id') = ?"
+                " AND COALESCE(json_extract(payload,'$.target_type'),'post') = ?",
+                (aid, payload["target_id"],
+                 payload.get("target_type") or "post")).fetchone()
+            if _dupe:
+                s.set_status(aid, "rejected",
+                             {"by": "duplicate", "how": f"already voted "
+                                                        f"(#{_dupe['id']})"})
+                self._update_card(aid, status="rejected",
+                                  error=f"already voted on that "
+                                        f"(action #{_dupe['id']})")
+                return {"error": "already voted on that target"}
+
         s.set_status(aid, "sending")
         self._update_card(aid, status="sending")
 
@@ -615,7 +651,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 resp = execute(Writer(self.cfg["base"], secret), a["kind"], payload)
                 s.set_status(aid, "executed", resp)
-                s.cap_bump(utcnow()[:10], a["kind"])
+                # The SERVER's day, which is the boundary the registry
+                # counts by. utcnow()[:10] is this machine's idea of the
+                # date, and the two disagree for part of every day if the
+                # clock drifts or the registry rolls over on a different
+                # schedule.
+                _sday = (resp.get("now_utc") or utcnow())[:10]
+                s.cap_bump(_sday, a["kind"])
                 ref = resp.get("id") or resp.get("post_id") or ""
                 self._update_card(aid, status="executed", sent_at=self._local_time(),
                                   ref=(f"#{ref}" if ref else ""))
@@ -732,16 +774,38 @@ def main():
     Handler.cfg, Handler.state = cfg, st
     # Same idea as the orphaned reply rows above: a restart is the moment to
     # close out anything a dead thread left mid-flight.
+    # UNKNOWN, not failed, and the cards get updated too.
+    #
+    # This marked them 'failed' and logged "Nothing was sent", which it
+    # cannot know: the thread died somewhere between the request leaving and
+    # the reply arriving, and the registry may well have applied it. The
+    # same distinction C2 drew for transport errors applies here.
+    #
+    # It also left the chat cards reading "sending…" forever, because it
+    # wrote to the actions table and not to the message meta. One of those
+    # sat on screen for hours.
     _stuck = st.db.execute(
-        "SELECT COUNT(*) c FROM actions WHERE status='sending'").fetchone()["c"]
+        "SELECT id, kind FROM actions WHERE status='sending'").fetchall()
     if _stuck:
         st.db.execute(
-            "UPDATE actions SET status='failed' WHERE status='sending'")
+            "UPDATE actions SET status='unknown',"
+            " response=json_object('error','the dash restarted while this was"
+            " in flight; whether it reached the registry is unknown')"
+            " WHERE status='sending'")
         st.db.commit()
-        print(f"closed {_stuck} action(s) left stuck sending")
-        st.log(f"startup: closed {_stuck} action(s) left stuck at 'sending'; "
-               f"the thread that owned them did not finish. Nothing was sent.",
-               level="warn")
+        for _r in _stuck:
+            Handler.state = st
+            try:
+                Handler._update_card(Handler, _r["id"], status="unknown",
+                                     error="the dash restarted mid-send. This "
+                                           "may or may not have reached the "
+                                           "square — check before retrying.")
+            except Exception:
+                pass
+        print(f"closed {len(_stuck)} action(s) left mid-send")
+        st.log(f"startup: {len(_stuck)} action(s) were in flight when the dash "
+               f"stopped. Marked unknown: whether they reached the registry "
+               f"cannot be determined from here.", level="warn")
     Handler.worker = chat.Worker(st, cfg)
     Handler.worker.start()
     Handler.start_scheduler()
@@ -1135,6 +1199,14 @@ def _goals_routes(h):
                 return h._json({"error": "no such action"}) or True
             if row["status"] in ("executed", "sent"):
                 return h._json({"error": "that one already went out"}) or True
+            # SENDING is not dismissable. The request is on the wire; if it
+            # completes a second later the row flips to executed and you have
+            # been told "It was not sent" about something that was.
+            if row["status"] == "sending":
+                return h._json({
+                    "error": "that one is being sent right now. Wait for it "
+                             "to land or fail — dismissing it would tell you "
+                             "it was not sent while it still might be."}) or True
             s.set_status(aid, "rejected", {"by": "you", "how": "discarded"})
             # h, not self. This endpoint lives in _goals_routes(h), a module
             # level function with no self in scope — so pressing discard
