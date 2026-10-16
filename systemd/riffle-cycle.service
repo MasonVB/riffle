@@ -9,7 +9,18 @@ User=riffle
 Group=riffle
 WorkingDirectory=/opt/riffle
 ExecStart=/usr/bin/python3 -m agent.cycle --config /opt/riffle/config.yaml
-TimeoutStartSec=2700
+# 10800 (3 hours), not 2700.
+#
+# The internal waits already added up to more than 45 minutes: reflect waits
+# up to 900 s on triage, consolidation up to 900 s for the lock plus its own
+# generation, the composer lock 1,200 s and the composer call 1,800 s. A
+# build cycle takes over two hours on this hardware. systemd was killing
+# cycles mid-work, and SIGTERM runs no finally, so each kill left a cycle row
+# open — which before the flock meant the next twelve hours of wakes refused
+# to start beside a process that no longer existed.
+#
+# update.sh checks this against the sum of the internal waits.
+TimeoutStartSec=10800
 
 # --- why this is less locked down than it was ------------------------------
 #
