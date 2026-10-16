@@ -444,19 +444,14 @@ class Handler(BaseHTTPRequestHandler):
                 return {"error": "a cycle is already running"}
             cls._cycle_running = True
 
-        def run():
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "agent.cycle", "--config",
-                     os.path.join("/opt/riffle", "config.yaml"), "--force"],
-                    cwd="/opt/riffle", timeout=2700,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception as e:
-                self.state.say("error", f"manual cycle failed to run: {e}")
-            finally:
-                cls._cycle_running = False
-
-        _th.Thread(target=run, daemon=True).start()
+        ok = request_cycle_run(self.state, "run-cycle button")
+        # Nothing to wait on and no child to track: systemd owns the cycle
+        # now. _cycle_running was guarding a subprocess that no longer
+        # exists, and the real guard against overlap is the flock the cycle
+        # takes for itself.
+        cls._cycle_running = False
+        if not ok:
+            return {"error": "could not write the cycle request"}
         self.state.log("you started a cycle from the dashboard")
         return {"ok": True}
 
@@ -833,17 +828,10 @@ def _run_cycle_detached(cls):
         cls._cycle_running = True
 
     def run():
+        # Same reason as the button: ask systemd rather than spawning a
+        # child that would inherit this unit's sandbox.
         try:
-            subprocess.run(
-                # --force: you pressed the button (or the agent spent a
-                # request_cycle on it). The interval governs the timer, not a
-                # deliberate wake.
-                [sys.executable, "-m", "agent.cycle", "--config",
-                 "/opt/riffle/config.yaml", "--force"],
-                cwd="/opt/riffle", timeout=2700,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            cls.state.say("error", "extra cycle failed: " + str(e)[:200])
+            request_cycle_run(cls.state, "extra cycle")
         finally:
             cls._cycle_running = False
 
@@ -851,6 +839,33 @@ def _run_cycle_detached(cls):
 
 
 POLICY_NOTES = {'post': 'one per UTC day, and only after a project clears the bar', 'comment': 'the main way it takes part', 'read_thread': 'opens a post and files it into the project', 'read_more': 'the next batch of replies on a thread already opened', 'request_cycle': 'asks to wake again sooner; capped daily', 'open_project': 'starts the thing a post has to come out of', 'project_note': 'an observation, source, draft, objection or correction', 'adjust_drive': 'moves its own goal weights, within goal_policy bounds', 'add_goal': 'always a proposal, never an act', 'remember': 'writes a durable memory', 'listing_submission': 'the only way it can be paid'}
+
+
+def request_cycle_run(state, why=""):
+    """Ask systemd for a cycle instead of spawning one.
+
+    subprocess.run from here makes the cycle a child of riffle-dash.service
+    and gives it that unit's sandbox: NoNewPrivileges=true and a bounding set
+    of CAP_NET_BIND_SERVICE. sudo is refused under NoNewPrivileges, so such a
+    cycle cannot build, cannot sign, cannot fetch a page, cannot write to the
+    library, and cannot read its own public key — which makes situation()
+    report "you do NOT have: a signing key" to a citizen holding a bound one.
+
+    Touching a file is the whole interface, same as the composer restart.
+    riffle-run-cycle.path sees it and starts riffle-run-cycle.service, which
+    carries the same privileges as the timer unit.
+
+    Returns True if the request was written.
+    """
+    try:
+        path = os.path.join("/var/lib/riffle", "run-cycle.request")
+        with open(path, "w") as fh:
+            fh.write(f"{dt.datetime.now(dt.timezone.utc).isoformat()} {why}\n")
+        return True
+    except OSError as e:
+        state.say("error", f"could not request a cycle: {e}")
+        state.log(f"cycle request failed: {e}", level="error")
+        return False
 
 
 def _uptime_report():
