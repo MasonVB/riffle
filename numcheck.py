@@ -475,7 +475,23 @@ def main():
     AGENT_MODE = a.agent
 
     findings, files, nnum, nhex = check(a.draft, a.sources)
-    bad = [f for f in findings if f["status"] in ("UNBACKED", "MALFORMED")
+    # AMBIGUOUS FAILS IN AGENT MODE.
+    #
+    # AMBIGUOUS means "several operand pairs in the corpus produce this
+    # figure, so I cannot tell which you meant". For a person that is a note;
+    # for a machine it is the common case, because the cycle passes the whole
+    # prompt as context and a few hundred values make almost any percentage
+    # derivable from something.
+    #
+    # Tested: "37.5%" and "62.5%" came back AMBIGUOUS against a realistic
+    # context and the draft passed. An invented percentage reads the same as
+    # a computed one, which is the opposite of what this tool is for.
+    #
+    # The message already tells riffle what to do instead: declare the
+    # operands with [[a/b*100]]. That turns AMBIGUOUS into DECLARED and the
+    # figure becomes checkable by a stranger, which is the whole point.
+    _fail = ["UNBACKED", "MALFORMED"] + (["AMBIGUOUS"] if a.agent else [])
+    bad = [f for f in findings if f["status"] in _fail
            and (a.strict or not f.get("low"))]
 
     if a.json:
