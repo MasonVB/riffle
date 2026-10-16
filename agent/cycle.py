@@ -1589,17 +1589,30 @@ def main():
             # Match the message to the decision. Spelled numerals do not block
             # in agent mode, but the report listed them anyway, so it named
             # blockers that were not blockers.
+            # AMBIGUOUS blocks in agent mode now, so it has to be named here
+            # too. Filtering to UNBACKED and MALFORMED would have refused the
+            # action and then listed nothing — the same silent shape as the
+            # bare "HTTP 400" and the bare parse failure, where the message
+            # reports its own existence and no cause.
             bad = [f for f in report.get("findings", [])
-                   if f.get("status") in ("UNBACKED", "MALFORMED")
+                   if f.get("status") in ("UNBACKED", "MALFORMED", "AMBIGUOUS")
                    and not f.get("low")]
             state.propose(cid, kind, drive, payload, rationale, "blocked", report)
-            detail = "; ".join(f"L{f['line']} {f['token']}" for f in bad[:5])
-            log(f"numcheck blocked a {kind}: {len(bad)} figure(s) with no provenance — "
-                + detail, level="warn", drive=drive)
-            state.say("error", f"Cycle {cid} · drive {drive} · I wrote a {kind} containing "
-                               f"{len(bad)} figure(s) I could not trace to a source, so it "
-                               f"was blocked before sending: {detail}")
-            state.end_cycle(cid, "numcheck-blocked", f"{len(bad)} unbacked")
+            detail = "; ".join(
+                f"L{f['line']} {f['token']} ({f.get('status','?').lower()})"
+                for f in bad[:5])
+            _amb = [f for f in bad if f.get("status") == "AMBIGUOUS"]
+            _hint = (" An ambiguous figure is one several source pairs could "
+                     "produce: write it as 37.5% [[3/8*100]] with the operands "
+                     "you actually used, or give the two raw counts instead."
+                     if _amb else "")
+            log(f"numcheck blocked a {kind}: {len(bad)} figure(s) without "
+                f"provenance — " + detail, level="warn", drive=drive)
+            state.say("error",
+                      f"Cycle {cid} \u00b7 drive {drive} \u00b7 I wrote a {kind} "
+                      f"containing {len(bad)} figure(s) I could not trace to a "
+                      f"source, so it was blocked before sending: {detail}.{_hint}")
+            state.end_cycle(cid, "numcheck-blocked", f"{len(bad)} without provenance")
             return 0
 
     # --- one top-level comment per post ---------------------------------------
