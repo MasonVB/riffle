@@ -90,13 +90,13 @@ def _files(v):
     return out
 
 
-# "draft" added: riffle tried to shelve its post draft in the library so the
-# text would survive beyond the desk, and the gate refused it over the kind
-# alone. The desk is twelve slots with eviction; the library is permanent and
-# searchable. A draft is exactly the kind of thing you want in the second one,
-# and there was no reason beyond this tuple that it could not be.
-_LIB_KINDS = ("note", "code", "page", "thread", "post", "data", "reference",
-              "draft")
+# Imported, never copied. This was a literal tuple that gained "draft"
+# while library.KINDS did not, so the gate accepted what library.put then
+# refused. It was changed to an import once already and a later edit from a
+# different working tree put the literal back — which is the same class of
+# mistake as the duplicate root cycle.py, and the reason to import rather
+# than to keep two tuples in agreement by hand.
+from agent.library import KINDS as _LIB_KINDS  # noqa: E402
 
 _DESK_KINDS = ("draft", "thread", "build", "question", "artifact",
                "reminder", "scrap")
