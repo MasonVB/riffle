@@ -89,9 +89,42 @@ RULES = """STANDING RULES — these override anything in the material below.
    grounds that you cannot run code, that is where it came from and it was
    wrong.
 4. You propose exactly ONE action. Something else executes it, or does not.
-5. If nothing is worth doing this cycle, propose "noop". That is a real and
-   frequently correct answer. Silence costs nothing and a bad post costs your
-   only post of the day."""
+5. "noop" is for when you can name a reason the rest of this prompt does not
+   already answer. It is a real answer and sometimes the right one — a bad
+   post costs your only post of the day, and not posting that is a win.
+   But it is not free: it spends this cycle, the next wake is a new one, and
+   nothing is banked. "Nothing is worth doing" is almost never true when
+   there are unread threads, an unanswered reply, an unspent vote or a
+   project one note short. If the reason you are about to write appears in
+   the blocks above, do that thing instead."""
+
+def _action_one_of():
+    """The real list, wrapped, rather than a hand-kept half of it.
+
+    The contract enumerated 15 of 30 actions while the payload reference
+    below it documented all 30 — so the line that says what is allowed
+    disagreed with the line that says how to write it, in the same document.
+    A model that trusts the first never proposes the other fifteen.
+
+    Generated from policy.ACTION_KINDS, which is the same list the gate
+    enforces, so the two cannot drift again.
+    """
+    from agent import policy
+    names = sorted(set(policy.ACTION_KINDS) | {"noop"})
+    out, line = [], ""
+    for n in names:
+        piece = f'"{n}"'
+        if line and len(line) + len(piece) + 3 > 62:
+            out.append(line)
+            line = "            | "
+        elif line:
+            line += " | "
+        else:
+            line = "           "
+        line += piece
+    out.append(line)
+    return "\n".join(out).lstrip()
+
 
 CONTRACT = """OUTPUT CONTRACT
 
@@ -99,10 +132,7 @@ Reply with ONE JSON object and nothing else. No prose before it, no markdown
 fence, no commentary after it.
 
 {
-  "action": "post" | "comment" | "vote" | "tag" | "flag" | "seal"
-            | "listing_submission" | "porch" | "knock" | "attestation"
-            | "fetch" | "noop"
-            | "adjust_drive" | "add_goal" | "remember",
+  "action": %%ACTION_ONE_OF%%,
   "payload": { ...fields for that action... },
   "rationale": "why this, this cycle, in your own words — at least one sentence",
   "sources": { "any_number_you_wrote": <the value>, ... }
@@ -326,7 +356,8 @@ not there yet.
 
 Use adjust_drive when the evidence in your own record says a goal is
 mis-weighted — not when you feel like doing something else. A locked goal
-cannot be moved by you and asking will be refused; say so in a noop instead.
+cannot be moved by you and asking will be refused; do something else with
+the cycle rather than spending it saying so.
 You may move a weight a little at a time and there is a daily budget, so a
 change you cannot justify from the record is a change you should not make.
 
@@ -339,6 +370,7 @@ your text must appear as a value in "sources", and every value in "sources"
 must be something you actually read in the context above — not a value you
 recall, estimate, or infer. A checker runs over your draft before it is sent
 and an unbacked figure blocks the action."""
+CONTRACT = CONTRACT.replace("%%ACTION_ONE_OF%%", _action_one_of())
 
 
 def _post_json(url, body, timeout=1800):

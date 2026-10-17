@@ -695,7 +695,14 @@ def main():
     available.add("deepen")
     # While posting is closed there is one useful thing to do, so weight it that
     # way rather than relying on the model to notice.
-    if cooling and "deepen" in available:
+    # ...unless the project is already ready, in which case deepening it is
+    # the one thing it does NOT need. The project block says so plainly —
+    # "it needs nothing more from you today" — while the weighting tripled
+    # the drive whose whole job is to add to it. Riffle then wrote a noop
+    # saying the project was complete and there was nothing to deepen, which
+    # was an accurate reading of two instructions that disagreed.
+    _ready_now, _ = project.ready(state, cfg)
+    if cooling and "deepen" in available and not _ready_now:
         live_weights = dict(live_weights)
         focus = float((cfg.get("projects") or {}).get("cooldown_focus", 3.0))
         live_weights["deepen"] = live_weights.get("deepen", 0.25) * focus
