@@ -340,7 +340,47 @@ def low_signal(d, raw):
 
 def check(draft_path, source_paths, derive_cap=400):
     numbers, hexes, dates, files = load_sources(source_paths)
-    corpus_list = sorted({normalize(n) for n in numbers}, key=lambda x: abs(x))[:derive_cap]
+
+    # CITED SOURCES FIRST, then the prompt, then by size.
+    #
+    # The cap kept the 400 values CLOSEST TO ZERO, and the agent passes its
+    # whole prompt as context.txt — several hundred post ids, comment ids and
+    # vote counts, all small. They filled the list and the real counts never
+    # reached it. 1339/65637*100 reads DERIVED from those two numbers alone
+    # and AMBIGUOUS with the prompt present: the same true statement, judged
+    # differently by how much unrelated text happened to be in the window.
+    #
+    # Everything the agent deliberately cited — a build's stdout, a library
+    # document — is a source file in its own right; only the prompt is
+    # context.txt. So those go in first and keep their places, and the cap
+    # falls on the prompt noise it was meant to bound.
+    # Derive ONLY from what was deliberately cited.
+    #
+    # The agent passes its whole prompt as context.txt: several hundred post
+    # ids, comment ids and vote counts. Two problems, both fatal to the
+    # point of this tool.
+    #
+    # The cap kept the 400 values closest to zero, so the prompt's small ids
+    # filled it and real counts never got in: 1339/65637*100 reads DERIVED
+    # from those two numbers alone and AMBIGUOUS with the prompt present.
+    # And with that many unrelated values, some pair explains almost any
+    # percentage — so even when the true pair IS found, the uniqueness rule
+    # correctly calls it coincidence. The same true statement, judged
+    # differently by how much unrelated text was in the window.
+    #
+    # Provenance means "this figure came from that source". The prompt is
+    # not a source riffle cited; it is everything it happened to see. It
+    # still counts for VERBATIM matching below (corpus_set is unchanged) —
+    # a figure quoted straight out of the board is backed. It just cannot
+    # be the basis of a derivation.
+    _cited = []
+    for _f in files:
+        if os.path.basename(_f) == "context.txt":
+            continue
+        _n, _, _, _ = load_sources([_f])
+        _cited.extend(_n)
+    corpus_list = sorted({normalize(n) for n in _cited},
+                         key=lambda x: abs(x))[:derive_cap * 4]
     corpus_set = {normalize(n) for n in numbers}
 
     text = open(draft_path, "r", errors="replace").read()
