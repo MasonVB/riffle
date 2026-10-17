@@ -44,7 +44,12 @@ ROOT = "/var/lib/riffle-library"
 MAX_BYTES = 300 * 1024 * 1024 * 1024        # 300 GB
 MAX_DOC = 8 * 1024 * 1024                   # 8 MB per document
 READ_CHARS = 12000                          # how much a read puts in the prompt
-KINDS = ("note", "code", "page", "thread", "post", "data", "reference")
+# "draft" is here because drives.py added it to the gate on 2026-10-10 and
+# this tuple was not touched — so a draft passed the gate and was then
+# refused by library.put, which is the loudest possible way to disagree with
+# yourself. drives.py now imports this tuple rather than keeping its own.
+KINDS = ("note", "code", "page", "thread", "post", "data", "reference",
+         "draft")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS library (
@@ -182,8 +187,16 @@ def find(state, query, limit=10, root=ROOT):
     return hits
 
 
-def read(state, doc_id, root=ROOT, chars=READ_CHARS):
-    """Fetch one document and mark it read. Returns (row, text) or (None, '')."""
+def read(state, doc_id, root=ROOT, chars=READ_CHARS, count=True):
+    """Fetch one document. Returns (row, text) or (None, '').
+
+    count=False fetches without marking it read. Used where the code is
+    looking something up on riffle's behalf rather than riffle choosing to
+    read it: numcheck pulling a cited document to verify a figure bumped the
+    read counter, which is what protects a document from pruning. Mentioning
+    an id in a draft would have kept it alive forever, and the counter would
+    say it was being read when nobody had.
+    """
     row = state.db.execute("SELECT * FROM library WHERE id=?",
                            (int(doc_id),)).fetchone()
     if not row:
@@ -193,10 +206,11 @@ def read(state, doc_id, root=ROOT, chars=READ_CHARS):
             raw = f.read()
     except OSError as e:
         return row, f"[the file is indexed but unreadable: {e}]"
-    state.db.execute(
-        "UPDATE library SET last_read=?, reads=reads+1 WHERE id=?",
-        (_now(), row["id"]))
-    state.db.commit()
+    if count:
+        state.db.execute(
+            "UPDATE library SET last_read=?, reads=reads+1 WHERE id=?",
+            (_now(), row["id"]))
+        state.db.commit()
     text = raw.decode("utf-8", "replace")
     if len(text) > chars:
         text = text[:chars] + f"\n[...{len(text) - chars} more characters; "\

@@ -95,8 +95,9 @@ def _files(v):
 # alone. The desk is twelve slots with eviction; the library is permanent and
 # searchable. A draft is exactly the kind of thing you want in the second one,
 # and there was no reason beyond this tuple that it could not be.
-_LIB_KINDS = ("note", "code", "page", "thread", "post", "data", "reference",
-              "draft")
+# Imported, not duplicated. The local copy gained "draft" while
+# library.KINDS did not, so the gate accepted what the library then refused.
+from agent.library import KINDS as _LIB_KINDS  # noqa: E402
 
 _DESK_KINDS = ("draft", "thread", "build", "question", "artifact",
                "reminder", "scrap")

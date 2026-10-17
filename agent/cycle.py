@@ -1641,11 +1641,21 @@ def main():
             pass
         for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b", body, re.I)):
             try:
-                _d = library.read(state, int(_lid), cfg["library"]["root"])
-                if _d:
-                    _src[f"library_{_lid}"] = (_d.get("body") or "")[:20000]
-            except Exception:
-                pass
+                # library.read returns (row, text). This called .get("body")
+                # on the TUPLE, which raises AttributeError — swallowed by
+                # the bare except, so the whole point of this loop (letting
+                # riffle back a figure by citing the document it came from)
+                # has never once worked. The numcheck block it feeds was
+                # added to stop exactly that kind of silent failure.
+                _row, _text = library.read(state, int(_lid),
+                                           cfg["library"]["root"],
+                                           count=False)
+                if _row:
+                    _src[f"library_{_lid}"] = (_text or "")[:20000]
+            except Exception as _e:
+                # And say so. A bare pass here is how this stayed broken.
+                log(f"could not read library #{_lid} for numcheck: "
+                    f"{type(_e).__name__}: {_e}", level="warn", drive=drive)
         passed, report = run_numcheck(body, _src, material)
         if not passed:
             # Match the message to the decision. Spelled numerals do not block
