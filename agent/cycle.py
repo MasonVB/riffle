@@ -1721,15 +1721,27 @@ def main():
             return 0
 
     if kind == "vote" and payload.get("target_id"):
+        # queued and unknown count, and a missing target_type means post.
+        #
+        # 'queued' was excluded, so while a vote waited for approval riffle
+        # could propose the same one again and again — and each would be a
+        # separate card for Mason and a 409 for whichever went second.
+        # 'unknown' counts because it may well have landed.
+        #
+        # COALESCE on target_type: payloads written before the field existed
+        # have null there, so the equality test never matched them and every
+        # vote from that era was invisible to this check.
         _v = state.db.execute(
-            "SELECT id, created_at FROM actions WHERE kind='vote'"
-            " AND status IN ('sent','executed','approved')"
+            "SELECT id, created_at, status FROM actions WHERE kind='vote'"
+            " AND status IN ('sent','executed','approved','queued','unknown')"
             " AND json_extract(payload,'$.target_id') = ?"
-            " AND json_extract(payload,'$.target_type') = ?"
+            " AND COALESCE(json_extract(payload,'$.target_type'),'post') = ?"
             " ORDER BY id DESC LIMIT 1",
             (payload["target_id"], payload.get("target_type") or "post")).fetchone()
         if _v:
-            why = (f"you already voted on {payload.get('target_type','post')} "
+            why = (("you already have a vote waiting for approval on "
+                    if _v["status"] == "queued" else "you already voted on ")
+                   + f"{payload.get('target_type','post')} "
                    f"{payload['target_id']} on {_v['created_at'][:16]} "
                    f"(action #{_v['id']}). A second vote is refused by the "
                    f"registry and costs you the cycle.")

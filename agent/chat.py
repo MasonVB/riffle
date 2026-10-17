@@ -600,8 +600,25 @@ class Worker(threading.Thread):
             self.busy_since = time.time()
             try:
                 answer(self.state, self.cfg, question, day)
-            except Exception as e:
-                self.state.say("error", f"chat worker crashed: {e}")
+            except BaseException as e:
+                # The report is in its own try. state.say writes to sqlite,
+                # and if the database is locked or the disk is full it raises
+                # — from inside the handler whose job is to survive a crash.
+                # That kills the thread, and this is the only one: the chat
+                # stops answering for good, with nothing in the log, because
+                # the line that would have logged it is the line that died.
+                #
+                # BaseException because a thread that exits on anything at
+                # all takes the chat with it.
+                try:
+                    self.state.say("error", f"chat worker crashed: {e}")
+                except BaseException:
+                    pass
+                try:
+                    self.state.log(f"chat worker: {type(e).__name__}: {e}",
+                                   level="error")
+                except BaseException:
+                    pass
             finally:
                 self.busy = False
                 self.busy_since = None

@@ -460,13 +460,32 @@ def reflect(state, cfg, log=None):
     cap = int(m.get("reflect_max_per_cycle", 2))
     if cap <= 0:
         return []
+    # THE OLDEST UNREFLECTED CYCLE, not the newest ended one.
+    #
+    # This took the latest cycle and then set last_reflected_cycle to it, so
+    # anything that ended in between was skipped forever. That happens
+    # whenever two cycles finish close together — a build cycle overrunning
+    # while the next one is quick, a restart closing an orphan row — and the
+    # skipped cycles are disproportionately the interesting ones, because a
+    # cycle that took long enough to be overtaken is a cycle that did
+    # something.
+    #
+    # One per wake still: reflection costs a triage call, and catching up on
+    # a backlog all at once would cost more than the cycle has. Taking the
+    # oldest means the backlog drains in order instead of being discarded.
     last_done = state.note("last_reflected_cycle")
     row = state.db.execute(
-        "SELECT * FROM cycles WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    if not row or str(row["id"]) == str(last_done):
+        "SELECT * FROM cycles WHERE ended_at IS NOT NULL AND id > ?"
+        " ORDER BY id ASC LIMIT 1", (int(last_done or 0),)).fetchone()
+    if not row:
         return []
     cid = row["id"]
+    _behind = state.db.execute(
+        "SELECT COUNT(*) c FROM cycles WHERE ended_at IS NOT NULL AND id > ?",
+        (int(last_done or 0),)).fetchone()["c"]
+    if _behind > 3 and log:
+        log(f"reflection is {_behind} cycle(s) behind; working through them "
+            f"oldest first, one per wake")
 
     acts = state.db.execute(
         "SELECT kind, drive, status, rationale, numcheck FROM actions"

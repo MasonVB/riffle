@@ -130,6 +130,15 @@ class Handler(BaseHTTPRequestHandler):
                                  "/api/answer", "/api/dismiss")):
             if _goals_routes(self):
                 return
+            # 404 HERE, not below. _goals_routes has already read rfile for
+            # any POST it looked at; falling through means do_POST reads the
+            # same stream again, gets nothing, and the handler thread blocks
+            # on a body that will never arrive. One unmatched path under
+            # these prefixes hangs a worker thread for good.
+            #
+            # The prefixes above are the contract: if the path starts with
+            # one and _goals_routes did not handle it, it does not exist.
+            return self._json({"error": f"no route for {self.path}"}, 404)
         n = int(self.headers.get("Content-Length", 0))
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
