@@ -59,7 +59,33 @@ import re
 import sys
 from decimal import Decimal, InvalidOperation
 
+# A hash has a letter in it, and that letter is not a lone exponent `e`.
+#
+# [0-9a-fA-F]{8,} matched any 8-digit number and any float's mantissa, so
+# "12345678" and "3.3333333333333335e-05" were reported MALFORMED — and
+# nothing could rescue them, because a [[declaration]] applies to numbers and
+# these were being read as hashes. A real count above ten million was
+# unwriteable.
+#
+# 0x-prefixed tokens stay in whatever they look like: the prefix is the
+# claim. Otherwise at least one a-f must appear, and a token that parses as
+# a float is a number however it looks.
 HEX_RE = re.compile(r"(?<![0-9a-zA-Z_])(0[xX])?([0-9a-fA-F]{8,})(?![0-9a-zA-Z_])")
+
+
+def _is_hashlike(prefix, tok):
+    if prefix:
+        return True
+    low = tok.lower()
+    if not any(c in low for c in "abcdf"):
+        # only digits, or digits plus a lone `e` — that is a number or an
+        # exponent, not a digest.
+        return False
+    try:
+        float(tok)
+        return False
+    except ValueError:
+        return True
 NUM_RE = re.compile(r"(?<![\w.])(-|−)?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\w])")
 DATE_RE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
 # Author-declared provenance: 98.78% [[22361/22637*100]]. Every literal in the
@@ -198,7 +224,8 @@ def load_sources(paths):
             if d is not None:
                 numbers.add(d)
         for m in HEX_RE.finditer(s):
-            hexes.add(m.group(2).lower())
+            if _is_hashlike(m.group(1), m.group(2)):
+                hexes.add(m.group(2).lower())
         for m in DATE_RE.finditer(s):
             dates.add(m.group(1))
     return numbers, hexes, dates, files
@@ -324,6 +351,10 @@ def check(draft_path, source_paths, derive_cap=400):
         for m in HEX_RE.finditer(line):
             tok = m.group(2)
             full = (m.group(1) or "") + tok
+            if not _is_hashlike(m.group(1), tok):
+                # A number, not a digest. Leave it unmasked so NUM_RE sees
+                # it and it can be backed or declared like any other figure.
+                continue
             masked = masked.replace(full, " " * len(full))
             low = tok.lower()
             arity = ARITY.get(len(full)) or ARITY.get(len(tok))
