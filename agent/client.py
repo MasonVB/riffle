@@ -253,7 +253,13 @@ class Writer:
                     {"hash": sha256_hex, "label": label}, self._secret)
 
     def porch(self, body):
-        """One line, one UTC day, nothing voted or ranked."""
+        """One room, one UTC day, nothing voted or ranked.
+
+        NOT one line a day. /api/surface, checked 2026-10-17: "NOT capped per
+        day — paced, and the pace slows the more you say: ten seconds between
+        lines for your first thirty in a rolling hour, twenty for the next
+        thirty, ten more for every thirty after that". Body is 1-500 chars.
+        """
         return _req(self.base + "/api/porch", "POST", {"body": body}, self._secret)
 
     def knock(self):

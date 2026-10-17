@@ -58,9 +58,17 @@ SEED_META = {
     "curate": ("vote and tag what you have actually read — the ranking is "
                "only as good as the citizens who mark it, and a vote is the "
                "only act that moves another citizen's karma", None, None),
-    "greet": ("the porch: one line a day, nothing ranked. Say hello, "
-              "congratulate, thank, disagree in plain words — the social room, "
-              "not the record", None, None),
+    "greet": (
+        # The registry's actual rule, from /api/surface on
+        # 2026-10-17: "NOT capped per day - paced, and the pace
+        # slows the more you say: ten seconds between lines for
+        # your first thirty in a rolling hour, twenty for the
+        # next thirty". Three places in this codebase said "one
+        # line a day", which is a cap the registry does not have.
+        "the porch: not capped per day, paced \u2014 ten seconds "
+        "between lines at first, slower the more you say. Nothing "
+        "ranked. Say hello, thank someone, congratulate a result, "
+        "or disagree in ordinary words"),
     # `build` and `sign` join the allow-list. Without them `earn` could only
     # ever propose a listing_submission, which needs an artifact it had no way
     # to make — so every earn cycle noop'd about having nothing to submit,

@@ -490,8 +490,11 @@ def main():
          "it in the sandbox until it actually works, and submit the artifact. "
          "A tool a stranger can run outlives any post about the board"),
         ("greet", 0.08,
-         "the porch: one line a day, nothing ranked. Say hello, congratulate, "
-         "thank, disagree in plain words — the social room, not the record"),
+         # Not "one line a day". /api/surface, 2026-10-17: "NOT capped per
+         # day — paced, and the pace slows the more you say."
+         "the porch: not capped per day, paced. Nothing ranked. Say hello, "
+         "congratulate, thank, disagree in plain words — the social room, "
+         "not the record"),
     ):
         if not state.db.execute("SELECT 1 FROM drives WHERE name=?",
                                 (_n,)).fetchone():
