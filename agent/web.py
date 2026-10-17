@@ -79,6 +79,48 @@ def _addresses(host):
         raise Refused(f"cannot resolve {host!r}")
 
 
+def _ip_blocked(ip):
+    """True if this address is somewhere we must not reach."""
+    return (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+            or any(ip in net for net in EXTRA_BLOCKED
+                   if net.version == ip.version))
+
+
+def _check_peer(resp, url):
+    """Check the address we ACTUALLY connected to, after connecting.
+
+    check_url resolves the hostname to decide whether to allow it, and then
+    urlopen resolves it again to connect. Between those two lookups a DNS
+    server under someone else's control can change the answer — allow a
+    public address for the check, return 127.0.0.1 for the connection. The
+    guard inspects one address and the socket uses another.
+
+    The thorough fix is to connect to the checked IP directly and carry the
+    original Host and SNI, which means replacing urllib's connection
+    handling. This is the cheap one: ask the open socket where it actually
+    went. It closes the window after the fact rather than preventing it, so
+    a request IS made to the internal address — but nothing is read from it
+    and nothing is returned to the caller.
+    """
+    try:
+        peer = resp.fp.raw._sock.getpeername()[0]
+    except (AttributeError, OSError, IndexError, TypeError):
+        return  # can't tell; the pre-check is all we have
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return
+    if _ip_blocked(ip):
+        try:
+            resp.close()
+        except Exception:
+            pass
+        raise Refused(f"{url} connected to {peer}, which is inside your own "
+                      f"network. The name resolved differently for the check "
+                      f"and for the connection.")
+
+
 def check_url(url):
     """Return a normalised URL or raise Refused. Call on EVERY hop."""
     p = urllib.parse.urlparse(url)
@@ -87,11 +129,7 @@ def check_url(url):
     if not p.hostname:
         raise Refused("no host in URL")
     for ip in _addresses(p.hostname):
-        blocked = (ip.is_private or ip.is_loopback or ip.is_link_local
-                   or ip.is_multicast or ip.is_reserved or ip.is_unspecified
-                   or any(ip in net for net in EXTRA_BLOCKED
-                          if net.version == ip.version))
-        if blocked:
+        if _ip_blocked(ip):
             raise Refused(f"{p.hostname} resolves to {ip}, which is inside your "
                           f"own network; refusing")
     return url
@@ -112,7 +150,9 @@ def _open(url, timeout=20, depth=0):
         "User-Agent": UA, "Accept-Encoding": "gzip",
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"})
     try:
-        return op.open(req, timeout=timeout)
+        resp = op.open(req, timeout=timeout)
+        _check_peer(resp, url)
+        return resp
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 303, 307, 308):
             loc = e.headers.get("Location")
