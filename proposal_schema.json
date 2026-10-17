@@ -772,7 +772,17 @@
           "type": "object",
           "properties": {
             "what": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "docket",
+                "listings",
+                "screen_notices",
+                "events",
+                "attestations",
+                "checkpoint",
+                "witnesses",
+                "my_history"
+              ]
             }
           },
           "required": [
@@ -843,7 +853,12 @@
           "type": "object",
           "properties": {
             "kind": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "payout",
+                "seal",
+                "attest"
+              ]
             },
             "row": {
               "type": "string"
@@ -861,9 +876,6 @@
               "type": "string"
             },
             "claim": {
-              "type": "string"
-            },
-            "bytes": {
               "type": "string"
             }
           },
