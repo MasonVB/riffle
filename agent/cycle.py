@@ -309,6 +309,11 @@ def do_witness(state, reader, log, max_pages=8):
             level="warn", drive="witness")
         return att
 
+    # What actually MOVED, so the chat line can be about news.
+    _moved_marks = [n for n, (head, through) in fresh.items()
+                    if not prior.get(n)
+                    or prior[n]["head"] != head
+                    or str(prior[n]["through_id"]) != str(through)]
     for name, (head, through) in fresh.items():
         state.save_head(name, head, through)
     saved = [f"{n}@{t}" for n, (_, t) in sorted(fresh.items())]
@@ -322,9 +327,19 @@ def do_witness(state, reader, log, max_pages=8):
     # the three weeks when identity was not being verified at all — a daily
     # public assertion of a check that was not happening, on a board whose
     # subject is checkable claims.
-    state.say("report", "Witness pass: " + ", ".join(saved)
-              + ". Both chains verified from the saved marks forward.",
-              {"drive": "witness"})
+    # ONLY WHEN SOMETHING CHANGED.
+    #
+    # About 96 passes a day, each posting an identical line, so the chat
+    # window was mostly this. Worse, a wall of "Witness pass: ..." reads as
+    # activity, and for three weeks it was being posted while the identity
+    # chain was not being verified at all — the noise was the camouflage.
+    #
+    # The journal still records every pass; that is where a complete record
+    # belongs. Chat gets the news: a mark that moved, or nothing.
+    if _moved_marks:
+        state.say("report", "Witness pass: " + ", ".join(saved)
+                  + ". Both chains verified from the saved marks forward.",
+                  {"drive": "witness"})
     return att
 
 def main():
