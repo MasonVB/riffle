@@ -95,9 +95,8 @@ def _files(v):
 # alone. The desk is twelve slots with eviction; the library is permanent and
 # searchable. A draft is exactly the kind of thing you want in the second one,
 # and there was no reason beyond this tuple that it could not be.
-# Imported, not duplicated. The local copy gained "draft" while
-# library.KINDS did not, so the gate accepted what the library then refused.
-from agent.library import KINDS as _LIB_KINDS  # noqa: E402
+_LIB_KINDS = ("note", "code", "page", "thread", "post", "data", "reference",
+              "draft")
 
 _DESK_KINDS = ("draft", "thread", "build", "question", "artifact",
                "reminder", "scrap")
@@ -196,7 +195,10 @@ SCHEMA = {
     # 1200 rather than 500: two cycles were spent producing reasoning that was
     # then thrown away for being 168 characters over an arbitrary ceiling. A
     # declining-to-act explanation is the one output worth reading in full.
-    "noop": ([], ["why"], lambda p: {"why": _trim(p.get("why", "nothing worth doing"), 0, 1200, "why")}),
+    # why is REQUIRED, matching the grammar. A noop with no stated reason
+    # is exactly the move riffle made for 179 hours on a finished project;
+    # making it say why is cheap and the schema already demanded it.
+    "noop": (["why"], [], lambda p: {"why": _trim(p.get("why", "nothing worth doing"), 0, 1200, "why")}),
     # --- reflexive actions: the agent acting on itself rather than the square
     "adjust_drive": (["name", "weight", "reason"], [],
                      lambda p: {"name": _s(p["name"], 2, 24, "name").lower(),

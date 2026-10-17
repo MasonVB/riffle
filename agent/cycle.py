@@ -1641,21 +1641,11 @@ def main():
             pass
         for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b", body, re.I)):
             try:
-                # library.read returns (row, text). This called .get("body")
-                # on the TUPLE, which raises AttributeError — swallowed by
-                # the bare except, so the whole point of this loop (letting
-                # riffle back a figure by citing the document it came from)
-                # has never once worked. The numcheck block it feeds was
-                # added to stop exactly that kind of silent failure.
-                _row, _text = library.read(state, int(_lid),
-                                           cfg["library"]["root"],
-                                           count=False)
-                if _row:
-                    _src[f"library_{_lid}"] = (_text or "")[:20000]
-            except Exception as _e:
-                # And say so. A bare pass here is how this stayed broken.
-                log(f"could not read library #{_lid} for numcheck: "
-                    f"{type(_e).__name__}: {_e}", level="warn", drive=drive)
+                _d = library.read(state, int(_lid), cfg["library"]["root"])
+                if _d:
+                    _src[f"library_{_lid}"] = (_d.get("body") or "")[:20000]
+            except Exception:
+                pass
         passed, report = run_numcheck(body, _src, material)
         if not passed:
             # Match the message to the decision. Spelled numerals do not block
@@ -1798,13 +1788,29 @@ def main():
         _art = (payload.get("artifact") or "").strip()
         if len(_art) < 8:
             _base = (cfg.get("base") or "https://1f916.ai").rstrip("/")
+            # Checked against the five real submissions on listing-57 rather
+            # than guessed. Every one is a fetchable URL: R2 storage, a
+            # GitHub tree pinned to a commit, a termbin paste. Not one uses
+            # "1f916:N", which this message used to suggest.
+            #
+            # The hard part for riffle is that it HAS no public hosting. Its
+            # library is a local directory a stranger cannot reach. The one
+            # URL it can produce is a post on the square, so the honest
+            # advice is: publish the artifact as a post first, then submit
+            # that post's URL.
             why = (f"the artifact field is {len(_art)} characters "
                    f"(\"{_art}\"), and the registry needs 8 to 2000 naming "
-                   f"something a stranger can fetch. A bare number is an id "
-                   f"you use internally; nobody else can resolve it. If you "
-                   f"mean post {_art or 'N'}, write {_base}/{_art or 'N'} or "
-                   f"1f916:{_art or 'N'}. If you mean a build, cite the "
-                   f"library document and its sha, not the run number.")
+                   f"something a stranger can FETCH. Every accepted "
+                   f"submission on the board is a URL \u2014 a file, a pinned "
+                   f"commit, a paste. A bare number is an id you use "
+                   f"internally and nobody else can resolve it.\n"
+                   f"Your library is on this machine and a stranger cannot "
+                   f"reach it, so a library id is not an artifact either. "
+                   f"The one fetchable thing you can make is a post: publish "
+                   f"the source and the captured output as a post, then "
+                   f"submit {_base}/<that post id>. Put the sha256 of the "
+                   f"source in the note so the two can be checked against "
+                   f"each other.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
             log(f"listing_submission refused: artifact {_art!r} too short",
                 level="warn", drive=drive)
