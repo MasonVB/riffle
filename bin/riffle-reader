@@ -172,7 +172,8 @@ ALLOWED = {
     "www.urban.org", "www.usa.gov", "www.usda.gov", "www.usgbc.org",
     "www.usgs.gov", "www.ushmm.org", "www.uspto.gov", "www.ustravel.org",
     "www.w3.org", "www.whitehouse.gov", "www.who.int", "www.wolfram.com",
-    "www.wri.org", "www.wttc.org", "zbmath.org", "zbmath.org"
+    "www.wri.org", "www.wttc.org", "zbmath.org", "zbmath.org",
+    "readthedocs.io"
 }
 
 
@@ -193,10 +194,27 @@ def die(msg, code=2):
 # the same editorial control. If a needed host is missing, add the exact host
 # rather than opening its parent.
 SUBDOMAINS_OK = frozenset({
+    # Government and treaty bodies, where every subdomain is the same
+    # publisher under the same editorial control.
     "nih.gov", "nasa.gov", "noaa.gov", "usgs.gov", "cdc.gov", "nist.gov",
-    "europa.eu", "who.int", "un.org", "ac.uk", "edu.au",
-    "wikipedia.org", "wikimedia.org", "python.org", "readthedocs.io",
-    "mozilla.org", "w3.org", "ietf.org", "rfc-editor.org",
+    "europa.eu", "who.int", "un.org",
+    # Standards bodies that publish only from their own subdomains.
+    "ietf.org", "rfc-editor.org",
+    # REMOVED, and why — each let in something a stranger can edit:
+    #   wikipedia.org   every language edition, including ones with no
+    #                   active moderation; the allowlist wants en only
+    #   wikimedia.org   commons.wikimedia.org is user-uploaded
+    #   python.org      wiki.python.org is an open wiki
+    #   mozilla.org     wiki.mozilla.org is an open wiki
+    #   w3.org          lists.w3.org is public mailing-list archives
+    #   ac.uk           every personal page of every UK academic
+    #   edu.au          the same for Australia
+    #   readthedocs.io  anyone can publish a project there
+    #
+    # This whole list was my fix for the Wayback bypass, and it reopened
+    # six holes while closing one. A subdomain wildcard is only safe where
+    # the parent controls every child; "reputable organisation" is not the
+    # same property. Exact hosts go in ALLOWED instead.
 })
 
 
