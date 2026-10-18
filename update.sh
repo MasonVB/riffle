@@ -331,6 +331,73 @@ then
   exit 1
 fi
 
+# --- gate 8: every protected prompt header is a header something emits ----
+#
+# _NEVER_TRIM protects prompt blocks from the trimmer by matching the first
+# 400 characters of each block against a list of header strings. P9 reworded
+# "EVERYTHING THAT CAN STOP AN ACTION" to "WHAT CAN STOP AN ACTION" and the
+# list was not touched, so that block silently lost its protection and
+# started being cut again — the exact failure the list exists to prevent,
+# and invisible because trimming is supposed to happen.
+#
+# A protected header that no code emits protects nothing.
+if ! python3 - <<'PYTRIM'
+import glob
+import sys
+
+sys.path.insert(0, ".")
+try:
+    from agent.cycle import _NEVER_TRIM
+except Exception as e:
+    print(f"  could not import _NEVER_TRIM: {e}")
+    sys.exit(0)
+# Comments do not count. The first version of this gate counted every
+# occurrence, and the explanatory comment above _NEVER_TRIM names the
+# headers — so a header could be orphaned and still score two. A gate that
+# counts its own documentation as evidence is the thing it exists to catch.
+body = ""
+for path in glob.glob("agent/*.py"):
+    try:
+        for line in open(path):
+            if line.lstrip().startswith("#"):
+                continue
+            body += line
+    except OSError:
+        pass
+# The tuple itself is one occurrence; an emitted block is another.
+# Comments stripped here too. _NEVER_TRIM has explanatory comments INSIDE
+# it that name the headers; counting those in the tuple but not in the body
+# made the subtraction negative and reported every header as orphaned. The
+# two counts must be taken over the same text.
+tuple_src = ""
+src = open("agent/cycle.py").read()
+i = src.find("_NEVER_TRIM = (")
+if i >= 0:
+    depth, j = 0, src.index("(", i)
+    for j in range(src.index("(", i), len(src)):
+        if src[j] == "(":
+            depth += 1
+        elif src[j] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+    tuple_src = "".join(ln for ln in src[i:j].splitlines(keepends=True)
+                        if not ln.lstrip().startswith("#"))
+bad = []
+for header in _NEVER_TRIM:
+    emitted = body.count(header) - tuple_src.count(header)
+    if emitted < 1:
+        bad.append(header)
+for b in bad:
+    print(f"  ORPHAN PROTECTED HEADER {b!r}: nothing emits a block with this")
+sys.exit(1 if bad else 0)
+PYTRIM
+then
+  echo "!! a protected prompt header matches nothing; rolling back"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
