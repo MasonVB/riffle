@@ -489,15 +489,7 @@ class Handler(BaseHTTPRequestHandler):
     def _card_for(self, aid):
         """Find the chat card that announced this action, so it can be updated
         in place rather than answered by a second card beside it."""
-        for m in self.state.db.execute(
-                "SELECT id, meta FROM messages WHERE role='proposal'"
-                " ORDER BY id DESC LIMIT 200"):
-            try:
-                if (json.loads(m["meta"]) or {}).get("action_id") == aid:
-                    return m["id"], json.loads(m["meta"])
-            except Exception:
-                continue
-        return None, None
+        return card_for(self.state, aid)
 
     def reap_stuck_sends(self, older_than_minutes=20):
         """Close out actions left mid-send. Returns how many.
@@ -526,13 +518,7 @@ class Handler(BaseHTTPRequestHandler):
         return len(rows)
 
     def _update_card(self, aid, **fields):
-        mid, meta = self._card_for(aid)
-        if mid is None:
-            return
-        meta.update(fields)
-        self.state.db.execute("UPDATE messages SET meta=? WHERE id=?",
-                              (json.dumps(meta), mid))
-        self.state.db.commit()
+        update_card(self.state, aid, **fields)
 
     def decide(self, aid, verdict):
         s = self.state
@@ -809,14 +795,14 @@ def main():
             " WHERE status='sending'")
         st.db.commit()
         for _r in _stuck:
-            Handler.state = st
             try:
-                Handler._update_card(Handler, _r["id"], status="unknown",
-                                     error="the dash restarted mid-send. This "
-                                           "may or may not have reached the "
-                                           "square — check before retrying.")
-            except Exception:
-                pass
+                update_card(st, _r["id"], status="unknown",
+                            error="the dash restarted mid-send. This may or "
+                                  "may not have reached the square — check "
+                                  "before retrying.")
+            except Exception as _e:
+                st.log(f"could not update the card for #{_r['id']}: {_e}",
+                       level="warn")
         print(f"closed {len(_stuck)} action(s) left mid-send")
         st.log(f"startup: {len(_stuck)} action(s) were in flight when the dash "
                f"stopped. Marked unknown: whether they reached the registry "
@@ -972,6 +958,38 @@ def request_cycle_run(state, why=""):
         state.say("error", f"could not request a cycle: {e}")
         state.log(f"cycle request failed: {e}", level="error")
         return False
+
+
+def card_for(state, aid):
+    """Find the chat card that announced this action.
+
+    Module level and taking `state`, so callers outside the handler can use
+    it. The dash's own startup sweep called Handler._update_card(Handler,
+    ...) — passing the CLASS as self, so _card_for received the action id as
+    self and raised TypeError, swallowed by `except Exception: pass`. The
+    sends were correctly marked unknown and their cards kept reading
+    "sending..." forever, which is the half of C12 that was supposed to fix
+    exactly that.
+    """
+    for m in state.db.execute(
+            "SELECT id, meta FROM messages WHERE role='proposal'"
+            " ORDER BY id DESC LIMIT 200"):
+        try:
+            if (json.loads(m["meta"]) or {}).get("action_id") == aid:
+                return m["id"], json.loads(m["meta"])
+        except Exception:
+            continue
+    return None, None
+
+
+def update_card(state, aid, **fields):
+    mid, meta = card_for(state, aid)
+    if mid is None:
+        return
+    meta.update(fields)
+    state.db.execute("UPDATE messages SET meta=? WHERE id=?",
+                     (json.dumps(meta), mid))
+    state.db.commit()
 
 
 def _uptime_report():
