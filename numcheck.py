@@ -86,7 +86,18 @@ def _is_hashlike(prefix, tok):
         return False
     except ValueError:
         return True
-NUM_RE = re.compile(r"(?<![\w.])(-|−)?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\w])")
+# The exponent is part of the number.
+#
+# Without it, 3.3333333333333335e-05 was never one figure: NUM_RE matched
+# "3.3333333333333335" and then "05", so the value itself was never checked
+# against anything. G2 stopped the mantissa being read as a hash and left it
+# split into two numbers instead, which is a false negative where there had
+# been a false positive. An invented rate in e-notation could pass.
+NUM_RE = re.compile(
+    r"(?<![\w.])(-|−)?"
+    r"(\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+    r"|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+    r"(?![\w])")
 DATE_RE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
 # Author-declared provenance: 98.78% [[22361/22637*100]]. Every literal in the
 # expression must itself occur in a source, and the result must equal the

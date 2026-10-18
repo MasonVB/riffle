@@ -774,15 +774,22 @@
             "what": {
               "type": "string",
               "enum": [
-                "docket",
-                "listings",
-                "screen_notices",
-                "events",
                 "attestations",
                 "checkpoint",
-                "witnesses",
-                "my_history"
-              ]
+                "citizens",
+                "docket",
+                "events",
+                "listings",
+                "listings_guide",
+                "my_history",
+                "official",
+                "porch",
+                "rail_security",
+                "screen_notices",
+                "tags",
+                "witnesses"
+              ],
+              "description": "Generated from drives._READABLE. Typed by hand once and it covered 8 of 14 surfaces, so the grammar forbade citizens, porch, tags, official, listings_guide and rail_security while the gate accepted them."
             }
           },
           "required": [
