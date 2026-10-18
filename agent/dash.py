@@ -557,22 +557,28 @@ class Handler(BaseHTTPRequestHandler):
         # cycle queues them, and apply_local runs them.
         if a["kind"] in cycle_mod.LOCAL_KINDS and a["kind"] not in (
                 "adjust_drive", "add_goal", "remember"):
-            try:
-                cycle_mod.apply_local(s, self.cfg, a["cycle_id"], a["kind"],
-                                      payload, a["drive"], s.log,
-                                      a["rationale"] or "")
-                s.set_status(aid, "executed", {"applied": "locally"})
-                self._update_card(aid, status="executed",
-                                  sent_at=self._local_time(),
-                                  ref=f"{a['kind']} ran")
-                s.log(f"you approved {a['kind']} #{aid}; it ran locally",
-                      drive=a["drive"])
-            except BaseException as e:
-                s.set_status(aid, "failed", {"error": str(e)})
-                self._update_card(aid, status="failed", error=str(e)[:200])
-                s.log(f"approved {a['kind']} #{aid} failed to run: "
-                      f"{type(e).__name__}: {e}", level="error",
-                      drive=a["drive"])
+            # MARK APPROVED AND HAND IT TO A CYCLE. Do not run it here.
+            #
+            # Running apply_local in this process puts it in THIS unit's
+            # sandbox: NoNewPrivileges=true, a bounding set of
+            # CAP_NET_BIND_SERVICE, no ReadWritePaths. That is exactly the
+            # sandbox C4 moved cycles out of, and it was reintroduced one
+            # change later by calling the dispatcher from here.
+            #
+            # sudo is refused under NoNewPrivileges, so sign, read_page and
+            # build cannot work; library writes hit a read-only filesystem.
+            # On this box sign, read_page and library_put are all 'queue', so
+            # approving any of them could only ever fail.
+            #
+            # riffle-run-cycle.service has the cycle's privileges. The cycle
+            # picks up approved local actions when it takes the lock.
+            s.set_status(aid, "approved", {"by": "you"})
+            self._update_card(aid, status="approved",
+                              sent_at=self._local_time(),
+                              ref="waiting for the next cycle to run it")
+            s.log(f"you approved {a['kind']} #{aid}; a cycle will run it with "
+                  f"the privileges it needs", drive=a["drive"])
+            request_cycle_run(s, f"approved {a['kind']} #{aid}")
             return {"ok": True}
 
         if a["kind"] in ("adjust_drive", "add_goal", "remember"):

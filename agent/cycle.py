@@ -402,6 +402,46 @@ def main():
 
     goals.seed(state, cfg)
     project.ensure(state)
+
+    # --- run what the operator approved, with this process's privileges ----
+    #
+    # The dashboard marks an approved local action and asks for a cycle; it
+    # cannot run one itself, because riffle-dash.service has
+    # NoNewPrivileges=true and no ReadWritePaths. Here sudo works, the
+    # library is writable, and riffle-sign is reachable.
+    #
+    # Each gets its own cycle row so apply_* writes its outcome against a
+    # cycle that belongs to it, rather than against whichever cycle happened
+    # to propose it days ago.
+    try:
+        _approved = state.db.execute(
+            "SELECT * FROM actions WHERE status='approved' AND kind IN ("
+            + ",".join("?" * len(LOCAL_KINDS)) + ") ORDER BY id",
+            LOCAL_KINDS).fetchall()
+    except Exception as _e:
+        _approved = []
+        log(f"could not look for approved local actions: {_e}", level="warn")
+    for _row in _approved:
+        _acid = state.begin_cycle(_row["drive"] or "operator")
+        try:
+            apply_local(state, cfg, _acid, _row["kind"],
+                        json.loads(_row["payload"]), _row["drive"] or "operator",
+                        log, _row["rationale"] or "")
+            state.set_status(_row["id"], "executed", {"applied": "by cycle"})
+            log(f"ran {_row['kind']} #{_row['id']}, which you approved",
+                drive=_row["drive"])
+        except BaseException as _e:
+            state.set_status(_row["id"], "failed",
+                             {"error": f"{type(_e).__name__}: {_e}"})
+            log(f"approved {_row['kind']} #{_row['id']} failed: "
+                f"{type(_e).__name__}: {_e}", level="error", drive=_row["drive"])
+            state.say("error",
+                      f"The {_row['kind']} you approved (#{_row['id']}) could "
+                      f"not run: {type(_e).__name__}: {_e}")
+        finally:
+            if state.db.execute("SELECT ended_at FROM cycles WHERE id=?",
+                                (_acid,)).fetchone()["ended_at"] is None:
+                state.end_cycle(_acid, "executed", f"approved {_row['kind']}")
     # --- how often riffle wakes ------------------------------------------
     # The timer now fires every 5 minutes and this decides whether it is
     # actually time. The interval has to be settable from the dashboard, and
@@ -1600,7 +1640,17 @@ def main():
     # drift apart.
     if kind in LOCAL_KINDS:
         _m = (policy.modes(state) or {}).get(kind, "queue")
-        if _m == "queue" and not getattr(a, "force", False):
+        # NO FORCE CLAUSE. --force skips the INTERVAL gate; it was never
+        # meant to skip approval, and conflating the two opened a hole.
+        #
+        # riffle-run-cycle.service always passes --force, and it now runs the
+        # run-cycle button, the cycle after every approved send, and every
+        # request_cycle extra cycle. request_cycle is on auto. So riffle
+        # could request an extra cycle and, inside it, propose `sign` — which
+        # is set to queue on this box — and have it run with nobody asked.
+        #
+        # An operator-initiated cycle is not an operator approving an action.
+        if _m == "queue":
             aid = state.propose(cid, kind, drive, payload, rationale, "queued")
             log(f"{kind} #{aid} is queued; {kind} is set to 'queue' and needs "
                 f"your approval", drive=drive)
@@ -2286,7 +2336,14 @@ def walk_changes(state, reader, cfg, log):
 _NEVER_TRIM = (
     "HOW YOU TAKE PART HERE",
     "YOUR ACTUAL SITUATION",
-    "EVERYTHING THAT CAN STOP AN ACTION",
+    # The header this block actually carries since P9 reworded it. The old
+    # string stopped matching the moment it was reworded and the block was
+    # silently unprotected again.
+    #
+    # Listing BOTH forms was my first instinct and gate 8 refused it: an
+    # entry nothing emits protects nothing, and keeping one "just in case"
+    # is indistinguishable from the orphan the gate exists to catch.
+    "WHAT CAN STOP AN ACTION",
     "THE FIELDS THE API ACTUALLY RETURNS",
     "WAITING ON YOUR OPERATOR",
     "YOU HAVE BEEN STUCK ON THIS PROJECT",
