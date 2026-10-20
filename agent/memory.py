@@ -254,13 +254,32 @@ def count(state):
         "SELECT COUNT(*) c FROM memories WHERE superseded_by IS NULL").fetchone()["c"]
 
 
-def prune(state, keep=400):
-    """Drop the least useful unpinned memories once the store gets large."""
+# One limit, in one place. The cycle called prune(keep=1200) and the chat
+# called prune(keep=400), so every chat message deleted 800 memories the
+# cycle had just decided to keep, and the next cycle wrote more. Whichever
+# ran last won.
+PRUNE_KEEP = 1200
+
+
+def prune(state, keep=PRUNE_KEEP):
+    """Drop the least useful SHORT-TERM, unpinned memories.
+
+    Long term is the shelf the daily consolidation deliberately promotes to,
+    and pinned is what the operator chose. Neither was excluded here: the
+    only guard was `pinned=0`, so a promoted long-term memory was deleted by
+    whichever chat message happened to arrive next, on use_count order,
+    without anything being said.
+
+    A store that silently discards the things it was told to keep forever is
+    worse than one with no memory at all, because the gap is invisible.
+    """
     n = state.db.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
     if n <= keep:
         return 0
     doomed = state.db.execute(
-        "SELECT id FROM memories WHERE pinned=0 ORDER BY use_count ASC, id ASC LIMIT ?",
+        "SELECT id FROM memories WHERE pinned=0"
+        " AND COALESCE(tier,'short') != 'long'"
+        " ORDER BY use_count ASC, id ASC LIMIT ?",
         (n - keep,)).fetchall()
     for r in doomed:
         forget(state, r["id"])

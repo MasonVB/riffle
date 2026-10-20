@@ -168,7 +168,34 @@ def on_posted(state, cfg, action_id, log=None):
     """
     until = start_cooldown(state, int((cfg.get("projects") or {})
                                       .get("cooldown_hours", 24)))
-    proj = active(state)
+    # The project the POST came from, not whichever is active now.
+    #
+    # A post queued on Monday and approved on Wednesday used to close
+    # Wednesday's project. actions.project_id is written when the post is
+    # proposed; active() is the fallback for posts proposed before the
+    # column existed.
+    proj = None
+    if action_id:
+        try:
+            _r = state.db.execute(
+                "SELECT project_id FROM actions WHERE id=?",
+                (action_id,)).fetchone()
+            if _r and _r["project_id"]:
+                proj = state.db.execute(
+                    "SELECT * FROM projects WHERE id=?",
+                    (_r["project_id"],)).fetchone()
+        except Exception:
+            proj = None
+    if proj is None:
+        proj = active(state)
+    if proj and proj["status"] != "active":
+        # Already closed — by hand, or by a second approval of the same
+        # post. Closing it again would start the next queued project a
+        # second time.
+        if log:
+            log(f"'{proj['title']}' is already {proj['status']}; not closing "
+                f"it again")
+        return until, proj, None
     nxt = close_project(state, proj["id"], "posted", action_id) if proj else None
     if log:
         if proj:

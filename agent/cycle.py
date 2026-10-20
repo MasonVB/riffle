@@ -580,7 +580,7 @@ def main():
         memory.reflect(state, cfg, log)
     except Exception as e:
         log(f"reflection error: {e}", level="warn")
-    memory.prune(state, keep=1200)
+    memory.prune(state)
 
     consolidate.sweep(state, cfg, log)
     if consolidate.due(state, cfg):
@@ -1984,27 +1984,40 @@ def main():
     # stays out of the way: absence of a record is not evidence the id is
     # wrong, and this project has published on that too.
     if kind == "comment" and payload.get("parent_id") and payload.get("post_id"):
+        # COMMENTS_JSON, NOT THE RENDERED TEXT.
+        #
+        # `replies` is the formatted block shown in the prompt, and read_more
+        # REPLACES it with only the newest batch. After one read_more the
+        # top-voted comments vanish from this check and every reply to them
+        # is refused as "not on post" — which looks exactly like the model
+        # inventing ids, and is not.
+        #
+        # comments_json holds every comment stored at read time and is never
+        # overwritten by a later batch. It is structured, so no regex is
+        # needed: the last two bugs in this gate were both regexes written
+        # against a rendered string.
+        #
+        # This fix was written once before and is not in the tree. It was
+        # lost the same way the drives.py import was — overwritten by a
+        # later edit from a different working copy, with nothing to notice.
+        _seen = set()
+        _rd = None
         try:
             _rd = state.db.execute(
-                "SELECT replies FROM thread_reads WHERE post_id=?"
+                "SELECT id, replies FROM thread_reads WHERE post_id=?"
                 " ORDER BY id DESC LIMIT 1", (payload["post_id"],)).fetchone()
+            if _rd:
+                for _c in project.all_comments(state, _rd["id"]):
+                    _cid2 = _c.get("id") if isinstance(_c, dict) else None
+                    if _cid2 is not None:
+                        _seen.add(str(_cid2))
+                # Reads recorded before comments_json existed have none, so
+                # fall back to the rendered text for those.
+                if not _seen and (_rd["replies"] or "").strip():
+                    _seen = set(re.findall(r"\[c?(\d+)\]", _rd["replies"]))
         except Exception:
             _rd = None
-        if _rd and (_rd["replies"] or "").strip():
-            # \[c?(\d+)\] — the ids are stored WITH a c prefix.
-            #
-            # record_read writes them as "[c101424] roy-batty (0 votes): ..."
-            # and this looked for "[101424]", so it matched nothing, _seen
-            # was always empty, and EVERY reply carrying a parent_id was
-            # refused as "not on post N" — including the ones that were
-            # perfectly correct. Cycle 1588 used 101424, which read 89 shows
-            # on post 8372, and was refused anyway.
-            #
-            # So the five wrong-parent outcomes were not riffle picking bad
-            # ids. Four of them were this. I wrote a validator against a
-            # format I never looked at, and then built a second fix on top
-            # of it when it did not work.
-            _seen = set(re.findall(r"\[c?(\d+)\]", _rd["replies"] or ""))
+        if _rd and _seen:
             if str(payload["parent_id"]) not in _seen:
                 why = (f"comment {payload['parent_id']} is not on post "
                        f"{payload['post_id']}. The ids you can reply to there "
@@ -2121,8 +2134,16 @@ def main():
     mode = cfg["autonomy"].get(kind, "queue")
     if a.dry_run:
         mode = "queue"
+    # Record WHICH project a post came from, at proposal time.
+    #
+    # on_posted() closed whatever project was active when the post was SENT.
+    # `post` is on queue, so a post can sit for a day; approving it then
+    # closed that day's project, which may have had no notes and produced
+    # nothing, while the project that actually did the work stayed open.
     aid = state.propose(cid, kind, drive, payload, rationale,
-                        "queued" if mode == "queue" else "approved", report)
+                        "queued" if mode == "queue" else "approved", report,
+                        project_id=((project.active(state) or {}).get("id")
+                                    if kind == "post" else None))
 
     if mode == "queue":
         log(f"queued {kind} #{aid} for your approval: {rationale[:200]}", drive=drive)

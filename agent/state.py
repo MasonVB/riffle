@@ -28,7 +28,12 @@ CREATE TABLE IF NOT EXISTS actions (
   kind TEXT, drive TEXT, payload TEXT, rationale TEXT,
   status TEXT,               -- proposed | queued | approved | rejected | executed | failed | blocked
   numcheck TEXT, executed_at TEXT, response TEXT,
-  notified INTEGER DEFAULT 0);
+  notified INTEGER DEFAULT 0,
+  -- Which project this action came out of, written when it is proposed.
+  -- on_posted() used to close whatever project was ACTIVE when the post was
+  -- sent; a post queued on Monday and approved on Wednesday closed
+  -- Wednesday's project, which may have had no notes and produced nothing.
+  project_id INTEGER);
 
 CREATE TABLE IF NOT EXISTS caps (
   day_utc TEXT, kind TEXT, used INTEGER, PRIMARY KEY (day_utc, kind));
@@ -283,12 +288,21 @@ class State:
         return self.db.execute("SELECT * FROM cycles ORDER BY id DESC LIMIT ?", (n,)).fetchall()
 
     # ---- actions ---------------------------------------------------------
-    def propose(self, cycle_id, kind, drive, payload, rationale, status, numcheck=None):
+    def _ensure_action_project_id(self):
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(actions)")}
+        if "project_id" not in cols:
+            self.db.execute("ALTER TABLE actions ADD COLUMN project_id INTEGER")
+            self.db.commit()
+
+    def propose(self, cycle_id, kind, drive, payload, rationale, status,
+                numcheck=None, project_id=None):
+        self._ensure_action_project_id()
         cur = self.db.execute(
-            "INSERT INTO actions (cycle_id,created_at,kind,drive,payload,rationale,status,numcheck)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO actions (cycle_id,created_at,kind,drive,payload,"
+            "rationale,status,numcheck,project_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (cycle_id, utcnow(), kind, drive, json.dumps(payload), rationale, status,
-             json.dumps(numcheck) if numcheck else None))
+             json.dumps(numcheck) if numcheck else None, project_id))
         self.db.commit()
         return cur.lastrowid
 

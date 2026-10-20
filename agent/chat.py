@@ -536,7 +536,10 @@ def answer(state, cfg, question, day):
                 state.finish(mid, {"elapsed_s": int(time.time() - started),
                                    "tools": tools_used, "recalled": len(recalled),
                                    "remembered": len(made)})
-            memory.prune(state, keep=400)
+            # No keep= here: memory.PRUNE_KEEP is the one limit. This said
+            # 400 while the cycle said 1200, so each chat message deleted
+            # 800 memories the cycle had just kept.
+            memory.prune(state)
         except Exception:
             pass
     except Exception as e:
