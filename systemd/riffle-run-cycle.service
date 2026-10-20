@@ -24,9 +24,13 @@ Type=oneshot
 User=riffle
 Group=riffle
 WorkingDirectory=/opt/riffle
-# Clear the flag first so the path unit re-arms, and so a cycle that
-# fails does not leave it looping.
-ExecStartPre=/bin/rm -f /var/lib/riffle/run-cycle.request
+# NO ExecStartPre. The flag used to be deleted here, before the cycle tried
+# the lock — so when a cycle was already running, the forced cycle exited
+# ("a cycle is already running") and the request was gone. The button and
+# the post-approval cycle did nothing, and the dash still said "ok".
+#
+# agent/cycle.py removes the file itself, AFTER taking the lock. A blocked
+# request stays on disk and the path unit fires again while it is there.
 # --force skips the INTERVAL check, which is the entire reason for
 # asking. It does not skip the cycle lock, which is taken inside main()
 # and is what stops two cycles overlapping; a requested cycle arriving
