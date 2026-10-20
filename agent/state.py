@@ -253,8 +253,18 @@ class State:
         return cur.lastrowid
 
     def end_cycle(self, cid, outcome, notes=""):
-        self.db.execute("UPDATE cycles SET ended_at=?, outcome=?, notes=? WHERE id=?",
-                        (utcnow(), outcome, notes, cid))
+        # AND ended_at IS NULL: a cycle is ended once.
+        #
+        # An action approved hours later runs apply_* against the cycle that
+        # PROPOSED it, and apply_* calls end_cycle. That rewrote a cycle
+        # which finished long ago: its outcome changed from "queued" to the
+        # new one and its end time jumped to now, so the record showed a
+        # cycle that had run for hours. The history is the thing the audit
+        # trail is for.
+        self.db.execute(
+            "UPDATE cycles SET ended_at=?, outcome=?, notes=?"
+            " WHERE id=? AND ended_at IS NULL",
+            (utcnow(), outcome, notes, cid))
         self.db.commit()
         # Every cycle leaves a line in the chat, not only the ones that had
         # something eloquent to say. Reflexive outcomes used to end in silence

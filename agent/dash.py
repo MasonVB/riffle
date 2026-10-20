@@ -1259,6 +1259,18 @@ def _goals_routes(h):
             # SENDING is not dismissable. The request is on the wire; if it
             # completes a second later the row flips to executed and you have
             # been told "It was not sent" about something that was.
+            # UNKNOWN is not dismissable either. Dismissing set it to
+            # `rejected`, and the duplicate checks count `unknown` but not
+            # `rejected` — so clearing the card off your screen is the thing
+            # that lets riffle resend a comment that may already be on the
+            # square. The card is in the way; the risk is real.
+            if row["status"] == "unknown":
+                return h._json({
+                    "error": "that one may already be on the square. It was "
+                             "sent and the reply was lost, so dismissing it "
+                             "would let riffle send it again. Check the "
+                             "square: if it is not there, approve it again; "
+                             "if it is, nothing more is needed."}) or True
             if row["status"] == "sending":
                 return h._json({
                     "error": "that one is being sent right now. Wait for it "

@@ -388,6 +388,20 @@ def main():
         log("a cycle is already running (it holds the lock); this wake stops "
             "here", level="info")
         return 0
+    # The run request is cleared HERE, with the lock held.
+    #
+    # riffle-run-cycle.service used to delete it in ExecStartPre, before this
+    # process tried the lock. A request arriving while a cycle was running
+    # was therefore consumed by a wake that immediately exited, and the work
+    # was simply lost — silently, with the dashboard reporting success.
+    #
+    # Clearing it after the lock means a blocked request is still on disk
+    # when the path unit looks again.
+    try:
+        os.unlink(os.path.join("/var/lib/riffle", "run-cycle.request"))
+    except OSError:
+        pass
+
     _orphans = state.db.execute(
         "SELECT id, started_at FROM cycles WHERE ended_at IS NULL").fetchall()
     if _orphans:
@@ -1204,11 +1218,15 @@ def main():
     # Riffle commented four times on one post without ever being shown that it
     # had. The prompt described the board and its own project in detail and
     # said nothing about its own recent voice on that board.
+    # 'unknown' included: it was sent and the reply was lost, so it may well
+    # be on the square. Leaving it out meant riffle was not shown its own
+    # possibly-landed comment, wrote it again, and spent the cycle being
+    # refused by the duplicate check — which DOES count unknown.
     _said = state.db.execute(
-        "SELECT kind, created_at, payload, rationale FROM actions"
+        "SELECT kind, created_at, payload, rationale, status FROM actions"
         " WHERE kind IN ('comment','post','porch') AND status IN"
-        " ('sent','executed','approved','queued') ORDER BY id DESC LIMIT 8"
-    ).fetchall()
+        " ('sent','executed','approved','queued','unknown')"
+        " ORDER BY id DESC LIMIT 8").fetchall()
     if _said:
         _lines = []
         for r in _said:
@@ -1218,9 +1236,14 @@ def main():
                 pl = {}
             where = (f"on #{pl['post_id']}" + (" (reply)" if pl.get("parent_id")
                      else " (top level)")) if pl.get("post_id") else "on the porch"
+            _mark = (" (sent, but the reply was lost \u2014 it may or may not "
+                     "be on the square)" if r["status"] == "unknown"
+                     else " (waiting for approval)" if r["status"] == "queued"
+                     else "")
             _lines.append(f"  {r['created_at'][:16]} {r['kind']} {where}: "
                           + " ".join((pl.get("body") or pl.get("title") or
-                                      r["rationale"] or "").split())[:160])
+                                      r["rationale"] or "").split())[:160]
+                          + _mark)
         parts.append(
             "WHAT YOU HAVE ALREADY SAID, most recent first:\n"
             + "\n".join(_lines)
@@ -1906,8 +1929,15 @@ def main():
         # re.I: riffle writes "SHA" in capitals. Without it this matched
         # nothing and the check never fired on the exact case it exists for.
         _claims = re.findall(
-            r"\b(?:sha(?:-?256)?|hash|digest|checksum)\b[\s:=]*`?"
-            r"([0-9a-fA-F]{8,64})`?", _body, re.I)
+            # {7,64} and `commit`. The pattern demanded 8+ hex characters
+            # while the comment above it gives "SHA abc1234" — seven — as
+            # its own example of what it catches, and the keyword list
+            # omitted the word every git reference uses. "my build is sha
+            # 96b8ed6" and "commit 96b8ed6f12" both produced no claim at
+            # all, so the check that exists for unresolvable self-citations
+            # missed the two commonest ways of writing one.
+            r"\b(?:sha(?:-?256)?|hash|digest|checksum|commit)\b[\s:=]*`?"
+            r"([0-9a-fA-F]{7,64})`?", _body, re.I)
         if _claims and re.search(
                 r"\b(my (simulation|build|script|artifact)|solve\.py)\b",
                 _body, re.I):

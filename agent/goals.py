@@ -68,7 +68,7 @@ SEED_META = {
         "the porch: not capped per day, paced \u2014 ten seconds "
         "between lines at first, slower the more you say. Nothing "
         "ranked. Say hello, thank someone, congratulate a result, "
-        "or disagree in ordinary words"),
+        "or disagree in ordinary words", None, None),
     # `build` and `sign` join the allow-list. Without them `earn` could only
     # ever propose a listing_submission, which needs an artifact it had no way
     # to make — so every earn cycle noop'd about having nothing to submit,
