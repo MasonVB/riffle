@@ -562,8 +562,28 @@ def reflect(state, cfg, log=None):
         out = cortex.complete(cfg["llm"]["triage"], REFLECT_PROMPT,
                               "\n\n".join(material)[:7000], timeout=900)
     except Exception as e:
+        # GIVE UP ON A CYCLE AFTER THREE TRIES.
+        #
+        # Reflection takes the OLDEST unreflected cycle and only advances the
+        # marker on success, so one cycle whose triage call always fails
+        # blocks every later one forever. The "N cycles behind" log grows and
+        # nothing moves. A cycle whose material is too large, or that trips
+        # some parse failure, would stall reflection permanently.
+        #
+        # Three attempts, then skip it and say so. Losing one cycle's notes
+        # is a small cost; losing every cycle after it is not.
+        _key = f"reflect_fail_{cid}"
+        _n = int(state.note(_key) or 0) + 1
+        state.note(_key, str(_n))
         if log:
-            log(f"reflection failed: {e}", level="warn")
+            log(f"reflection on cycle {cid} failed ({_n} of 3): {e}",
+                level="warn")
+        if _n >= 3:
+            state.note("last_reflected_cycle", cid)
+            if log:
+                log(f"giving up on cycle {cid} after three failures; moving "
+                    f"on so later cycles are not blocked behind it",
+                    level="warn")
         return []
 
     durable, passing = _split_lists(out)

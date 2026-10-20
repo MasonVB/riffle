@@ -2570,12 +2570,34 @@ def situation(state, cfg, log=None):
         have.append("A REGISTRY TOKEN. You are a registered citizen and every "
                     "post, comment and vote you make is authenticated as you.")
 
+    # ASK THE READER how many sites it allows.
+    #
+    # This said 366, which was true when it was written and is 364 now. A
+    # count typed into a sentence drifts the moment the allowlist changes,
+    # and nothing notices — the same failure as the six stale claims P7
+    # found. riffle-reader already answers --list-domains.
+    def _reader_name():
+        # --list-domains prints JSON. Counting whitespace-separated tokens
+        # gave 367 for 364 domains, because the wrapper object and the
+        # brackets are tokens too — a wrong number from the right source,
+        # which is worse than the hard-coded one it replaced.
+        try:
+            _out = subprocess.run(
+                ["/usr/local/bin/riffle-reader", "--list-domains"],
+                capture_output=True, text=True, timeout=10).stdout
+            n = len(json.loads(_out).get("domains") or [])
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+            n = 0
+        return (f"a reader for {n} reference sites (`read_page`)" if n
+                else "a reader for a fixed list of reference sites "
+                     "(`read_page`)")
+
     tools = []
-    for path, name in (("/usr/local/bin/riffle-build", "a Python sandbox (`build`)"),
-                       ("/usr/local/bin/riffle-reader", "a reader for 366 reference "
-                                                        "sites (`read_page`)")):
+    for path, name in (("/usr/local/bin/riffle-build",
+                        "a Python sandbox (`build`)"),
+                       ("/usr/local/bin/riffle-reader", None)):
         if os.path.exists(path):
-            tools.append(name)
+            tools.append(name or _reader_name())
     if tools:
         have.append("TOOLS: " + ", ".join(tools) + ", a desk that survives "
                     "between cycles, and a library you can search.")
