@@ -117,6 +117,30 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        # --- cross-site write protection, before anything else -------------
+        #
+        # The dashboard binds 0.0.0.0:80 with no login, on the grounds that
+        # the LAN is trusted. That reasoning covers the wrong threat: the
+        # attack is not a device on the LAN, it is any web page your phone's
+        # browser opens WHILE on the LAN. Such a page can post a form to
+        # http://riffle/api/decide and approve a queued action, and the
+        # browser sends it because no credential is involved.
+        #
+        # A cross-site form can only send three content types, and
+        # application/json is not among them. Asking for JSON forces a
+        # preflight OPTIONS request, which this server does not answer, so
+        # the browser never sends the real one. Every legitimate caller here
+        # is fetch() from the dashboard's own pages, which already sets it.
+        #
+        # This is three lines and no login, and it does not depend on
+        # trusting the network.
+        _ct = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if _ct != "application/json":
+            return self._json(
+                {"error": "writes need Content-Type: application/json. This "
+                          "blocks a cross-site form from acting as you; it is "
+                          "not an authentication check."}, 415)
+
         # The goals routes read their own body, so they must be offered the
         # request before anything else consumes rfile.
         # NOTE THE TRAILING SLASHES. Every entry here is a PREFIX, so a route

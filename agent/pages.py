@@ -640,10 +640,25 @@ async function poll(){
     const r = await fetch('/api/messages?after=' + after);
     const d = await r.json();
     const stick = nearBottom();
+    // NEVER ADVANCE PAST AN UNFINISHED MESSAGE.
+    //
+    // This took the highest FINISHED id. A cycle report can land while a
+    // chat reply is still streaming, and it has the higher id — so `after`
+    // jumped past the reply, the next poll never asked for it again, and it
+    // sat half-written on screen until something else forced a re-render.
+    //
+    // The cursor is the last id we are sure is complete: one below the
+    // lowest unfinished message, or the highest finished id when everything
+    // is done.
+    let lowestUnfinished = Infinity, highestDone = after;
     for(const m of d.messages){
       render(m);
-      if(m.done) after = Math.max(after, m.id);
+      if(m.done) highestDone = Math.max(highestDone, m.id);
+      else lowestUnfinished = Math.min(lowestUnfinished, m.id);
     }
+    after = lowestUnfinished === Infinity
+      ? highestDone
+      : Math.min(highestDone, lowestUnfinished - 1);
     waitingCards = d.waiting_ids || [];
     const q = document.getElementById('p-queue');
     q.textContent = d.queued + ' waiting';
@@ -1372,14 +1387,56 @@ async function load(){
     '<button class=no onclick="go(\'reject\')">reject</button></div>';
 }
 async function go(v){
-  document.getElementById('body').innerHTML =
-    '<div class=done>' + (v === 'approve' ? 'sending&hellip;' : 'rejected') + '</div>';
-  await fetch('/api/decide', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({id:+P.get('id'), verdict:v})});
-  setTimeout(function(){
-    document.getElementById('body').innerHTML =
-      '<div class=done>' + (v === 'approve' ? '&#10003; sent' : '&#10005; not sent') +
-      '</div>'; }, 1200);
+  // ASK WHAT HAPPENED. This used to show "✓ sent" after a 1.2 second
+  // timer whatever the outcome — a registry refusal, a cap, a duplicate
+  // vote, a transport failure that left the result unknown. The one page
+  // you use to approve something from your phone was the one place that
+  // could not tell you it had failed.
+  const body = document.getElementById('body');
+  body.innerHTML = '<div class=done>' +
+    (v === 'approve' ? 'sending&hellip;' : 'rejecting&hellip;') + '</div>';
+  const id = +P.get('id');
+  try{
+    const r = await fetch('/api/decide', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: id, verdict: v})});
+    const out = await r.json();
+    if(out && out.error){
+      body.innerHTML = '<div class=done>&#10005; ' + esc(out.error) + '</div>';
+      return;
+    }
+  }catch(e){
+    body.innerHTML = '<div class=done>&#10005; could not reach riffle: ' +
+      esc(String(e)) + '</div>';
+    return;
+  }
+  // The send happens on a worker thread, so poll the real status rather
+  // than assuming. Ten tries at 700ms covers a normal registry round trip.
+  for(let i = 0; i < 10; i++){
+    await new Promise(r => setTimeout(r, 700));
+    let a;
+    // P.toString() keeps the link token; /api/action 403s without it, and
+    // the loop above it already uses the same form.
+    try{ a = await (await fetch('/api/action?' + P.toString())).json(); }
+    catch(e){ continue; }
+    const st = a && a.status;
+    if(st === 'executed' || st === 'sent'){
+      body.innerHTML = '<div class=done>&#10003; sent</div>'; return; }
+    if(st === 'rejected'){
+      body.innerHTML = '<div class=done>&#10005; not sent</div>'; return; }
+    if(st === 'failed'){
+      body.innerHTML = '<div class=done>&#10005; refused: ' +
+        esc((a.error || 'no reason given')) + '</div>'; return; }
+    if(st === 'unknown'){
+      body.innerHTML = '<div class=done>? it never reached the registry. ' +
+        'It may or may not have landed \u2014 check the square before ' +
+        'retrying.</div>'; return; }
+    if(st === 'approved'){
+      body.innerHTML = '<div class=done>&#10003; approved. A cycle will ' +
+        'run it.</div>'; return; }
+  }
+  body.innerHTML = '<div class=done>still sending after 7 seconds. ' +
+    'Check the chat for the outcome.</div>';
 }
 load();
 </script></body></html>"""
