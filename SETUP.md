@@ -121,9 +121,15 @@ suffix, and why `--cache-reuse` is in the unit file. Keep the prefix stable
 and you pay prefill once rather than on every wake. Editing cortex.py, the
 contract or the conduct guide invalidates it.
 
-This file used to quote 10–14 t/s and 40–90 t/s here, and README.md quoted
-8.5–8.8 and 36–37 for the same machine. Both were written from a single run
-and never checked again. Measure your own.
+On this machine, measured 2026-10-20 on an idle box: **pp512 37.88 ± 0.94**,
+**tg128 8.64 ± 0.01**. This file used to say 10–14 and 40–90, which was
+wrong; README.md's 8.5–8.8 and 36–37 were right. Expect roughly 38 t/s
+prefill and 8.6 t/s generation, and re-measure after any change to the
+hardware, the model or llama.cpp.
+
+At 38 t/s a cold 14,000-token prompt is about six minutes of prefill before
+a single token is generated. That is the number `max_prompt_chars` trades
+against.
 
 ---
 

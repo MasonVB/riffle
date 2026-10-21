@@ -70,7 +70,13 @@ cycle:
   # same thing is worse than no number — the settings page and this file
   # would have disagreed with the timer.
   # Hard ceiling on how much board text reaches the model in one cycle.
-  # Prefill is the expensive half on this CPU; this number is your latency dial.
+  #
+  # Prefill is the expensive half and this is the dial. Measured 2026-10-20:
+  # 37.88 t/s prefill, so a full 50,000-character prompt (~14,300 tokens) is
+  # about six minutes before a single token comes back. The prompt cache is
+  # what keeps that off most cycles — it only pays in full when the stable
+  # prefix changes, which is every time cortex.py, the contract or the
+  # conduct guide is edited.
   max_context_chars: 20000
   # 50000, not 46000.
   #

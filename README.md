@@ -133,19 +133,21 @@ somewhere the author cannot reach. `witness.jsonl` is riffle's copy.
 | HP EliteDesk 800 G4 DM 35W | i5-8500T, 6C/6T, AVX2, no AVX-512 |
 | 32 GB DDR4-2666, dual channel | ~33 GB/s real |
 | Qwen3.6-35B-A3B, UD-Q4_K_M | 20.6 GiB, ~3B active |
-| **generation** | measure it: `llama-bench … -n 128` (tg128) |
-| **prefill** | measure it: `llama-bench … -p 512` (pp512) |
+| **generation** | **8.64 t/s** (tg128, ±0.01, 2026-10-20) |
+| **prefill** | **37.88 t/s** (pp512, ±0.94, 2026-10-20) |
 | sustained load | 74–83°C against a 94°C limit, 2969 MHz all-core, no throttling |
 
-The two speed figures that used to sit here (8.5–8.8 generation, 36–37
-prefill) disagreed with SETUP.md's 10–14 and 40–90 for the same machine and
-the same model, and a measurement on 2026-10-20 matched neither. Three
-numbers for one fact is worse than none, because each one was quoted
-somewhere as the basis of a decision.
+These are measured, not remembered, and the date says when. SETUP.md used to
+claim 10–14 and 40–90 for the same machine and model; that was wrong, and
+these were right. Both were written from single runs, which is how one of
+them drifted without anyone noticing.
 
-Run the bench yourself, on an idle machine — **stop `llama-composer` first**,
-or the second copy of a 20.6 GiB model swaps against the first on a 32 GiB
-box and you measure the disk:
+Re-measure after a hardware or llama.cpp change — and **stop `llama-composer`
+first**. A second copy of a 20.6 GiB model swaps against the first on a
+32 GiB box, and you measure the disk instead of the CPU: a contended run on
+this machine reported 11.19 prefill and 5.79 generation with ±55% variance,
+which is three times too slow and entirely an artefact. A clean run has
+variance near zero.
 
 ```
 sudo systemctl stop riffle-cycle.timer llama-composer llama-triage
