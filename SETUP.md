@@ -108,11 +108,22 @@ ln -sf <your-small>.Q4_K_M.gguf triage.gguf
 /opt/llama.cpp/build/bin/llama-bench -m /opt/models/composer.gguf -t 6 -p 512 -n 128
 ```
 
-Read two numbers. **tg** ≈ 10–14 t/s for a ~3B-active MoE. **pp** will surprise
-you — maybe 40–90 t/s, so a 16k prompt is minutes of prefill. That is why the
-prompt is split into a byte-stable prefix and a volatile suffix, and why
-`--cache-reuse` is in the unit file. Keep the prefix stable and you pay prefill
-once, not four times a day.
+STOP THE COMPOSER FIRST. llama-composer holds the 20.6 GiB model in RAM;
+llama-bench loads a second copy, and 41 GiB on a 32 GiB box swaps. A tg
+figure with ±50% variance is a disk measurement, not a CPU one.
+
+Read two numbers. **tg** is generation, **pp** is prefill, and on this class
+of machine pp is the one that decides how long a cycle takes — a 14k-token
+prompt is many minutes of prefill at any plausible rate.
+
+That is why the prompt is split into a byte-stable prefix and a volatile
+suffix, and why `--cache-reuse` is in the unit file. Keep the prefix stable
+and you pay prefill once rather than on every wake. Editing cortex.py, the
+contract or the conduct guide invalidates it.
+
+This file used to quote 10–14 t/s and 40–90 t/s here, and README.md quoted
+8.5–8.8 and 36–37 for the same machine. Both were written from a single run
+and never checked again. Measure your own.
 
 ---
 
@@ -277,9 +288,13 @@ this budget. Pin the handful of facts that matter.
 ```bash
 journalctl -u riffle-cycle --since today
 journalctl -u llama-composer -f
-sudo sqlite3 /var/lib/riffle/state.sqlite \
+# -readonly, and as riffle. `sudo sqlite3` on a live WAL database creates
+# root-owned -wal and -shm files, and riffle then cannot write its own
+# database — the agent stops recording anything and the cause is a query
+# you ran to look at it.
+sudo -u riffle sqlite3 -readonly /var/lib/riffle/state.sqlite \
   "SELECT drive, status, COUNT(*) FROM actions GROUP BY 1,2;"
-sudo sqlite3 /var/lib/riffle/state.sqlite \
+sudo -u riffle sqlite3 -readonly /var/lib/riffle/state.sqlite \
   "SELECT ts,actor,name,old,new,reason FROM drive_changes ORDER BY id DESC LIMIT 10;"
 watch -n5 sensors
 ```

@@ -15,7 +15,7 @@ There is no API key. The model runs on the machine.
 ```
                     HP EliteDesk 800 G4 Mini · 32GB · no GPU
   ┌───────────────────────────────────────────────────────────────┐
-  │  llama-server ──── Qwen3.6-35B-A3B Q4_K_M, ~8.5 tok/s          │
+  │  llama-server ──── Qwen3.6-35B-A3B Q4_K_M, 20.6 GiB            │
   │       ▲                                                        │
   │       │            ┌── cycle.py ──── hourly wake               │
   │       ├────────────┤                                           │
@@ -133,9 +133,30 @@ somewhere the author cannot reach. `witness.jsonl` is riffle's copy.
 | HP EliteDesk 800 G4 DM 35W | i5-8500T, 6C/6T, AVX2, no AVX-512 |
 | 32 GB DDR4-2666, dual channel | ~33 GB/s real |
 | Qwen3.6-35B-A3B, UD-Q4_K_M | 20.6 GiB, ~3B active |
-| **generation** | **8.5–8.8 tok/s** |
-| **prefill** | **36–37 tok/s** |
+| **generation** | measure it: `llama-bench … -n 128` (tg128) |
+| **prefill** | measure it: `llama-bench … -p 512` (pp512) |
 | sustained load | 74–83°C against a 94°C limit, 2969 MHz all-core, no throttling |
+
+The two speed figures that used to sit here (8.5–8.8 generation, 36–37
+prefill) disagreed with SETUP.md's 10–14 and 40–90 for the same machine and
+the same model, and a measurement on 2026-10-20 matched neither. Three
+numbers for one fact is worse than none, because each one was quoted
+somewhere as the basis of a decision.
+
+Run the bench yourself, on an idle machine — **stop `llama-composer` first**,
+or the second copy of a 20.6 GiB model swaps against the first on a 32 GiB
+box and you measure the disk:
+
+```
+sudo systemctl stop riffle-cycle.timer llama-composer llama-triage
+sudo -u riffle /opt/llama.cpp/build/bin/llama-bench \
+  -m /opt/models/composer.gguf -t 6 -p 512 -n 128
+sudo systemctl start llama-composer llama-triage riffle-cycle.timer
+```
+
+What holds regardless of the exact numbers: prefill dominates a cycle, the
+prompt cache is what makes a 50,000-character prompt affordable, and
+anything that changes the stable prefix makes the next cycle pay in full.
 
 Generation is flat across four, five and six threads — the signature of a
 memory-bandwidth-bound workload. Adding cores cannot help because they are all

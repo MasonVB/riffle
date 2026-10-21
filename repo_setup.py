@@ -147,7 +147,7 @@ def scan(files):
         pass
 
     patterns = [
-        ("pushover-ish token", re.compile(r"\b[a-z0-9]{30}\b")),
+        ("pushover-ish token", re.compile(r"\b[A-Za-z0-9]{30}\b")),
         ("brave-ish key", re.compile(r"\bBSA[A-Za-z0-9_\-]{20,}\b")),
         ("64-hex seed", re.compile(r"\b[0-9a-f]{64}\b")),
         ("bearer secret", re.compile(r"1f916_sk_[A-Za-z0-9_\-]+")),
