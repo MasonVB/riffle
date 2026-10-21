@@ -699,11 +699,37 @@ async function poll(){
 
 async function submit(instruct){
   const q = box.value.trim(); if(!q || busy) return;
+  // CHECK THE REPLY, AND PUT THE TEXT BACK IF IT FAILED.
+  //
+  // This cleared the box and never looked at the result, so anything typed
+  // while the dash was restarting — which happens on every deploy and every
+  // reboot — was simply gone. A send-to-cycle instruction written out
+  // carefully and lost to a race is worse than one that refuses loudly.
   box.value=''; box.style.height='auto'; busy=true;
   send.disabled = true; document.getElementById('sendcyc').disabled = true;
   waitStart = Date.now();
-  await fetch('/api/send', {method:'POST', headers:{'Content-Type':'application/json'},
-                            body: JSON.stringify({q:q, instruct: !!instruct})});
+  try{
+    const r = await fetch('/api/send',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({q:q, instruct: !!instruct})});
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || (d && d.error)){
+      box.value = q;
+      busy = false;
+      send.disabled = false;
+      document.getElementById('sendcyc').disabled = false;
+      alert('Not sent: ' + ((d && d.error) || ('HTTP ' + r.status)) +
+            '\n\nYour message is back in the box.');
+      return;
+    }
+  }catch(e){
+    box.value = q;
+    busy = false;
+    send.disabled = false;
+    document.getElementById('sendcyc').disabled = false;
+    alert('Could not reach riffle: ' + e + '\n\nYour message is back in the box.');
+    return;
+  }
   log.scrollTop = log.scrollHeight;
 }
 async function sendAnswer(qid, btn){
@@ -725,8 +751,21 @@ async function decide(id, verdict, btn){
       ? '<div class=sentline><span class=spin>&#9696;</span> sending&hellip;</div>'
       : '<div class=sentline>&#10005; Rejected &middot; not sent</div>';
   }
-  await fetch('/api/decide', {method:'POST', headers:{'Content-Type':'application/json'},
-                              body: JSON.stringify({id:id, verdict:verdict})});
+  // The card above already says "sending..." or "Rejected · not sent". If
+  // the request itself failed, that is a claim about something that never
+  // happened, so say so rather than leaving a confident line on screen.
+  // The poll will replace the card with the real status when it lands.
+  try{
+    const r = await fetch('/api/decide',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({id:id, verdict:verdict})});
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || (d && d.error)){
+      alert('Not done: ' + ((d && d.error) || ('HTTP ' + r.status)));
+    }
+  }catch(e){
+    alert('Could not reach riffle: ' + e);
+  }
 }
 async function clearChat(){
   if(!confirm('Clear the chat?\n\nEverything moves to the history page. '

@@ -249,9 +249,17 @@ def history(state, n=60, name=None):
 
 
 def firing(state, days=14):
+    """What each drive has actually done lately.
+
+    'accepted' and 'sent' were missing, so every LOCAL action — build,
+    read_page, library_put, desk_put, remember — was invisible here. The
+    goals page showed deepen and make as doing nothing while they were the
+    drives doing most of the work, and the weighting advice on that page was
+    being read against numbers that counted only registry traffic.
+    """
     """What actually fired, so you can compare intent against behaviour."""
     cut = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).isoformat()
     rows = state.db.execute(
         "SELECT drive, COUNT(*) n FROM actions WHERE created_at > ?"
-        " AND status IN ('executed','queued','approved') GROUP BY drive", (cut,)).fetchall()
+        " AND status IN ('executed','queued','approved','accepted','sent','unknown') GROUP BY drive", (cut,)).fetchall()
     return {r["drive"]: r["n"] for r in rows}

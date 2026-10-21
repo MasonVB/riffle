@@ -163,10 +163,26 @@ def run(state, cfg, log, say=None):
     try:
         raw = cortex.complete(cfg["llm"]["composer"], prompt, "\n".join(body),
                               schema=SCHEMA)
-        plan = cortex.parse_proposal(raw) if '"action"' in raw else json.loads(
-            raw[raw.index("{"):raw.rindex("}") + 1])
+        # json.loads ONLY. The old line routed to cortex.parse_proposal
+        # whenever the string '"action"' appeared anywhere in the output —
+        # including inside a memory's own text, since the candidate list is
+        # echoed back. parse_proposal expects an action proposal and has no
+        # idea what a consolidation plan is, so it failed, and the failure
+        # repeated every wake for the rest of the day.
+        plan = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
     except Exception as e:
-        log(f"consolidation failed: {e}", level="warn")
+        # BACK OFF. A failure used to return without marking anything, and
+        # due() only looks at last_consolidation — so a pass that cannot
+        # succeed retried on every wake, each costing up to 900 seconds of
+        # composer-lock wait plus a generation. One bad day of output could
+        # occupy the machine until midnight.
+        _n = int(state.note("consolidation_fails_today") or 0) + 1
+        state.note("consolidation_fails_today", str(_n))
+        log(f"consolidation failed ({_n} of 3): {e}", level="warn")
+        if _n >= 3:
+            state.note("last_consolidation", utcnow())
+            log("three failures today; not trying again until tomorrow",
+                level="warn")
         return None
 
     valid = {r["id"] for r in cands}
@@ -237,8 +253,26 @@ def run(state, cfg, log, say=None):
     passed = [r["id"] for r in cands
               if r["id"] not in {m for m, _ in promoted}
               and r["id"] not in {m for m, _ in dropped}]
+    # THE SAME TWO RULES APPLY HERE.
+    #
+    # These picks went straight to long term with neither check: they
+    # bypassed `cap`, so a day could promote more than max_promotions_per_day
+    # between the two paths, and they bypassed _EVENT, so the action-log
+    # memories the filter exists to keep out went up anyway — by lottery.
+    # The cap is load-bearing (a long-term shelf only stays worth reading if
+    # it stays small) and the filter was written because this exact kind of
+    # memory had already filled it once.
+    #
+    # Randomness is the point of this path, so it keeps it. It just cannot
+    # outrank the rules the chosen promotions obey.
     lucky = []
-    for mid in _r.sample(passed, min(extra_count(len(promoted), cfg), len(passed))):
+    _room = max(0, cap - len(promoted))
+    _eligible = [m for m in passed if not _EVENT.match(
+        (state.db.execute("SELECT text FROM memories WHERE id=?",
+                          (m,)).fetchone() or {"text": ""})["text"] or "")]
+    for mid in _r.sample(_eligible,
+                         min(extra_count(len(promoted), cfg), _room,
+                             len(_eligible))):
         state.db.execute(
             "UPDATE memories SET tier='long', expires_at=NULL WHERE id=?", (mid,))
         row = state.db.execute("SELECT text FROM memories WHERE id=?",
@@ -247,6 +281,7 @@ def run(state, cfg, log, say=None):
 
     state.db.commit()
     state.note("last_consolidation", utcnow())
+    state.note("consolidation_fails_today", "0")
 
     parts = []
     if promoted:
