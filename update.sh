@@ -119,7 +119,36 @@ try:
 
     dash.Handler.cfg = {"model_id": "gate", "caps": {}, "dash": {}}
     dash.Handler.state = State(tempfile.mktemp(suffix=".sqlite"))
-    for path in ("/", "/settings", "/history"):
+
+    # A STUB WORKER, so /api/messages can be exercised too.
+    #
+    # The chat page polls /api/messages every second and this gate never
+    # called it — it rendered the three HTML pages and stopped. snapshot()
+    # is where the alarm query, the waiting-card list, the queue count and
+    # the orphan close all live, and a NameError in any of them would ship
+    # cleanly past every gate and then break the page that is open all day.
+    #
+    # It needs self.worker, which the fake handler has no reason to own, so
+    # the gate supplies the two attributes snapshot() actually reads.
+    class StubWorker:
+        busy = False
+        busy_since = None
+
+        def depth(self):
+            return 0
+
+    dash.Handler.worker = StubWorker()
+
+    # Rows to walk, not an empty table: a snapshot of nothing exercises
+    # almost none of the function.
+    _st = dash.Handler.state
+    _st.say("user", "a question from the gate")
+    _mid = _st.say("assistant", "a partial reply", {"kind": "chat"})
+    _st.say("proposal", "a rationale", {"kind": "comment", "action_id": 1,
+                                        "status": "queued"})
+    _st.log("a journal line the alarm query will walk", level="error")
+
+    for path in ("/", "/settings", "/history", "/api/messages?after=0"):
         h = Fake(path)
         try:
             h.do_GET()
@@ -131,6 +160,23 @@ try:
         if h.code != 200:
             print(f"  {path} returned {h.code}")
             bad += 1
+        elif path.startswith("/api/"):
+            # JSON, not a page: check it parses and carries what the chat
+            # client reads, rather than applying the HTML size floor.
+            import json as _json
+            try:
+                d = _json.loads(body)
+            except ValueError as e:
+                print(f"  {path} did not return JSON: {e}")
+                bad += 1
+            else:
+                for key in ("messages", "queued", "waiting_ids"):
+                    if key not in d:
+                        print(f"  {path} has no {key!r}; the chat page reads it")
+                        bad += 1
+                if isinstance(d.get("messages"), list) and not d["messages"]:
+                    print(f"  {path} returned no messages for a seeded store")
+                    bad += 1
         elif len(body) < 500:
             print(f"  {path} returned only {len(body)} bytes")
             bad += 1
@@ -236,6 +282,44 @@ except (OSError, ValueError) as e:
     print(f"  proposal_schema.json will not load: {e}")
     sys.exit(1)
 walk(schema, "")
+
+# THE DENYLIST ABOVE ONLY KNOWS WHAT HAS ALREADY BROKEN.
+#
+# It was written after minLength/maxLength took the composer down for nine
+# hours, and it lists the five constructs we have since thought of. The next
+# unsupported keyword is not on it, by definition.
+#
+# So: actually convert the schema, with llama.cpp's own converter if it is
+# on this machine. That answers the real question — does THIS build's GBNF
+# converter accept THIS schema — rather than our memory of past failures.
+# The denylist stays as the fast path for a machine without llama.cpp.
+import glob as _glob
+import importlib.util as _ilu
+
+_conv = None
+for _c in ("/opt/llama.cpp/examples/json_schema_to_grammar.py",
+           "/opt/llama.cpp/json_schema_to_grammar.py",
+           "/opt/llama.cpp/scripts/json_schema_to_grammar.py"):
+    if _glob.glob(_c):
+        _conv = _c
+        break
+if _conv:
+    try:
+        _spec = _ilu.spec_from_file_location("j2g", _conv)
+        _m = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_m)
+        _fn = getattr(_m, "SchemaConverter", None)
+        if _fn:
+            _c2 = _fn({}, False, None, None) if _fn.__init__.__code__.co_argcount > 4 \
+                else _fn({})
+            _c2.visit(schema, "")
+            _c2.format_grammar()
+            print("  schema compiles with llama.cpp's own converter")
+    except BaseException as e:
+        bad.append(f"/: llama.cpp's converter refused this schema: "
+                   f"{type(e).__name__}: {e}")
+else:
+    print("  (llama.cpp converter not found; denylist only)")
 for b in bad:
     print(f"  GRAMMAR RISK {b}")
 sys.exit(1 if bad else 0)
