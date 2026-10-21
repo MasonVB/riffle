@@ -398,6 +398,64 @@ then
   exit 1
 fi
 
+# --- gate 9: every config key is read by something -------------------------
+#
+# config.example.yaml declared wakes_per_day and pulse_shortcut, and nothing
+# anywhere read either. The second is the worse kind: it described a feature
+# that does not exist, so setting it to false would have left someone
+# believing they had turned the composer skip off. A setting that does
+# nothing is a lie the file tells every reader.
+#
+# A key counts as read if its name appears in any .py file.
+if ! python3 - <<'PYCFG'
+import glob
+import sys
+
+import yaml
+
+try:
+    cfg = yaml.safe_load(open("config.example.yaml"))
+except Exception as e:
+    print(f"  could not read config.example.yaml: {e}")
+    sys.exit(0)
+code = ""
+for path in glob.glob("*.py") + glob.glob("agent/*.py") + glob.glob("bin/*"):
+    try:
+        code += open(path).read()
+    except (OSError, UnicodeDecodeError):
+        pass
+
+
+def walk(d, prefix=""):
+    out = []
+    if isinstance(d, dict):
+        for k, v in d.items():
+            out.append(k)
+            out.extend(walk(v, prefix + k + "."))
+    return out
+
+
+# Keys that are structure rather than settings, or read via a loop over the
+# whole section rather than by name.
+SKIP = {"cycle", "memory", "llm", "library", "dash", "registry", "projects",
+        "autonomy", "caps", "drives", "composer", "triage", "desk", "notify",
+        "build", "reader", "signer"}
+missing = []
+for key in set(walk(cfg)):
+    if key in SKIP or not isinstance(key, str):
+        continue
+    if f'"{key}"' not in code and f"'{key}'" not in code:
+        missing.append(key)
+for k in sorted(missing):
+    print(f"  DEAD CONFIG KEY {k!r}: declared in config.example.yaml, read by nothing")
+sys.exit(1 if missing else 0)
+PYCFG
+then
+  echo "!! a config key is read by nothing; rolling back"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re

@@ -46,9 +46,9 @@ cycle:
   # immediately regardless: after a crash the row is minutes old, and without
   # that check twelve hours would block every cycle for twelve hours.
   #
-  # The composer lock is checked too, so a cycle still using the model is
-  # never reaped however long it has run.
-  stale_minutes: 720
+  # stale_minutes removed: it was replaced by the cycle lock (agent/cycle.py
+  # takes a flock for the life of the process) and nothing has read it since.
+  # Leaving it here invited tuning a number with no effect.
 
   # The failsafe. When nothing has reached the square for stuck_hours AND
   # at least stuck_cycles have actually run in roughly that window, the
@@ -65,7 +65,10 @@ cycle:
   # is not a failsafe.
   stuck_hours: 24
   stuck_cycles: 12
-  wakes_per_day: 4
+  # wakes_per_day removed: nothing read it. interval_minutes above is the
+  # real control, and a second number saying something different about the
+  # same thing is worse than no number — the settings page and this file
+  # would have disagreed with the timer.
   # Hard ceiling on how much board text reaches the model in one cycle.
   # Prefill is the expensive half on this CPU; this number is your latency dial.
   max_context_chars: 20000
@@ -80,8 +83,9 @@ cycle:
   # tokens on the wire against a 20,480 window, so ~4,500 remain to answer
   # in against a max_tokens of 3,000.
   max_prompt_chars: 50000
-  # Skip the composer entirely if pulse says nothing changed and no drive is due.
-  pulse_shortcut: true
+  # pulse_shortcut removed: nothing read it either. It described a feature
+  # that does not exist — the composer is never skipped — so a reader
+  # setting it to false would have believed they had turned something off.
 
 # auto  = execute without asking
 # queue = write to the dashboard queue and wait for your tap
@@ -141,9 +145,11 @@ constraints:
   # comment, vote, flag, or promotion. Hard-code that rather than intend it,
   # so wanting money can never be the thing that selects a social act.
   earn_may_not_select: [post, comment, vote, flag, tag]
-  # The 1/day post is a ceiling, not a quota. A citizen who only ever
-  # comments is a citizen in good standing.
-  post_is_a_ceiling_not_a_quota: true
+  # The 1/day post is a ceiling, not a quota: a citizen who only ever
+  # comments is a citizen in good standing. That was written here as a
+  # SETTING, which it never was — nothing read it, and no value of it
+  # changed anything. It is a statement about how the caps are meant to be
+  # read, so it is a comment.
   # Never propose an action whose body contains a figure that numcheck
   # cannot trace to a source the model also supplied.
   numcheck_required: true
@@ -236,7 +242,7 @@ memory:
   short_ttl_days: 7
   max_promotions_per_day: 3
   purge_expired_after_days: 30     # expired rows are kept this long, then gone
-  recall_long_slots: 3
+  # recall_long_slots removed: nothing read it.
   # On top of what it judges worth keeping, this fraction more is kept at
   # random — the only material in the store its own judgement did not select.
   # Set incidental_rate_max to 0 to turn it off.
