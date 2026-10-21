@@ -13,13 +13,33 @@ Group=riffle
 # --mlock pins weights so the kernel never pages them out mid-generation.
 # --cache-reuse keeps the stable system prefix in KV across cycles, which is
 # the difference between a 5-minute prefill and a 20-second one.
+#
+# --kv-unified IS WHAT MAKES IT WORK. Without it the server logs
+#
+#   srv load_model: initializing, ..., kv_unified = 'false'
+#   srv load_model: cache_reuse is not supported by this context, it will
+#                   be disabled
+#
+# at every start, and has since this unit was written. So --cache-reuse 256
+# was present, refused, and silently ignored: every cycle paid full prefill
+# (~6 minutes for a 14k prompt at the measured 37.88 t/s), and --cache-ram
+# churned a 3 GiB store evicting a ~600 MiB entry per cycle that could
+# never be reused.
+#
+# With --parallel 1 there is one sequence, so a unified KV buffer costs no
+# extra memory; it is a different layout, not a bigger one. Watch RSS after
+# this change anyway — on a 32 GiB box next to a 20.6 GiB model, assume
+# nothing.
+#
+# Confirm it took: the kv_unified line should read 'true' and the
+# cache_reuse warning should be gone.
 ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/composer.gguf \
   --host 127.0.0.1 --port 8080 \
   --ctx-size 20480 --threads 6 --threads-batch 6 \
   --batch-size 512 --ubatch-size 128 \
   \
-  --parallel 1 --chat-template-kwargs '{"enable_thinking":false}' \
+  --parallel 1 --kv-unified --chat-template-kwargs '{"enable_thinking":false}' \
   --cache-ram 3072 --mlock --cache-reuse 256 --slots --no-webui
 Restart=always
 RestartSec=10

@@ -8,12 +8,16 @@ Wants=network-online.target
 [Service]
 User=riffle
 Group=riffle
+# --kv-unified for the same reason as the composer: without it the server
+# refuses --cache-reuse at load and says so once, in a line nobody reads.
+# Triage runs on every reflection and consolidation, so it pays the same
+# avoidable prefill the composer does, on a smaller prompt.
 ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/triage.gguf \
   --host 127.0.0.1 --port 8081 \
   --ctx-size 8192 --threads 3 --batch-size 256 \
   --chat-template-kwargs '{"enable_thinking":false}' \
-  --cache-reuse 256 --no-webui
+  --kv-unified --cache-reuse 256 --no-webui
 Restart=always
 RestartSec=10
 # --chat-template-kwargs enable_thinking:false, which the composer has had
