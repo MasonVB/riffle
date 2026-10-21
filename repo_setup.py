@@ -247,11 +247,35 @@ def main():
     print("  installed a pre-commit hook that runs this scan")
 
     # ---- update script -----------------------------------------------------
+    #
+    # NEVER OVERWRITE AN EXISTING ONE.
+    #
+    # UPDATE_SH here is the original three-step template: pull, syntax-check,
+    # restart. The deployed update.sh has grown eight gates — render, prompt
+    # fit, grammar compilation, timeout arithmetic, self-recursion, orphaned
+    # prompt headers — each added because something got past the two it
+    # started with.
+    #
+    # `open(up, "w")` replaced all of that, silently, and the next deploy
+    # would then pass checks that no longer existed. This script is for
+    # setting a machine up from nothing; on a machine that already has one,
+    # the file on disk is the newer thing.
     up = f"{RIFFLE}/update.sh"
-    open(up, "w").write(UPDATE_SH)
-    os.chmod(up, 0o755)
+    if os.path.exists(up):
+        _have = open(up).read()
+        _gates = _have.count("if ! python3")
+        print(f"  update.sh already exists with {_gates} gate block(s); "
+              f"leaving it alone")
+        if _gates and UPDATE_SH not in _have:
+            print("    (the template here is older than what is installed; "
+                  "if you want the template, move the current file aside "
+                  "first)")
+    else:
+        open(up, "w").write(UPDATE_SH)
+        os.chmod(up, 0o755)
+        print("  wrote update.sh (pull, syntax-check, restart, roll back on "
+              "error)")
     run("git", "add", "update.sh", ".gitignore")
-    print("  wrote update.sh (pull, syntax-check, restart, roll back on error)")
 
     if a.remote:
         run("git", "remote", "remove", "origin")
