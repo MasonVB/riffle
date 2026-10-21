@@ -339,6 +339,11 @@ Write every line as a note: one short statement, standing on its own, about
 what was said or decided rather than about the world. "He decided the Pi is
 out of scope", not "The Pi is out of scope". No numbering, no commentary.
 
+START EVERY LINE WITH WHO SAID IT: "operator:" for something he said, and
+"me:" for something you said. A note about your own claim that is filed as
+his comes back later as a fact he asserted, and you will defer to it. Both
+of you said things in this exchange and only one of you is the operator.
+
 Exclude from both: anything you can look up (board state, your own action
 log), pleasantries, and anything you are not sure was actually said.
 
@@ -396,7 +401,7 @@ def _strip_thinking(out):
 def _split_lists(out):
     out = _strip_thinking(out)
     """Parse the DURABLE / PASSING sections. Tolerant of a model that omits one."""
-    durable, passing, cur = [], [], None
+    durable, passing, preamble, cur = [], [], [], None
     for line in out.splitlines():
         s = line.strip()
         up = s.upper().rstrip(":")
@@ -410,8 +415,17 @@ def _split_lists(out):
         if not s or s.upper().startswith("NONE") or len(s) < 12:
             continue
         # A model that ignores the format entirely still produces usable
-        # durable notes; treating them as passing would be worse.
-        (cur if cur is not None else durable).append(s)
+        # durable notes; treating them as passing would be worse. But a line
+        # BEFORE the first header is preamble — "Here are the two lists you
+        # asked for:" — and filing that as a durable memory is how the store
+        # fills with the model clearing its throat.
+        #
+        # So: if a header appears anywhere, lines before it are dropped. If
+        # no header appears at all, the old behaviour stands and everything
+        # is durable.
+        (cur if cur is not None else preamble).append(s)
+    if not durable and not passing and preamble:
+        return preamble, []
     return durable, passing
 
 
@@ -431,8 +445,30 @@ def extract(state, cfg, exchange, source):
         return []
     durable, passing = _split_lists(out)
     made = []
+
+    def _speaker(line):
+        """Split "operator: ..." / "me: ..." into (kind, text).
+
+        Every note from a chat used to be filed kind="operator", including
+        riffle's own claims — so its guesses came back to it later labelled
+        as things its operator had told it, and it has no reason to doubt
+        those. A memory system that cannot say who said something will
+        eventually put words in the operator's mouth.
+        """
+        t = line.strip()
+        low = t.lower()
+        if low.startswith(("me:", "self:", "riffle:")):
+            return "self", t.split(":", 1)[1].strip()
+        if low.startswith("operator:"):
+            return "operator", t.split(":", 1)[1].strip()
+        # Unlabelled: the model did not follow the instruction. "self" is the
+        # safer default — a note wrongly attributed to riffle is doubted, one
+        # wrongly attributed to the operator is believed.
+        return "self", t
+
     for line in durable[:5]:
-        mid = remember(state, line, kind="operator", source=source,
+        _k, _t = _speaker(line)
+        mid = remember(state, _t, kind=_k, source=source,
                        ttl_days=int((cfg.get("memory") or {}).get(
                            "short_ttl_days", 7)))
         if mid:
@@ -590,15 +626,26 @@ def reflect(state, cfg, log=None):
         material.append("LOG:\n" + "\n".join(
             f"  [{j['level']}] {j['text'][:220]}" for j in jrn))
 
+    # ALREADY REMEMBERED GOES FIRST.
+    #
+    # It was appended last and the whole thing was cut at 7,000 characters
+    # from the end — so the one section whose job is to stop riffle writing
+    # the same note again was the first thing dropped. That is how 53
+    # near-identical "no live thread to anchor" memories were written: the
+    # instruction not to was in the part that never arrived.
+    #
+    # It is also budgeted, so a long list cannot push out the cycle material
+    # it is supposed to be compared against.
     known = recent(state, 25)
-    material.append("ALREADY REMEMBERED — do not restate any of these:\n"
-                    + ("\n".join(f"  - {r['text']}" for r in known)
-                       or "  (nothing yet)"))
+    _already = ("ALREADY REMEMBERED — do not restate any of these:\n"
+                + ("\n".join(f"  - {r['text']}" for r in known)
+                   or "  (nothing yet)"))[:2000]
+    _rest = "\n\n".join(material)[:7000 - len(_already) - 2]
 
     from agent import cortex
     try:
         out = cortex.complete(cfg["llm"]["triage"], REFLECT_PROMPT,
-                              "\n\n".join(material)[:7000], timeout=900)
+                              _already + "\n\n" + _rest, timeout=900)
     except Exception as e:
         # GIVE UP ON A CYCLE AFTER THREE TRIES.
         #
@@ -649,8 +696,11 @@ def reflect(state, cfg, log=None):
             log(f"reflection on cycle {cid} parsed nothing out of "
                 f"{len(out or '')} chars of model output; first 200: "
                 f"{(out or '')[:200]!r}", level="warn")
+    # "self", not "board". A reflection is riffle writing about its own
+    # cycle; filing it as board provenance made its own conclusions look
+    # like something the square had said.
     for line in durable[:cap]:
-        mid = remember(state, line, kind="board", source=f"cycle:{cid}",
+        mid = remember(state, line, kind="self", source=f"cycle:{cid}",
                        ttl_days=ttl)
         if mid:
             made.append(mid)

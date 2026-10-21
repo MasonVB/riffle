@@ -3361,8 +3361,21 @@ def apply_reflexive(state, cfg, cid, kind, p, drive, rationale):
     """Changes the agent makes to ITSELF. These never touch the registry."""
     try:
         if kind == "remember":
-            mid = memory.remember(state, p["text"], kind="self", source=f"cycle:{cid}",
-                                  pinned=p.get("pinned", False))
+            # PINNING IS THE OPERATOR'S. A pinned memory is permanent and
+            # exempt from pruning, so self-pinning is a way around the daily
+            # promotion cap that consolidate.py treats as load-bearing: five
+            # a day, deliberately, so the long-term shelf stays small enough
+            # to be worth reading. riffle asking for `pinned: true` sets that
+            # aside for itself, one memory at a time, with nobody consulted.
+            #
+            # The request is kept in the log so the operator can see what it
+            # wanted to make permanent and pin it from the memory page.
+            if p.get("pinned"):
+                state.log(f"remember asked to pin this; pinning is yours to "
+                          f"do from the memory page, so it was saved "
+                          f"unpinned: {p['text'][:100]}", drive=drive)
+            mid = memory.remember(state, p["text"], kind="self",
+                                  source=f"cycle:{cid}", pinned=False)
             state.log(f"remembered: {p['text'][:140]}", drive=drive)
             state.say("report", f"Cycle {cid} · drive {drive} · remembered: {p['text']}",
                       {"drive": drive, "memory_id": mid})

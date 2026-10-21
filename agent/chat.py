@@ -449,6 +449,7 @@ def answer(state, cfg, question, day):
                                 "within 30 minutes — try again shortly)")
         state.finish(mid, {"elapsed_s": int(time.time() - started)})
         return mid
+    _extract_args = None
     try:
         reader = Reader(cfg["base"])
         record = json.dumps(build_record(state, cfg, day), indent=1, default=str)[:16000]
@@ -525,16 +526,28 @@ def answer(state, cfg, question, day):
                                  (mid,)).fetchone()["content"]
         state.finish(mid, {"elapsed_s": int(time.time() - started), "tools": tools_used,
                            "recalled": len(recalled)})
-        # Extraction runs on the SMALL model after the lock is released in the
-        # caller's finally, so it never delays the reply the operator is
-        # watching. It is best-effort: a failure here costs a memory, not a turn.
+        # Extraction is deferred to AFTER the lock is released. The comment
+        # here used to say it already was — "after the lock is released in
+        # the caller's finally" — while the call sat seventeen lines above
+        # that finally, inside the lock. So every chat message held the
+        # composer for a second model call, and a cycle waking in that
+        # window waited minutes or gave up.
+        _extract_args = (f"OPERATOR: {question}\n\nRIFFLE: {final[:4000]}",
+                         f"chat:{mid}", started, tools_used, len(recalled))
+    except Exception as e:
+        state.append_delta(mid, f"\n\n(composer error: {e})")
+        state.finish(mid, {"elapsed_s": int(time.time() - started), "error": str(e)[:300]})
+    finally:
+        lock.release()
+
+    # Lock is gone. Best-effort: a failure here costs a memory, not a turn.
+    if _extract_args:
+        _exchange, _source, _started, _tools, _recalled = _extract_args
         try:
-            made = memory.extract(state, cfg,
-                                  f"OPERATOR: {question}\n\nRIFFLE: {final[:4000]}",
-                                  source=f"chat:{mid}")
+            made = memory.extract(state, cfg, _exchange, source=_source)
             if made:
-                state.finish(mid, {"elapsed_s": int(time.time() - started),
-                                   "tools": tools_used, "recalled": len(recalled),
+                state.finish(mid, {"elapsed_s": int(time.time() - _started),
+                                   "tools": _tools, "recalled": _recalled,
                                    "remembered": len(made)})
             # No keep= here: memory.PRUNE_KEEP is the one limit. This said
             # 400 while the cycle said 1200, so each chat message deleted
@@ -542,11 +555,6 @@ def answer(state, cfg, question, day):
             memory.prune(state)
         except Exception:
             pass
-    except Exception as e:
-        state.append_delta(mid, f"\n\n(composer error: {e})")
-        state.finish(mid, {"elapsed_s": int(time.time() - started), "error": str(e)[:300]})
-    finally:
-        lock.release()
     return mid
 
 
