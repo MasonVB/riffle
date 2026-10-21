@@ -151,6 +151,8 @@ _OUTCOME_LINE = {
                            "not write another one.",
     "voted-already":    "I had already voted on that, so I did not vote again.",
     "voted-own":        "I tried to vote on my own work, so I did not send it.",
+    "wrong-class":      "I used the wrong attestation class, so I did not "
+                        "send it.",
     "unknown-outcome":  "I sent something and never heard back, so I do not "
                         "know whether it landed.",
     "artifact-unfetchable": "I named my work with a bare id nobody else could "

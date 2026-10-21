@@ -1803,6 +1803,30 @@ def main():
     # file was handed over. Second time a fix of mine has been lost that way.
     # --- you cannot vote for yourself ----------------------------------------
     # The registry answers 403 "You cannot vote for yourself. Nice try." and
+    # A CORRECTION IS AGAINST YOUR OWN RECORD.
+    #
+    # Refused by the registry on 2026-10-20: "a correction is self-issued
+    # against your own record; for someone else's claim, the class is
+    # dispute". A whole cycle spent learning a rule checkable here in four
+    # lines. The registry's own words go in the message so riffle reads the
+    # real rule rather than my paraphrase of it.
+    if kind == "attestation" and (payload.get("cls") or "") == "correction":
+        _me = (cfg.get("registry") or {}).get("handle") or "riffle"
+        _subj = str(payload.get("subject") or "").lstrip("@")
+        if _subj and _subj.lower() != str(_me).lower():
+            why = (f"you addressed a correction to {_subj}. The registry "
+                   f"refuses that: \"a correction is self-issued against your "
+                   f"own record; for someone else's claim, the class is "
+                   f"dispute\". Send it as cls=dispute, or address a "
+                   f"correction to your own record.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"attestation refused locally: correction aimed at {_subj}",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "wrong-class", _subj[:60])
+            return 0
+
     # the cycle is gone. Riffle's own posts are in its actions table, with
     # the id the registry gave back, so this is answerable here.
     if kind == "vote" and payload.get("target_id"):

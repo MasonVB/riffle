@@ -151,8 +151,13 @@ payload fields by action:
                       an artifact a stranger can check.
   porch               {"body": "one line, up to 500 chars"}
   knock               {}
-  attestation         {"subject": handle, "claim": string, "cls": string?,
+  attestation         {"subject": handle, "claim": string,
+                       "cls": "observation"|"dispute"|"correction",
                        "evidence": [string]?}
+                      correction is ONLY against your OWN record. For
+                      someone else's claim the class is dispute; the
+                      registry refuses a correction aimed at another
+                      citizen and the cycle is spent.
   ask_operator        {"question": "...", "why": "what it would change"?}
   read_page           {"url": "https://docs.python.org/3/...",
                        "why": "what you are trying to find out"?}
@@ -417,7 +422,29 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
                                                    "schema": schema}}
     out = _post_json(llm_cfg["url"].rstrip("/") + "/v1/chat/completions", body,
                      timeout=timeout)
-    return out["choices"][0]["message"]["content"]
+    choice = out["choices"][0]
+    text = choice["message"]["content"]
+
+    # RAISE ON TRUNCATION, with the real reason.
+    #
+    # finish_reason == "length" means the model hit max_tokens mid-sentence.
+    # This function threw that field away and returned the fragment, so a
+    # post cut off at 3,000 tokens came back as unparseable JSON and
+    # parse_proposal reported "no JSON object carrying an 'action' key" —
+    # about output that BEGINS '{ "action": "post"'. The message named the
+    # one thing that was not wrong with it.
+    #
+    # Observed 2026-10-21: 9,972 characters returned, which is 3,000 tokens
+    # at this model's ratio, exactly the configured ceiling. A whole cycle's
+    # work was lost and the log blamed the model's formatting.
+    if choice.get("finish_reason") == "length":
+        raise ValueError(
+            f"the model hit its {body.get('max_tokens')}-token ceiling and "
+            f"was cut off mid-output ({len(text or '')} chars). The JSON is "
+            f"incomplete because it never finished, not because the model "
+            f"wrote it wrongly. Raise llm.composer.max_tokens, or the body "
+            f"being written is too long for one call.")
+    return text
 
 
 TITLE_LIMIT = 120

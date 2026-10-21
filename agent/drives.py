@@ -136,8 +136,11 @@ SCHEMA = {
     "porch": (["body"], [],
               lambda p: {"body": _s(p["body"], 1, 500, "body")}),
     "knock": ([], [], lambda p: {}),
+    # cls is an enum, and `correction` is checked against the subject below.
     "attestation": (["subject", "claim"], ["cls", "evidence"],
-                    lambda p: {"cls": _s(p.get("cls") or "observation", 1, 40, "cls"),
+                    lambda p: {"cls": _enum(p.get("cls") or "observation",
+                                            ("observation", "dispute",
+                                             "correction")),
                                "subject": _s(p["subject"], 1, 64, "subject"),
                                "claim": _trim(p["claim"], 1, 1000, "claim"),
                                "evidence": [_s(x, 1, 300, "evidence")
