@@ -214,6 +214,33 @@ def _verdict(block):
     return "inconclusive", detail + " (unrecognised status)"
 
 
+def _seed_drive_once(state, name, weight, desc, locked=0):
+    """Insert a drive the first time only, and never again.
+
+    "Does it exist?" is the wrong question: a goal the operator DELETED does
+    not exist either, so deepen, curate, make, greet and operator came back
+    on the very next wake. Removing a goal on the settings page appeared to
+    work and silently did not.
+
+    A `seeded:<name>` note records that we have done it once. If the goal is
+    gone after that, it is gone because someone meant it to be.
+    """
+    key = f"seeded:{name}"
+    if state.note(key):
+        return False
+    if state.db.execute("SELECT 1 FROM drives WHERE name=?", (name,)).fetchone():
+        state.note(key, utcnow())
+        return False
+    state.db.execute(
+        "INSERT INTO drives (name,weight,locked,description,created_at,"
+        "created_by) VALUES (?,?,?,?,?,'seed')",
+        (name, weight, locked, desc, utcnow()))
+    state.note(key, utcnow())
+    state.db.commit()
+    state.log(f"seeded the '{name}' drive at {weight}")
+    return True
+
+
 def do_witness(state, reader, log, max_pages=8):
     """The obligation that is not a desire.
 
@@ -518,14 +545,10 @@ def main():
     # The settings page writes these; config.yaml only seeds them.
     cfg["autonomy"] = policy.effective(state, cfg)
     # `deepen` is a goal like any other, seeded once, editable on /goals.
-    if not state.db.execute("SELECT 1 FROM drives WHERE name='deepen'").fetchone():
-        state.db.execute(
-            "INSERT INTO drives (name,weight,locked,description,created_at,created_by)"
-            " VALUES ('deepen',0.25,0,?,?,'seed')",
-            ("add the next increment to the open project — read a source, draft "
-             "a paragraph, or argue against yourself", utcnow()))
-        state.db.commit()
-        state.log("seeded the 'deepen' goal at 0.25")
+    _seed_drive_once(
+        state, "deepen", 0.25,
+        "add the next increment to the open project — read a source, draft "
+        "a paragraph, or argue against yourself")
     # The live goal table overrides the file. config.yaml seeded it once and is
     # never read for weights again, because the agent can move them and cannot
     # write the file.
@@ -550,21 +573,11 @@ def main():
          "congratulate, thank, disagree in plain words — the social room, "
          "not the record"),
     ):
-        if not state.db.execute("SELECT 1 FROM drives WHERE name=?",
-                                (_n,)).fetchone():
-            state.db.execute(
-                "INSERT INTO drives (name,weight,locked,description,created_at,"
-                "created_by) VALUES (?,?,0,?,?,'seed')", (_n, _w, _d, utcnow()))
-            state.db.commit()
-            state.log(f"seeded the '{_n}' drive at {_w}")
-    if not state.db.execute("SELECT 1 FROM drives WHERE name='operator'").fetchone():
-        state.db.execute(
-            "INSERT INTO drives (name,weight,locked,description,created_at,created_by)"
-            " VALUES ('operator',0.0,1,?,?,'seed')",
-            ("carry out what your operator asked for in the chat box; selected "
-             "only when a live instruction exists, never at random", utcnow()))
-        state.db.commit()
-        state.log("seeded the 'operator' drive; it is chosen only by an instruction")
+        _seed_drive_once(state, _n, _w, _d)
+    _seed_drive_once(
+        state, "operator", 0.0,
+        "carry out what your operator asked for in the chat box; selected "
+        "only when a live instruction exists, never at random", locked=1)
     # Whatever was waiting behind a finished project starts now rather than at
     # the next open_project. close_project promotes too; this covers a row that
     # was closed by hand, or by an older build that had no queue.

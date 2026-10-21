@@ -140,14 +140,52 @@ def forget_like(state, pattern, log=None):
 
 
 def forget(state, mid):
+    """Delete a memory, and actually remove it from the index.
+
+    A contentless FTS5 table stores no text, so its 'delete' command needs
+    the ORIGINAL text to know which terms to remove. This passed '' — so the
+    row vanished from `memories` and its words stayed in `memories_fts`
+    forever. Tested: a forgotten memory still matched its own words.
+
+    Two consequences. A memory the operator told riffle to forget still
+    surfaced through search, which is the one thing "forget" has to mean.
+    And because sqlite reuses the rowid of the newest deleted row, the next
+    memory written inherited the deleted one's terms — so searching for a
+    word from a forgotten memory returned an unrelated new one.
+
+    The 53 "no live thread to anchor" memories were removed with this.
+    Their rows are gone; their words may still be in the index, which is why
+    rebuild_index() exists below and should be run once.
+    """
+    row = state.db.execute("SELECT text FROM memories WHERE id=?",
+                           (mid,)).fetchone()
+    text = (row["text"] if row else "") or ""
     state.db.execute("DELETE FROM memories WHERE id=?", (mid,))
     if _ensure_fts(state):
         try:
             state.db.execute("INSERT INTO memories_fts (memories_fts,rowid,text)"
-                             " VALUES ('delete',?,'')", (mid,))
+                             " VALUES ('delete',?,?)", (mid, text))
         except Exception:
             pass
     state.db.commit()
+
+
+def rebuild_index(state):
+    """Drop and refill the search index from the memories table.
+
+    For repairing a store where forget() left terms behind. Cheap at this
+    size, and the only way to be sure the index and the table agree.
+    """
+    if not _ensure_fts(state):
+        return 0
+    state.db.execute("INSERT INTO memories_fts (memories_fts) VALUES ('delete-all')")
+    n = 0
+    for r in state.db.execute("SELECT id, text FROM memories"):
+        state.db.execute("INSERT INTO memories_fts (rowid, text) VALUES (?,?)",
+                         (r["id"], r["text"]))
+        n += 1
+    state.db.commit()
+    return n
 
 
 def _terms(q):
