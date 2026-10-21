@@ -127,11 +127,27 @@ def b64url(raw):
 def load_seed():
     try:
         with open(SEED_PATH, "rb") as f:
-            raw = f.read().strip()
+            # READ THE BYTES FIRST, STRIP ONLY THE TEXT FORMS.
+            #
+            # This was f.read().strip(), which strips whitespace BYTES from a
+            # raw 32-byte seed. Six of 256 byte values are whitespace, so a
+            # random seed begins or ends with one about 1 time in 22: the
+            # file shrinks to 31 bytes, fails the length check, and the
+            # identity bound to the square becomes unusable with no way back.
+            #
+            # A one-in-22 chance of silently destroying a citizen's key, in
+            # the function whose only job is to read it.
+            raw_bytes = f.read()
+        raw = raw_bytes
+        if len(raw_bytes) != 32:
+            # Only a text-format key needs trailing-newline tolerance.
+            raw = raw_bytes.strip()
     except PermissionError:
         die(f"cannot read {SEED_PATH}: this must run as the signer user")
     except FileNotFoundError:
         die(f"no key at {SEED_PATH}; run `riffle-sign genkey` first")
+    if len(raw_bytes) == 32:
+        return raw_bytes
     if len(raw) == 32:
         return raw
     # HEX FIRST. join.py has written this seed as 64 hex characters since
@@ -408,11 +424,18 @@ def cmd_adopt(a):
         die(f"{SEED_PATH} already exists; --force to replace it")
     try:
         with open(a.from_path, "rb") as f:
-            raw = f.read().strip()
+            # Same bug as load_seed: .strip() on a RAW seed loses a leading
+            # or trailing whitespace byte about 1 time in 22, and adopt is
+            # the one command where getting it wrong means failing to take
+            # custody of the identity that is already bound to the square.
+            raw_bytes = f.read()
     except OSError as e:
         die(f"cannot read {a.from_path}: {e}")
+    raw = raw_bytes if len(raw_bytes) == 32 else raw_bytes.strip()
     text = raw.decode("ascii", "ignore").strip()
-    if len(raw) == 32:
+    if len(raw_bytes) == 32:
+        seed = raw_bytes
+    elif len(raw) == 32:
         seed = raw
     elif len(text) == 64 and all(c in "0123456789abcdefABCDEF" for c in text):
         seed = bytes.fromhex(text)
