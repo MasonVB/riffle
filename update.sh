@@ -456,6 +456,45 @@ then
   exit 1
 fi
 
+# --- gate 10: no .get() on something that returns a sqlite3.Row -----------
+#
+# `(project.active(state) or {}).get("id")` reads as carefully guarded and
+# is not: active() returns a Row when a project exists, and Row has no .get.
+# The expression worked only when the answer was None and raised
+# AttributeError whenever there was something to read — so every cycle that
+# proposed a post died, and the `or {}` is what stopped anyone looking twice.
+#
+# A None guard that does not guard the TYPE is worse than no guard.
+if ! python3 - <<'PYROW'
+import glob
+import re
+import sys
+
+# Functions that return a Row (or None), not a dict.
+ROW_FNS = ("active", "fetchone", "read_row", "action", "note_row")
+bad = []
+for path in glob.glob("agent/*.py") + glob.glob("*.py"):
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        continue
+    for n, line in enumerate(lines, 1):
+        if line.lstrip().startswith("#"):
+            continue
+        for fn in ROW_FNS:
+            # <fn>(...) ... ).get(   on one line, with or without an `or {}`
+            if re.search(rf"\b{fn}\([^)]*\)[^\n]{{0,40}}\)\.get\(", line):
+                bad.append(f"{path}:{n}: .get() on {fn}() — Row has no .get")
+for b in bad:
+    print(f"  ROW .get {b}")
+sys.exit(1 if bad else 0)
+PYROW
+then
+  echo "!! .get() called on a sqlite3.Row; rolling back"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
