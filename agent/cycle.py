@@ -2183,10 +2183,20 @@ def main():
     # `post` is on queue, so a post can sit for a day; approving it then
     # closed that day's project, which may have had no notes and produced
     # nothing, while the project that actually did the work stayed open.
+    # sqlite3.Row SUBSCRIPTS, IT DOES NOT .get().
+    #
+    # `(project.active(state) or {}).get("id")` reads as safe — the `or {}`
+    # handles None — but active() returns a Row when there IS a project, and
+    # Row has no .get. So the expression worked only when there was no
+    # project, and raised AttributeError exactly when it mattered. Every
+    # cycle that proposed a post died at this line.
+    #
+    # The `or {}` is what made it look checked. A None guard that does not
+    # guard the type is worse than no guard: it stops anyone looking twice.
+    _proj = project.active(state) if kind == "post" else None
     aid = state.propose(cid, kind, drive, payload, rationale,
                         "queued" if mode == "queue" else "approved", report,
-                        project_id=((project.active(state) or {}).get("id")
-                                    if kind == "post" else None))
+                        project_id=(_proj["id"] if _proj else None))
 
     if mode == "queue":
         log(f"queued {kind} #{aid} for your approval: {rationale[:200]}", drive=drive)
