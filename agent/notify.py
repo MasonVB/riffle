@@ -16,6 +16,7 @@ Failures here are non-fatal by construction. If Pushover is down or the keys
 are wrong, the cycle logs it and carries on — a notification is a convenience,
 and the queue in the dashboard is the actual record.
 """
+import html
 import datetime as dt
 import json
 import urllib.error
@@ -125,15 +126,26 @@ def announce_pending(state, cfg, log):
     def review(aid):
         return f"{base}/act?id={aid}&t={link_token(state, aid)}"
 
+    # ESCAPE THE RATIONALE. This message is sent with html:1, and the
+    # rationale is model text written after reading the board — so a post
+    # could steer riffle into writing a rationale containing an <a href>,
+    # and the notification arriving on your phone would carry someone
+    # else's link next to riffle's own "Review and decide".
+    #
+    # The one place where board content reaches a push notification you are
+    # likely to tap.
     if len(rows) == 1:
         r = rows[0]
         title = f"riffle wants to {r['kind']}"
-        msg = (f"[{r['drive']}] {r['rationale'][:600]}\n\n"
+        msg = (f"[{html.escape(r['drive'] or '')}] "
+               f"{html.escape(r['rationale'][:600])}\n\n"
                f'<a href="{review(r["id"])}">Review and decide &#8594;</a>')
     else:
         title = f"riffle has {len(rows)} proposals waiting"
         msg = "\n\n".join(
-            f'{r["kind"]} ({r["drive"]}): {r["rationale"][:150]}\n'
+            f'{html.escape(r["kind"] or "")} '
+            f'({html.escape(r["drive"] or "")}): '
+            f'{html.escape(r["rationale"][:150])}\n'
             f'<a href="{review(r["id"])}">decide &#8594;</a>' for r in rows[:5])
         if len(rows) > 5:
             msg += f"\n\n…and {len(rows) - 5} more"

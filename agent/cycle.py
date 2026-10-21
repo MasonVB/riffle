@@ -3029,14 +3029,27 @@ def apply_sign(state, cfg, cid, p, drive, log):
     be a boundary, because the dashboard runs an approved action as the same
     user that proposed it.
     """
+    # --opt=value, not --opt value.
+    #
+    # Passed as separate argv items, argparse reads some values beginning
+    # with "-" as the next OPTION. Tested on python 3.12: "-7% divergence"
+    # and "-1.5" are accepted either way, but a single flag-shaped token —
+    # "-x", "--claim", "--" — is refused with an ArgumentError naming the
+    # option rather than the value, which reads like a bug in the signer.
+    # Narrower than it first looks, and still a real refusal of a legitimate
+    # seal label or attestation claim.
+    #
+    # The = form binds the value to the option no matter what it starts
+    # with. There is no shell here (subprocess with a list), so this is
+    # about argparse only, not quoting.
     kind = p["kind"]
     argv = ["sudo", "-n", "-u", "riffle-signer", "/usr/local/bin/riffle-sign"]
     if kind == "payout":
-        argv += ["payout", "--row", p["row"], "--expiry", p["expiry"]]
+        argv += ["payout", f"--row={p['row']}", f"--expiry={p['expiry']}"]
     elif kind == "seal":
-        argv += ["seal", "--hash", p["hash"], "--label", p["label"]]
+        argv += ["seal", f"--hash={p['hash']}", f"--label={p['label']}"]
     else:
-        argv += ["attest", "--subject", p["subject"], "--claim", p["claim"]]
+        argv += ["attest", f"--subject={p['subject']}", f"--claim={p['claim']}"]
 
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
