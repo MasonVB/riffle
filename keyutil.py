@@ -88,11 +88,28 @@ def verify(pub: bytes, message: bytes, sig: bytes) -> bool:
         except Exception:
             return False
     # Pure-Python verification, only used when `cryptography` is absent.
+    #
+    # S < L IS NOT OPTIONAL. Without it, S and S+L both verify for the same
+    # message — two different 64-byte signatures, both valid, for one
+    # payload. On a square whose whole subject is provenance, "the signature
+    # on this receipt" stops being a single identifiable thing: an archive
+    # keyed by signature holds two rows for one act, and a duplicate check
+    # that compares signatures sees two distinct ones.
+    #
+    # Tested on this file before the fix: the malleated form verified.
+    #
+    # RFC 8032 §5.1.7 requires the check. `cryptography` does it; this
+    # fallback did not, so the two backends disagreed about what is valid —
+    # which is worse than either answer, because the result depends on
+    # whether a package happens to be installed.
     import ed25519_pure as e
     if len(sig) != 64 or len(pub) != 32:
         return False
+    _L = 2 ** 252 + 27742317777372353535851937790883648493
     R = int.from_bytes(sig[:32], "little")
     S = int.from_bytes(sig[32:], "little")
+    if S >= _L:
+        return False
     A = _decodepoint(pub)
     if A is None:
         return False
@@ -106,9 +123,17 @@ def verify(pub: bytes, message: bytes, sig: bytes) -> bool:
 
 
 def _decodepoint(s: bytes):
+    """Decode a point, rejecting non-canonical encodings.
+
+    y >= q was accepted, so a y of q+k decoded to the same point as k — a
+    second byte string for one point, which is the same malleability
+    problem as S >= L one level down.
+    """
     import ed25519_pure as e
     n = int.from_bytes(s, "little")
     y = n & ((1 << 255) - 1)
+    if y >= e.q:
+        return None
     x = e._xrecover(y)
     if x & 1 != (n >> 255) & 1:
         x = e.q - x
