@@ -3094,12 +3094,31 @@ def apply_fetch(state, cfg, reader, writer, cid, p, drive, log):
         state.say("error", f"Cycle {cid} \u00b7 could not read {what}: {e}")
         state.end_cycle(cid, "fetch-failed", str(e)[:300])
         return 0
-    text = json.dumps(body, indent=1)[:5000]
+    # SHELVE THE WHOLE THING. The prompt gets a slice; the library gets the
+    # document.
+    #
+    # This cut to 5,000 characters BEFORE shelving, so the library held a
+    # truncated copy with nothing saying so — and the prompt then trimmed
+    # that to ~900. A docket with sixty rows was shelved as twelve and read
+    # as twelve, and the citation riffle wrote against it pointed at a
+    # document that did not contain what it claimed.
+    #
+    # The library is the archive. If it is worth fetching it is worth
+    # keeping whole; the disk cost of a few hundred kilobytes is nothing
+    # next to a source that silently disagrees with itself.
+    _full = json.dumps(body, indent=1)
+    _rows = len(body) if isinstance(body, list) else (
+        len(body.get(what) or []) if isinstance(body, dict) else 0)
+    text = _full[:5000]
+    if len(_full) > 5000:
+        text += (f"\n\n[... {len(_full) - 5000} more characters. The library "
+                 f"copy is complete; this is the first 5,000 characters of "
+                 f"{_rows or 'an unknown number of'} row(s).]")
     lcfg = cfg.get("library") or {}
     did = None
     try:
         did, _ = library.put(
-            state, f"/{what} on {utcnow()[:10]}", text, kind="data",
+            state, f"/{what} on {utcnow()[:10]}", _full, kind="data",
             tags=what, summary=f"the square's {what} surface as of {utcnow()}",
             source=f"1f916:/api/{what}",
             root=lcfg.get("root", library.ROOT),

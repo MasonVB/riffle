@@ -93,6 +93,15 @@ def total_bytes(state):
     return int(r["b"])
 
 
+def _free_bytes(root):
+    """Bytes actually available on the filesystem holding the library."""
+    try:
+        st = os.statvfs(root)
+        return st.f_bavail * st.f_frsize
+    except OSError:
+        return None
+
+
 def put(state, title, body, kind="note", tags="", summary="", source="",
         pinned=False, root=ROOT, cap=MAX_BYTES):
     """Shelve a document. Returns (id, evicted_titles).
@@ -240,6 +249,17 @@ def prune(state, root=ROOT, cap=MAX_BYTES):
     decision; the decision is the signal.
     """
     dropped = []
+    # THE DISK IS ALSO A LIMIT. A cap larger than free space never fires, so
+    # the configured number was doing nothing until it was lowered — and a
+    # correctly sized cap still cannot see a disk filling for other reasons
+    # (the model, logs, build directories). Evict down to whichever binds.
+    _free = _free_bytes(root)
+    if _free is not None:
+        _used = total_bytes(state)
+        # Keep 5 GB clear for the database, the journal and a build.
+        _room = max(0, _used + _free - 5 * 1024 ** 3)
+        if _room < cap:
+            cap = _room
     while total_bytes(state) > cap:
         row = state.db.execute(
             "SELECT id,title,path FROM library WHERE pinned=0"

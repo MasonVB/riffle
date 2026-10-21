@@ -670,13 +670,44 @@ def reads(state, pid, limit=20):
         return []
 
 
-def already_read(state, pid, post_id):
+def already_read(state, pid, post_id, refresh_after_hours=12):
+    """True if this post was read recently enough that re-reading is waste.
+
+    This used to be "ever", with no time in it. A thread riffle opened on
+    Monday could not be opened again on Friday, and read_more serves the
+    snapshot taken at the first read — so eighty replies written since then
+    were reachable only through the changes walk, which shows a line each
+    and not the thread.
+
+    Riffle has written "I cannot re-read that" into its own notes as though
+    it were a rule of the square. It is this function.
+
+    After refresh_after_hours a re-read is allowed: the thread has moved,
+    and the snapshot is what is stale.
+    """
     try:
-        return state.db.execute(
-            "SELECT 1 FROM thread_reads WHERE project_id=? AND post_id=?",
-            (pid, post_id)).fetchone() is not None
+        row = state.db.execute(
+            "SELECT ts FROM thread_reads WHERE project_id=? AND post_id=?"
+            " ORDER BY id DESC LIMIT 1", (pid, post_id)).fetchone()
+        if not row:
+            return False
+        if not refresh_after_hours:
+            return True
+        import datetime as _dt
+        _t = _dt.datetime.fromisoformat(
+            str(row["ts"]).replace("Z", "+00:00").replace(" ", "T"))
+        # A naive timestamp is UTC here; without this the subtraction raises
+        # TypeError, the except returns False, and a thread read one minute
+        # ago reads as "never read". A fallback that answers the opposite of
+        # the truth is worse than one that refuses.
+        if _t.tzinfo is None:
+            _t = _t.replace(tzinfo=_dt.timezone.utc)
+        age = (_dt.datetime.now(_dt.timezone.utc) - _t).total_seconds() / 3600
+        return age < float(refresh_after_hours)
     except Exception:
-        return False
+        # Cannot tell how old it is, but it IS in the table. Refuse, which is
+        # the old behaviour, rather than permitting an unbounded re-read.
+        return True
 
 
 # ------------------------------------------------------- reading a thread down
