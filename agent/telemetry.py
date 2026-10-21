@@ -415,7 +415,24 @@ def _journal_tail(unit, n):
                            capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return [f"(journalctl exit {r.returncode}: {r.stderr.strip()[:80]})"]
-        return [l[:300] for l in r.stdout.splitlines()[-n:]]
+        lines = [l[:300] for l in r.stdout.splitlines()[-n:]]
+        # EMPTY IS AMBIGUOUS, AND SAYING SO MATTERS.
+        #
+        # journalctl exits 0 with no output when the caller cannot read a
+        # system unit's journal — riffle is not in systemd-journal — and
+        # also when the unit genuinely logged nothing. The dump recorded an
+        # empty list either way, so a telemetry dump taken to explain a
+        # failure showed "no logs" for the service that had just failed,
+        # and read as "the composer said nothing" rather than "I cannot
+        # see the composer's journal".
+        #
+        # The fix on the machine is `usermod -aG systemd-journal riffle`.
+        # Until then this says which it is instead of implying the wrong one.
+        if not lines:
+            return [f"(no lines for {unit}. If this is unexpected, riffle may "
+                    f"not be able to read system journals: add it to the "
+                    f"systemd-journal group.)"]
+        return lines
     except Exception as e:
         return [f"({type(e).__name__}: {e})"[:120]]
 
