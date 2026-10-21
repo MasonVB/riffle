@@ -55,6 +55,7 @@ import argparse
 import json
 import os
 import re
+import time
 import shutil
 import subprocess
 import sys
@@ -77,6 +78,43 @@ NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}\.(py|txt|json|csv|md)\Z")
 def die(msg, code=2):
     print(json.dumps({"ok": False, "error": msg}))
     sys.exit(code)
+
+
+def _sweep_old_runs(keep_hours=48, keep_most_recent=20):
+    """Remove build trees older than keep_hours, keeping the newest few.
+
+    Both bounds, because either alone fails: an age rule alone deletes
+    everything after a quiet week, and a count rule alone keeps 20 trees
+    from a year ago. The newest are kept so a recent build can still be
+    inspected by hand.
+    """
+    try:
+        entries = []
+        for name in os.listdir(BUILD_ROOT):
+            path = os.path.join(BUILD_ROOT, name)
+            if not os.path.isdir(path):
+                continue
+            try:
+                entries.append((os.path.getmtime(path), path))
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    entries.sort(reverse=True)
+    cutoff = time.time() - keep_hours * 3600
+    removed = 0
+    for mtime, path in entries[keep_most_recent:]:
+        if mtime >= cutoff:
+            continue
+        # Same guard as above: this runs as root and deletes a tree.
+        if os.path.dirname(os.path.abspath(path)) != os.path.abspath(BUILD_ROOT):
+            continue
+        try:
+            shutil.rmtree(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def safe_name(name):
@@ -124,6 +162,19 @@ def main():
         die("entry must be a .py file")
     if entry not in files:
         die(f"entry {entry!r} is not among the files provided")
+
+    # SWEEP OLD RUNS FIRST.
+    #
+    # A build directory was removed only when the same run_id came round
+    # again, which never happens — run ids are unique per build. So every
+    # build left its tree behind forever, owned by riffle-build, and riffle
+    # cannot delete files it does not own. The disk fills with the output of
+    # successful work.
+    #
+    # Doing it here rather than in a tmpfiles.d rule means no new unit and
+    # no sudoers entry: this program already runs as root in this directory,
+    # and a build is exactly when the cost of a sweep is invisible.
+    _sweep_old_runs()
 
     work = os.path.join(BUILD_ROOT, run_id)
     # run_id is already regex-checked, but this program runs as root and
