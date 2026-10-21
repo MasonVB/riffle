@@ -30,6 +30,7 @@ THREE THINGS THIS FILE IS CAREFUL ABOUT
    came from and you can check it. A search result is a claim someone published,
    not a fact.
 """
+import zlib
 import gzip
 import html
 import io
@@ -163,14 +164,42 @@ def _open(url, timeout=20, depth=0):
 
 
 def _body(resp):
+    """Decode a response body, surviving the two ways servers break it.
+
+    Both of these escaped and killed the whole read:
+
+      A TRUNCATED GZIP raises EOFError, not OSError — we cap the read at
+      MAX_PAGE_BYTES, so a page larger than the cap is ALWAYS a truncated
+      gzip stream when the server compresses. Every large compressed page
+      failed, and the failure named EOFError rather than the size.
+
+      AN UNKNOWN CHARSET raises LookupError from decode(). errors="replace"
+      does not help: it governs undecodable bytes, not an unknown codec
+      name. A page declaring a charset Python has never heard of took the
+      read down with it.
+
+    Partial output beats no output. A truncated gzip still holds everything
+    before the cut, and an unknown charset is almost always a mislabelled
+    utf-8 or latin-1 page.
+    """
     raw = resp.read(MAX_PAGE_BYTES)
     if resp.headers.get("Content-Encoding") == "gzip":
         try:
             raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read(MAX_PAGE_BYTES)
-        except OSError:
+        except EOFError:
+            # Truncated by our own cap. Decompress what did arrive.
+            try:
+                d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                raw = d.decompress(raw, MAX_PAGE_BYTES)
+            except (zlib.error, OSError, EOFError):
+                pass
+        except (OSError, zlib.error):
             pass
     charset = resp.headers.get_content_charset() or "utf-8"
-    return raw.decode(charset, "replace")
+    try:
+        return raw.decode(charset, "replace")
+    except LookupError:
+        return raw.decode("utf-8", "replace")
 
 
 # ------------------------------------------------------------ HTML to text
