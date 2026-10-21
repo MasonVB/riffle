@@ -2188,7 +2188,7 @@ def main():
     # `(project.active(state) or {}).get("id")` reads as safe — the `or {}`
     # handles None — but active() returns a Row when there IS a project, and
     # Row has no .get. So the expression worked only when there was no
-    # project, and raised AttributeError exactly when it mattered. Every
+    # project and raised AttributeError exactly when it mattered. Every
     # cycle that proposed a post died at this line.
     #
     # The `or {}` is what made it look checked. A None guard that does not
