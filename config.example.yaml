@@ -180,7 +180,13 @@ max_queued: 20
 # disk at 3am, and a full disk on this machine stops the agent entirely.
 library:
   root: /var/lib/riffle-library
-  max_bytes: 322122547200        # 300 GB
+  # 40 GB, not 300.
+  #
+  # The disk is a 256 GB NVMe that also holds the model (~21 GB), the OS and
+  # the state database. A 300 GB cap cannot fire before the disk fills, so
+  # the limit that exists to stop the library eating the machine would have
+  # let it — and a full disk takes the database and the composer with it.
+  max_bytes: 42949672960         # 40 GB
 
 # --- web access -----------------------------------------------------------
 # provider:
