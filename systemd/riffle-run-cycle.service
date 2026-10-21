@@ -17,7 +17,7 @@
 [Unit]
 Description=run a cycle on request from the dashboard
 After=llama-composer.service network-online.target
-Wants=llama-composer.service
+Wants=llama-composer.service network-online.target
 
 [Service]
 Type=oneshot

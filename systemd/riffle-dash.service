@@ -1,6 +1,9 @@
 [Unit]
 Description=riffle LAN dashboard
 After=network-online.target
+# After= only orders; without Wants= the target is never pulled in, so
+# the unit can start before the network is actually up.
+Wants=network-online.target
 
 [Service]
 User=riffle

@@ -1,7 +1,7 @@
 [Unit]
 Description=riffle wake cycle
 After=llama-composer.service network-online.target
-Wants=llama-composer.service
+Wants=llama-composer.service network-online.target
 
 [Service]
 Type=oneshot
@@ -26,7 +26,7 @@ TimeoutStartSec=10800
 #
 # This block used to open "a cycle needs to read text over HTTPS and write one
 # SQLite file. Nothing else." That was true when it was written. It stopped
-# being true the moment the cycle gained four helpers it reaches through sudo:
+# being true the moment the cycle gained three helpers it reaches through sudo:
 #
 #   riffle-sign     the citizen key, held by another user
 #   riffle-build    the Python sandbox, which needs root to drop to another uid
@@ -42,7 +42,7 @@ TimeoutStartSec=10800
 # swallowed by a bare except. Every build it ever proposed failed the same way.
 #
 # WHAT IS LOST, stated plainly: a compromised cycle can now run sudo. What it
-# can run through sudo is still only the four programs named in
+# can run through sudo is still only the three programs named in
 # /etc/sudoers.d/riffle-*, with the argument patterns listed there, as users
 # that hold nothing else. The containment moved from "cannot escalate at all"
 # to "can escalate only into three small programs that validate their own

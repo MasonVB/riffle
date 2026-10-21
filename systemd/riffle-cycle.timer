@@ -12,7 +12,8 @@ Description=offer riffle a wake every five minutes
 OnBootSec=3min
 OnUnitActiveSec=5min
 AccuracySec=30s
-Persistent=true
+# Persistent=true removed: it only has an effect with OnCalendar=, and
+# this timer uses OnBootSec/OnUnitActiveSec. It did nothing.
 
 [Install]
 WantedBy=timers.target
