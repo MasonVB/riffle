@@ -292,7 +292,7 @@ after a deploy your browser is serving a cached copy">__BUILD__</span>
   <div class=btnrow>
     <label id=autow title="follow new messages"><input type=checkbox id=autos checked> auto</label>
     <button id=send>send</button>
-    <button id=sendcyc title="also carried into the next wake cycle as a standing instruction">send to cycle</button>
+    <button id=sendcyc title="carried into the next wake cycle as data; one cycle by default, raise the count on the settings page">send to cycle</button>
   </div>
 </footer>
 <script>
@@ -981,11 +981,12 @@ input[type=range]:focus-visible{outline:2px solid var(--sig);outline-offset:3px}
 <div class=note>Weights are relative — they are normalised before every choice, so
 raising all of them changes nothing. The bar shows the share each goal gets;
 the green mark shows the share it actually took over the last 14 days.
-Everything on this page is negotiable. Caps, autonomy levels and the model are
-not, and live in <code>config.yaml</code> over ssh.
-<br><br><b>witness</b> will always read high on actual: the attest ritual runs
-every cycle unconditionally, before any goal is chosen. It is an obligation
-rather than a desire, which is also why it cannot be removed.</div>
+Everything on this page is negotiable. Autonomy levels are set further down
+this page; caps and the model live in <code>config.yaml</code>.
+<br><br><b>actual</b> counts actions proposed under each goal, including the
+local ones &mdash; builds, reads, library and desk work. The attest ritual
+runs every cycle before any goal is chosen, but it creates no action, so it
+does not appear here. witness reads high only when it proposes something.</div>
 
 <div class=upcard id=upcard>
   <div class=uplabel>up for</div>
@@ -1031,9 +1032,9 @@ rather than for keeping.</div>
 <div id=telbox></div>
 
 <h2>instructions &mdash; what you told it</h2>
-<div class=note>Everything you type in chat is carried into the next cycle as
-data. One cycle by default; raise the count for something you want it to keep
-working on. An instruction takes the next cycle: the drive becomes
+<div class=note>What you send with <b>send to cycle</b> is carried into the
+next cycle as data; an ordinary chat message is not. One cycle by default;
+raise the count for something you want it to keep working on. An instruction takes the next cycle: the drive becomes
 <b>operator</b> and the request goes to the top of the prompt. It is spent
 once the model has <b>answered</b> &mdash; a refused proposal still spends it,
 a cycle that never reached the model does not.</div>
@@ -1041,8 +1042,9 @@ a cycle that never reached the model does not.</div>
 
 <h2>how often it wakes</h2>
 <div class=note>The timer fires every five minutes; this is how many of those
-firings actually become a cycle. A cycle takes two to three minutes on this
-box, so anything under ten leaves it doing little else. The run-cycle button
+firings actually become a cycle. A cycle takes six to twelve minutes on this
+box &mdash; the composer alone is six to nine &mdash; so anything under
+fifteen leaves it doing little else. The run-cycle button
 and <code>request_cycle</code> ignore this and wake it immediately.</div>
 <div class=g style="margin-bottom:18px">
   <label style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -1343,7 +1345,8 @@ async function load(){
         <span><button class=ghost style="padding:2px 8px;font-size:12px"
           onclick="pin(${m.id},${m.pinned?0:1})">${m.pinned?'unpin':'pin'}</button>
         <button class=warn style="padding:2px 8px;font-size:12px"
-          onclick="drop(${m.id})">forget</button></span></div></div>`).join('')
+          data-t="${esc((m.text||'').slice(0,160))}"
+          onclick="drop(${m.id}, this)">forget</button></span></div></div>`).join('')
     || '<div style="color:var(--dim)">nothing remembered yet</div>';
 }
 async function api(path, body){
@@ -1362,7 +1365,19 @@ function setW(name, btn){
 const lock = (name,locked)=>api('/api/goal/lock',{name,locked});
 const rm = name => confirm('remove the goal "'+name+'"?') && api('/api/goal/remove',{name});
 const pin = (id,pinned)=>api('/api/memory/pin',{id,pinned});
-const drop = id => api('/api/memory/forget',{id});
+// Forget is permanent and had no confirmation, beside a button labelled
+// "forget" on every row. One mis-tap on a phone and the memory is gone with
+// no undo — and the text is shown right there, so quoting it in the prompt
+// costs nothing and makes the choice an informed one.
+const drop = (id, btn) => {
+  // The text rides in data-t, read back via dataset — the same shape as the
+  // project-title fix, and for the same reason: anything interpolated into
+  // an onclick attribute breaks on the first quote in the content.
+  const text = (btn && btn.dataset.t) || '';
+  if(!confirm('Forget this memory permanently?\n\n' + text +
+              '\n\nThere is no undo.')) return;
+  return api('/api/memory/forget',{id});
+};
 function addGoal(){
   api('/api/goal/add',{name:document.getElementById('n').value,
     weight:+document.getElementById('w').value,
