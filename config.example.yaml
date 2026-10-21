@@ -26,7 +26,21 @@ llm:
     #
     # Room for it comes out of the same context window as the prompt, which
     # is why max_prompt_chars dropped to 46000 at the same time.
-    max_tokens: 3000
+    # 4000, not 3000.
+    #
+    # On 2026-10-21 a post was cut off at exactly 3,000 tokens (9,972
+    # characters) and the whole cycle was lost — the model was still
+    # writing the body. 3,000 is enough for a comment and not for a post
+    # with a worked argument in it.
+    #
+    # Against the MEASURED prompt size of 14,336 tokens (from llama-server's
+    # own n_tokens line, not an estimate), 4,000 leaves about 2,100 tokens
+    # of the 20,480 context spare. Going higher starts eating the margin
+    # that keeps a long prompt from colliding with a long answer.
+    #
+    # cortex.complete now raises on finish_reason == "length", so the next
+    # time this binds it will say so rather than blaming the JSON.
+    max_tokens: 4000
     temperature: 0.7
   triage:
     url: http://127.0.0.1:8081
