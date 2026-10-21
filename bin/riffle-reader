@@ -38,6 +38,7 @@ the agent owns. Same shape as riffle-build: the thing that touches the outside
 world is not the thing that holds the credentials.
 """
 import argparse
+from html.parser import HTMLParser
 import html
 import json
 import re
@@ -301,14 +302,96 @@ def to_text(raw, ctype):
         return ("[This is a PDF. Only its bytes were fetched; there is no text "
                 "extraction here. Shelve the URL and read the abstract page "
                 "instead.]")
-    s = raw.decode("utf-8", "replace")
-    s = _DROP.sub(" ", s)
-    s = re.sub(r"<br\s*/?>|</p>|</div>|</h[1-6]>", "\n", s, flags=re.I)
-    s = _TAG.sub(" ", s)
-    s = html.unescape(s)
-    s = re.sub(r"[ \t]+", " ", s)
-    s = _WS.sub("\n\n", s).strip()
-    return s[:MAX_TEXT]
+    # THE DECLARED CHARSET, and a real parser.
+    #
+    # Two problems with the regex version this replaces.
+    #
+    # It decoded everything as utf-8, so a latin-1 or windows-1252 page —
+    # still common on government and standards sites, which is most of the
+    # allowlist — came through with replacement characters scattered through
+    # the text, and riffle quoted them into comments.
+    #
+    # And _DROP used `.*?` between a start tag and its close. On a page with
+    # unclosed <nav> tags each start scans to the end of the document and
+    # fails, which is quadratic: measured here at 0.035s for 200 tags,
+    # 1.96s for 2000. A page with a few thousand would hang the reader
+    # inside its own timeout.
+    #
+    # html.parser is linear and already handles entities and broken markup.
+    charset = _charset_from(raw, ctype)
+    try:
+        s = raw.decode(charset, "replace")
+    except LookupError:
+        s = raw.decode("utf-8", "replace")
+    p = _Extract()
+    try:
+        p.feed(s)
+        p.close()
+        text = p.text()
+    except Exception:
+        # A parser that gives up still leaves what it read.
+        text = p.text()
+    text = re.sub(r"[ \t]+", " ", text)
+    text = _WS.sub("\n\n", text).strip()
+    return text[:MAX_TEXT]
+
+
+def _charset_from(raw, ctype):
+    """charset= from the header, else a <meta charset> in the first 4 KB."""
+    m = re.search(r"charset=([A-Za-z0-9_.:+-]+)", ctype or "", re.I)
+    if m:
+        return m.group(1).strip("\"' ")
+    head = raw[:4096].decode("ascii", "ignore")
+    m = re.search(r"<meta[^>]+charset=[\"']?([A-Za-z0-9_.:+-]+)", head, re.I)
+    return m.group(1) if m else "utf-8"
+
+
+class _Extract(HTMLParser):
+    """Visible text only. Linear, and tolerant of unclosed tags.
+
+    HARD vs SOFT skipping, and the difference matters.
+
+    script/style/noscript/svg hold content that is never prose, so their
+    text is dropped. An unclosed one of those is rare and losing the rest
+    of the page to it is the lesser risk.
+
+    nav/header/footer/aside are LAYOUT. My first version skipped those too,
+    and on a page with an unclosed <nav> — which the quadratic test case
+    above is made of, and which real pages do — the skip counter never came
+    back down and the entire article was swallowed. The extraction returned
+    the <title> and nothing else.
+
+    So layout tags are not skipped. A navigation menu leaking into the text
+    is noise riffle can read past; losing the article is a page that reads
+    as empty, which is the failure the old regex at least did not have.
+    """
+    SKIP = {"script", "style", "noscript", "svg"}
+    BREAK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+             "section", "article", "blockquote"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._out = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._skip += 1
+        elif tag in self.BREAK:
+            self._out.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self._skip:
+            self._skip -= 1
+        elif tag in self.BREAK:
+            self._out.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip:
+            self._out.append(data)
+
+    def text(self):
+        return "".join(self._out)
 
 
 def main():
