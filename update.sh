@@ -365,27 +365,72 @@ fi
 # This compares the two numbers and refuses a deploy where the arithmetic
 # does not work.
 if ! python3 - <<'PYWAIT'
+# GATE 6 READ ONE FILE AND THE WRONG UNIT.
+#
+# It summed the three longest waits in cycle.py (1200 + 900 + 200 = 2300)
+# and compared that to the unit IN THE REPO. Two problems:
+#
+#   The big waits are elsewhere. cortex.py holds the composer's 1800 s and
+#   memory.py holds reflect's 900 s. A real worst-case path runs the lock
+#   wait, reflect, consolidate and the composer in sequence — about 6,800 s,
+#   which is nearly three times what this gate measured. It passed a
+#   TimeoutStartSec of 3000 against that.
+#
+#   And update.sh never installs units, so the repo copy can say 10800 while
+#   /etc/systemd/system says 2700. The number that matters is the installed
+#   one.
+import glob
 import re
 import sys
 
+bad = []
 try:
-    unit = open("systemd/riffle-cycle.service").read()
-    code = open("agent/cycle.py").read()
-except OSError as e:
-    print(f"  could not read the files: {e}")
-    sys.exit(0)
-m = re.search(r"^TimeoutStartSec=([0-9]+)", unit, re.M)
-if not m:
-    print("  no TimeoutStartSec in riffle-cycle.service")
-    sys.exit(1)
-limit = int(m.group(1))
-waits = [int(x) for x in re.findall(r"timeout=([0-9]{3,})", code)]
-worst = sum(sorted(waits, reverse=True)[:3])
-print(f"  unit allows {limit}s; the three longest internal waits total {worst}s")
-if worst > limit:
-    print("  TOO TIGHT: systemd will kill the cycle before it can finish")
-    sys.exit(1)
-sys.exit(0)
+    code = ""
+    for path in ("agent/cycle.py", "agent/cortex.py", "agent/memory.py",
+                 "agent/consolidate.py", "agent/chat.py"):
+        try:
+            code += open(path).read()
+        except OSError:
+            pass
+    waits = sorted((int(x) for x in re.findall(r"timeout=([0-9]{3,})", code)),
+                   reverse=True)
+    # Every distinct long wait a single cycle can sit through in sequence:
+    # the composer lock, triage for reflect, triage for consolidate, then
+    # the composer itself. Five is a deliberate over-count — a gate about a
+    # ceiling should assume the bad case.
+    worst = sum(waits[:5])
+
+    # THE INSTALLED UNIT, falling back to the repo copy with a warning.
+    unit = None
+    for cand in ("/etc/systemd/system/riffle-cycle.service",
+                 "systemd/riffle-cycle.service"):
+        try:
+            unit = open(cand).read()
+            where = cand
+            break
+        except OSError:
+            continue
+    if unit is None:
+        bad.append("no riffle-cycle.service found, installed or in the repo")
+    else:
+        if where.startswith("systemd/"):
+            print("  (no installed unit readable here; checking the repo copy)")
+        m = re.search(r"^TimeoutStartSec=([0-9]+)", unit, re.M)
+        if not m:
+            bad.append(f"no TimeoutStartSec in {where}")
+        else:
+            limit = int(m.group(1))
+            print(f"  {where} allows {limit}s; the five longest internal "
+                  f"waits total {worst}s")
+            if worst > limit:
+                bad.append(f"systemd kills the cycle at {limit}s and the "
+                           f"waits can reach {worst}s. SIGTERM runs no "
+                           f"finally, so this is a cycle lost mid-work.")
+except BaseException as e:
+    bad.append(f"the timeout check could not run: {type(e).__name__}: {e}")
+for b in bad:
+    print(f"  TIMEOUT: {b}")
+sys.exit(1 if bad else 0)
 PYWAIT
 then
   echo "!! the cycle can wait longer than systemd allows; rolling back"
@@ -417,6 +462,24 @@ for path in ("agent/cycle.py", "agent/dash.py", "agent/project.py",
     except (OSError, SyntaxError):
         continue
     for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        # UNCONDITIONAL SELF-CALL AHEAD OF THE BODY.
+        #
+        # The len(names)==1 test below only catches a function whose ONLY
+        # call is itself. A self-call inserted ahead of a real body —
+        # `def f(x): return f(x)` followed by the genuine code — passed,
+        # and is just as infinitely recursive. Catch that shape directly:
+        # a bare `return <self>(...)` with nothing guarding it.
+        for _n in fn.body:
+            if not isinstance(_n, ast.Return):
+                break           # something real happens first; stop looking
+            _v = _n.value
+            if (isinstance(_v, ast.Call) and isinstance(_v.func, ast.Name)
+                    and _v.func.id == fn.name):
+                bad.append(f"{path}:{_n.lineno} {fn.name}() returns a call "
+                           f"to itself as its first statement, with no "
+                           f"condition — unconditional infinite recursion")
+            break
+
         names = {c.func.id for c in ast.walk(fn)
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
         # Builtins and exception constructors are not "work": a function
@@ -450,54 +513,69 @@ fi
 #
 # A protected header that no code emits protects nothing.
 if ! python3 - <<'PYTRIM'
+# GATE 8 COUNTED MENTIONS, AND A MENTION IS NOT A HEADER.
+#
+# It compared each _NEVER_TRIM entry against the whole of agent/*.py and
+# passed if the string appeared more than once. cortex.py:257 reads
+# "...is in YOUR ACTUAL SITUATION, counted from the actions table" — prose,
+# in a different prompt — and that satisfied the gate, so renaming the real
+# situation block would have gone through unnoticed.
+#
+# _is_rule asks whether the header is in the first 400 characters of a
+# BLOCK. Most blocks are assembled in main() from live state and cannot be
+# built here, so the closest honest proxy is positional: a header STARTS a
+# string literal; a prose reference sits mid-sentence. That distinguishes
+#
+#   "YOUR ACTUAL SITUATION, checked this cycle..."     <- a header
+#   "...proposed is in YOUR ACTUAL SITUATION, counted" <- a mention
+#
+# My first rewrite tried to construct every block and flagged five valid
+# headers it simply could not reach — a gate that vetoes correct work,
+# which is the fault I have now shipped twice in one day.
+import ast
 import glob
 import sys
 
-sys.path.insert(0, ".")
-try:
-    from agent.cycle import _NEVER_TRIM
-except Exception as e:
-    print(f"  could not import _NEVER_TRIM: {e}")
-    sys.exit(0)
-# Comments do not count. The first version of this gate counted every
-# occurrence, and the explanatory comment above _NEVER_TRIM names the
-# headers — so a header could be orphaned and still score two. A gate that
-# counts its own documentation as evidence is the thing it exists to catch.
-body = ""
-for path in glob.glob("agent/*.py"):
-    try:
-        for line in open(path):
-            if line.lstrip().startswith("#"):
-                continue
-            body += line
-    except OSError:
-        pass
-# The tuple itself is one occurrence; an emitted block is another.
-# Comments stripped here too. _NEVER_TRIM has explanatory comments INSIDE
-# it that name the headers; counting those in the tuple but not in the body
-# made the subtraction negative and reported every header as orphaned. The
-# two counts must be taken over the same text.
-tuple_src = ""
-src = open("agent/cycle.py").read()
-i = src.find("_NEVER_TRIM = (")
-if i >= 0:
-    depth, j = 0, src.index("(", i)
-    for j in range(src.index("(", i), len(src)):
-        if src[j] == "(":
-            depth += 1
-        elif src[j] == ")":
-            depth -= 1
-            if depth == 0:
-                break
-    tuple_src = "".join(ln for ln in src[i:j].splitlines(keepends=True)
-                        if not ln.lstrip().startswith("#"))
 bad = []
-for header in _NEVER_TRIM:
-    emitted = body.count(header) - tuple_src.count(header)
-    if emitted < 1:
-        bad.append(header)
+try:
+    sys.path.insert(0, ".")
+    from agent.cycle import _NEVER_TRIM
+
+    # Every string literal in the package, with the offset of each header.
+    starts = {k: False for k in _NEVER_TRIM}
+    for path in glob.glob("agent/*.py"):
+        try:
+            tree = ast.parse(open(path).read())
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            lit = node.value
+            for k in _NEVER_TRIM:
+                # Within the first 80 characters IS a header; _is_rule
+                # allows 400, and no real header sits further in than a
+                # short lead-in.
+                #
+                # But skip a literal that is EXACTLY the header: those are
+                # the _NEVER_TRIM entries themselves, and a list that
+                # satisfies its own check tests nothing. Renaming the real
+                # block left the tuple as the only match, and the gate
+                # passed — the audit's exact mutation.
+                if lit.strip() == k:
+                    continue
+                if k in lit[:80]:
+                    starts[k] = True
+    for k, found in starts.items():
+        if not found:
+            bad.append(f"{k!r} is protected from trimming and no string "
+                       f"literal starts with it. Either the header was "
+                       f"renamed and the list was not, or the entry is dead.")
+except BaseException as e:
+    bad.append(f"the protected-header check could not run: "
+               f"{type(e).__name__}: {e}")
 for b in bad:
-    print(f"  ORPHAN PROTECTED HEADER {b!r}: nothing emits a block with this")
+    print(f"  ORPHAN PROTECTED HEADER {b}")
 sys.exit(1 if bad else 0)
 PYTRIM
 then
@@ -574,26 +652,70 @@ fi
 #
 # A None guard that does not guard the TYPE is worse than no guard.
 if ! python3 - <<'PYROW'
+# GATE 10 WAS A LINE REGEX, AND MISSED TWO OF THREE SHAPES.
+#
+# It matched `<fn>(...)....get(` on ONE line. Tested by the auditor:
+#
+#   (project.active(state) or {}).get("id")   caught
+#   project.active(state).get("id")           missed
+#   p = project.active(state); p.get("id")    missed
+#
+# The last is the commonest way anyone would write it. An AST pass tracks
+# names assigned from a Row-returning call and flags .get on them anywhere
+# in the same function.
+import ast
 import glob
-import re
 import sys
 
-# Functions that return a Row (or None), not a dict.
-ROW_FNS = ("active", "fetchone", "read_row", "action", "note_row")
+ROW_FNS = {"active", "fetchone", "read_row", "action", "last_head",
+           "note_row", "read_row"}
 bad = []
 for path in glob.glob("agent/*.py") + glob.glob("*.py"):
     try:
-        lines = open(path).read().splitlines()
-    except OSError:
+        tree = ast.parse(open(path).read())
+    except (OSError, SyntaxError):
         continue
-    for n, line in enumerate(lines, 1):
-        if line.lstrip().startswith("#"):
-            continue
-        for fn in ROW_FNS:
-            # <fn>(...) ... ).get(   on one line, with or without an `or {}`
-            if re.search(rf"\b{fn}\([^)]*\)[^\n]{{0,40}}\)\.get\(", line):
-                bad.append(f"{path}:{n}: .get() on {fn}() — Row has no .get")
-for b in bad:
+
+    def row_call(node):
+        """True if this expression is a call to something returning a Row."""
+        if not isinstance(node, ast.Call):
+            return False
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else (
+            f.id if isinstance(f, ast.Name) else None)
+        return name in ROW_FNS
+
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        rows = set()
+        for node in ast.walk(fn):
+            # p = <row call>   /   p = <row call> or {}
+            if isinstance(node, ast.Assign):
+                v = node.value
+                if isinstance(v, ast.BoolOp):
+                    v = v.values[0] if v.values else v
+                if row_call(v):
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            rows.add(t.id)
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get"):
+                continue
+            tgt = node.func.value
+            # <name>.get(...) where name came from a Row call
+            if isinstance(tgt, ast.Name) and tgt.id in rows:
+                bad.append(f"{path}:{node.lineno}: {tgt.id}.get() — "
+                           f"{tgt.id} holds a sqlite3.Row, which has no .get")
+            # <row call>.get(...)  and  (<row call> or {}).get(...)
+            inner = tgt
+            if isinstance(inner, ast.BoolOp) and inner.values:
+                inner = inner.values[0]
+            if row_call(inner):
+                bad.append(f"{path}:{node.lineno}: .get() straight off a "
+                           f"Row-returning call")
+for b in sorted(set(bad)):
     print(f"  ROW .get {b}")
 sys.exit(1 if bad else 0)
 PYROW
