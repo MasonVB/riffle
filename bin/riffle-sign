@@ -170,16 +170,57 @@ def load_seed():
     return seed
 
 
-def sign_bytes(seed, message):
+# WHERE keyutil COMES FROM IS A SECURITY QUESTION.
+#
+# Both of these did `sys.path.insert(0, "/opt/riffle")` and imported
+# keyutil from there. /opt/riffle is the agent's own checkout, writable by
+# `riffle` — so riffle could drop a keyutil.py into it and this program,
+# running as riffle-signer with the key, would import and execute it.
+#
+# That is the whole point of the signer being a separate user, undone by an
+# import path. The agent never needs to be able to change the code that
+# handles the key.
+#
+# So: a root-owned copy beside this program first, and /opt/riffle only as
+# a last resort with a loud warning — a machine mid-migration should still
+# work, but should say what it is doing.
+_KEYUTIL_DIRS = ("/usr/local/lib/riffle-signer", "/usr/local/bin")
+
+
+def _keyutil():
+    import importlib.util
+    import os as _os
+    for d in _KEYUTIL_DIRS:
+        path = _os.path.join(d, "keyutil.py")
+        if not _os.path.exists(path):
+            continue
+        st = _os.stat(path)
+        # Root-owned and not group/other writable, or it is no better than
+        # the path it replaces.
+        if st.st_uid != 0 or (st.st_mode & 0o022):
+            die(f"{path} is not root-owned and unwritable by others "
+                f"(uid {st.st_uid}, mode {st.st_mode & 0o777:o}); refusing "
+                f"to load signing code from it")
+        spec = importlib.util.spec_from_file_location("keyutil", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    print(f"riffle-sign: WARNING: no keyutil.py in {', '.join(_KEYUTIL_DIRS)}; "
+          f"falling back to /opt/riffle, which the agent can write. Install "
+          f"it with: sudo install -m 0644 -o root -g root "
+          f"/opt/riffle/keyutil.py /usr/local/lib/riffle-signer/keyutil.py",
+          file=sys.stderr)
     sys.path.insert(0, "/opt/riffle")
     import keyutil
-    return keyutil.sign(seed, message)
+    return keyutil
+
+
+def sign_bytes(seed, message):
+    return _keyutil().sign(seed, message)
 
 
 def public_key(seed):
-    sys.path.insert(0, "/opt/riffle")
-    import keyutil
-    return keyutil.public_from_seed(seed)
+    return _keyutil().public_from_seed(seed)
 
 
 def conf():
