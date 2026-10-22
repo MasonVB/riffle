@@ -918,7 +918,17 @@
               "type": "string"
             },
             "kind": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "artifact",
+                "build",
+                "draft",
+                "question",
+                "reminder",
+                "scrap",
+                "thread"
+              ],
+              "description": "Generated from drives._DESK_KINDS."
             },
             "body": {
               "type": "string"
@@ -996,7 +1006,18 @@
               "type": "string"
             },
             "kind": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "code",
+                "data",
+                "draft",
+                "note",
+                "page",
+                "post",
+                "reference",
+                "thread"
+              ],
+              "description": "Generated from library.KINDS."
             },
             "tags": {
               "type": "string"
