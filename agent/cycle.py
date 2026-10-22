@@ -1655,7 +1655,15 @@ def main():
     # an instruction that survives every refusal steers long after you stopped
     # watching.
     if _pending:
-        spend_instructions(state)
+        # Only the ones that were in the prompt. _pending was read at line
+        # ~984, before the composer ran; anything you sent during those six
+        # to twelve minutes is not in it and must not be charged for a cycle
+        # it never appeared in.
+        #
+        # Third time this has been written. The previous two were reported
+        # as done and are not in the tree — see the silent-revert note in
+        # AUDIT-RESPONSE-2 §5.
+        spend_instructions(state, [r["id"] for r in _pending])
 
     # --- gate -----------------------------------------------------------------
     try:
@@ -1804,11 +1812,26 @@ def main():
             pass
         for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b", body, re.I)):
             try:
-                _d = library.read(state, int(_lid), cfg["library"]["root"])
-                if _d:
-                    _src[f"library_{_lid}"] = (_d.get("body") or "")[:20000]
-            except Exception:
-                pass
+                # library.read returns (row, text). This called .get("body")
+                # on the TUPLE — AttributeError, swallowed by the bare
+                # except — so the whole point of this loop, letting riffle
+                # back a figure by citing the document it came from, has
+                # never once worked.
+                #
+                # count=False: a lookup made on riffle's behalf is not
+                # riffle choosing to read something, and the read counter
+                # is what protects a document from pruning.
+                _row2, _text2 = library.read(state, int(_lid),
+                                             cfg["library"]["root"],
+                                             count=False)
+                if _row2:
+                    _src[f"library_{_lid}"] = (_text2 or "")[:20000]
+            except Exception as _e3:
+                # SAY SO. A bare `pass` here is why the tuple bug survived
+                # three audit rounds: the loop failed on every call and the
+                # only evidence was a figure that numcheck could not back.
+                log(f"could not read library #{_lid} for numcheck: "
+                    f"{type(_e3).__name__}: {_e3}", level="warn", drive=drive)
         passed, report = run_numcheck(body, _src, material)
         if not passed:
             # Match the message to the decision. Spelled numerals do not block
