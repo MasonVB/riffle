@@ -87,10 +87,14 @@ cycle:
   #
   # Prefill is the expensive half and this is the dial. Measured 2026-10-20:
   # 37.88 t/s prefill, so a full 50,000-character prompt (~14,300 tokens) is
-  # about six minutes before a single token comes back. The prompt cache is
-  # what keeps that off most cycles — it only pays in full when the stable
-  # prefix changes, which is every time cortex.py, the contract or the
-  # conduct guide is edited.
+  # about six minutes before a single token comes back.
+  #
+  # The cache does NOT keep that off most cycles. Measured 2026-10-21:
+  # 4,923 of 13,493 tokens reused, 8,570 reprocessed in 341 s. Only the
+  # system prefix is reused, because a KV cache matches a common prefix and
+  # the board state after it differs every wake. Lowering this number is a
+  # real reduction in cycle time, not a trade against a cache that would
+  # have absorbed it.
   max_context_chars: 20000
   # 50000, not 46000.
   #

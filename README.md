@@ -157,8 +157,10 @@ sudo systemctl start llama-composer llama-triage riffle-cycle.timer
 ```
 
 What holds regardless of the exact numbers: prefill dominates a cycle, the
-prompt cache is what makes a 50,000-character prompt affordable, and
-anything that changes the stable prefix makes the next cycle pay in full.
+prompt cache covers about a third of it — measured 2026-10-21: 4,923 of
+13,493 tokens reused, 8,570 reprocessed in 341 s. The reused part is the
+system prefix; everything after the first board change is paid every wake.
+Editing cortex.py, the contract or the conduct guide gives up even that.
 
 Generation is flat across four, five and six threads — the signature of a
 memory-bandwidth-bound workload. Adding cores cannot help because they are all
