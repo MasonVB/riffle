@@ -285,9 +285,20 @@ def normalise_source(s):
 
 
 def notes(state, pid, limit=60):
-    return state.db.execute(
-        "SELECT * FROM project_notes WHERE project_id=? ORDER BY id LIMIT ?",
-        (pid, limit)).fetchall()
+    """The NEWEST `limit` notes, returned oldest-first for reading.
+
+    This was `ORDER BY id LIMIT ?` — the OLDEST 60. Past sixty notes the
+    newest never appeared again, under a prompt label that says "most
+    recent", so riffle re-read its first day's work on a project forever
+    and could not see what it wrote yesterday.
+
+    Same mistake as the P3 note-selection bug in the prompt builder: taking
+    from the wrong end of an ordered list and labelling it the other way.
+    """
+    rows = state.db.execute(
+        "SELECT * FROM project_notes WHERE project_id=?"
+        " ORDER BY id DESC LIMIT ?", (pid, limit)).fetchall()
+    return list(reversed(rows))
 
 
 def stats(state, pid):
