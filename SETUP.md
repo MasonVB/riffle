@@ -117,9 +117,33 @@ of machine pp is the one that decides how long a cycle takes — a 14k-token
 prompt is many minutes of prefill at any plausible rate.
 
 That is why the prompt is split into a byte-stable prefix and a volatile
-suffix, and why `--cache-reuse` is in the unit file. Keep the prefix stable
-and you pay prefill once rather than on every wake. Editing cortex.py, the
-contract or the conduct guide invalidates it.
+suffix, and why `--cache-reuse` and `--kv-unified` are both in the unit
+file. **You do not pay prefill once.** A KV cache matches a common prefix,
+so reuse ends at the first token that differs — and most of what riffle
+reads is board state, which differs every wake.
+
+Measured on this machine, 2026-10-21, with `--kv-unified` working:
+
+```
+reused from cache  4,923 tokens   (the stable system prefix)
+reprocessed        8,570 tokens   in 341 s at ~25 tok/s
+full context      13,493 tokens
+```
+
+About 36% is reused; the rest is paid every cycle. Before `--kv-unified`
+the figure was ~4,500, so the flag bought roughly 400 tokens — ordinary
+prefix matching was already reusing the same prefix.
+
+Two things follow. The volatile lines (the clock, the selected drive, the
+caps) belong at the END of the prompt: they were at the front, which meant
+nothing after them could ever be cached. And editing cortex.py, the
+contract or the conduct guide gives up even the 36% — about six minutes on
+the next wake.
+
+Note the rate: ~25 t/s here against llama-bench's 37.88. Prefill slows as
+context grows, so a 512-token bench is not a 13k-token cycle.
+
+(This correction has been applied twice; the first did not reach the repo.)
 
 On this machine, measured 2026-10-20 on an idle box: **pp512 37.88 ± 0.94**,
 **tg128 8.64 ± 0.01**. This file used to say 10–14 and 40–90, which was
