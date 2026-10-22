@@ -637,7 +637,11 @@ class Handler(BaseHTTPRequestHandler):
         # the same target from a later cycle. Approval ran none of those
         # checks again — they all happened when the action was proposed, and
         # approving meant sending whatever the state was now.
-        _day = utcnow()[:10]
+        # ONE DAY SOURCE. This used utcnow() while cap_bump below uses the
+        # server's now_utc, so for part of every day the check and the
+        # increment disagreed about which day it was: a cap could read full
+        # against one day and be spent against another.
+        _day = (self.state.note("server_day") or utcnow())[:10]
         _left = self.cfg["caps"].get(a["kind"])
         if _left is not None and s.cap_used(_day, a["kind"]) >= _left:
             s.set_status(aid, "rejected",
@@ -649,6 +653,38 @@ class Handler(BaseHTTPRequestHandler):
             s.log(f"approved {a['kind']} #{aid} not sent: the {a['kind']} cap "
                   f"filled while it waited", level="warn", drive=a["drive"])
             return {"error": f"today's {a['kind']} allowance is used up"}
+        # The comment checks the cycle runs, run again here. A queued
+        # comment can sit for hours; the comment above has said since C11
+        # that riffle "can say the same thing another way" in that window,
+        # and then only checked caps and votes.
+        if a["kind"] in ("comment", "post", "porch") and payload.get("body"):
+            _dup, _ov = cycle_mod.near_duplicate(
+                s, a["kind"], payload["body"], exclude_id=aid)
+            if _dup:
+                s.set_status(aid, "rejected",
+                             {"by": "duplicate",
+                              "how": f"{_ov:.0%} the same as #{_dup['id']}"})
+                self._update_card(aid, status="rejected",
+                                  error=f"{_ov:.0%} the same as the "
+                                        f"{a['kind']} you sent on "
+                                        f"{_dup['created_at'][:16]} "
+                                        f"(#{_dup['id']})")
+                return {"error": f"{_ov:.0%} the same as #{_dup['id']}"}
+        if (a["kind"] == "comment" and not payload.get("parent_id")
+                and payload.get("post_id")):
+            _tl = cycle_mod.top_level_today(s, payload["post_id"],
+                                            exclude_id=aid)
+            if _tl:
+                s.set_status(aid, "rejected",
+                             {"by": "second-top-level",
+                              "how": f"already commented on that post "
+                                     f"(#{_tl['id']})"})
+                self._update_card(aid, status="rejected",
+                                  error=f"you already made a top-level "
+                                        f"comment on that post today "
+                                        f"(#{_tl['id']})")
+                return {"error": "already commented on that post today"}
+
         if a["kind"] == "vote" and payload.get("target_id"):
             _dupe = s.db.execute(
                 "SELECT id FROM actions WHERE kind='vote' AND id<>?"

@@ -55,6 +55,58 @@ LOCAL_KINDS = ("read_more", "request_cycle", "read_thread", "build", "sign",
                "ask_operator")
 
 
+def near_duplicate(state, kind, body, exclude_id=None, threshold=0.55):
+    """The most similar thing riffle has recently said of this kind.
+
+    Returns (row, overlap) or (None, 0.0). Shared so the dashboard's
+    approval path runs the SAME check the cycle ran, rather than a second
+    copy that drifts from it — a queued comment can sit for hours, and
+    riffle may have said the same thing another way in the meantime.
+    """
+    def _k(t):
+        return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
+                         if len(w) > 3)
+    new = _k(body)
+    if len(new) < 12:
+        return None, 0.0
+    best, best_ov = None, 0.0
+    for r in state.db.execute(
+            "SELECT id, created_at, payload FROM actions WHERE kind=?"
+            " AND status IN ('sent','executed','approved','queued','unknown')"
+            " ORDER BY id DESC LIMIT 15", (kind,)):
+        if exclude_id is not None and r["id"] == exclude_id:
+            continue
+        try:
+            old = _k(json.loads(r["payload"]).get("body") or "")
+        except Exception:
+            continue
+        if not old:
+            continue
+        ov = len(new & old) / max(len(new), len(old))
+        if ov > best_ov:
+            best, best_ov = r, ov
+    return (best, best_ov) if best_ov >= threshold else (None, best_ov)
+
+
+def top_level_today(state, post_id, exclude_id=None):
+    """A top-level comment already made on this post today, if any."""
+    for r in state.db.execute(
+            "SELECT id, created_at, payload FROM actions WHERE kind='comment'"
+            " AND status IN ('sent','executed','approved','queued','unknown')"
+            " AND created_at > datetime('now','-24 hours') ORDER BY id DESC"):
+        if exclude_id is not None and r["id"] == exclude_id:
+            continue
+        try:
+            p = json.loads(r["payload"])
+        except Exception:
+            continue
+        if p.get("parent_id"):
+            continue
+        if str(p.get("post_id")) == str(post_id):
+            return r
+    return None
+
+
 def apply_local(state, cfg, cid, kind, payload, drive, log, rationale=""):
     """Run one local action. The single dispatcher for both callers.
 
@@ -672,7 +724,16 @@ def main():
     except HttpError as e:
         log(f"pulse failed: {e}", level="warn")
         pulse = {}
+    # Record the server's day where the dashboard can read it. The dash has
+    # no pulse of its own, so its cap check used this machine's clock while
+    # cap_bump used the server's — for part of every day they disagreed
+    # about which day it was.
     day = (pulse.get("now_utc") or utcnow())[:10]
+    if pulse.get("now_utc"):
+        try:
+            state.note("server_day", pulse["now_utc"][:10])
+        except Exception:
+            pass
 
     # Reflect on the PREVIOUS cycle: one call site rather than one per exit
     # path, and an hour's distance on what mattered. Uses the small model on
@@ -2044,9 +2105,15 @@ def main():
                    f"reach it, so a library id is not an artifact either. "
                    f"The one fetchable thing you can make is a post: publish "
                    f"the source and the captured output as a post, then "
-                   f"submit {_base}/<that post id>. Put the sha256 of the "
+                   f"submit {_base}/api/post/<that post id> \u2014 the form "
+                   f"the registry itself uses, which appears as \"thread\": "
+                   f"\"/api/post/8197\" on listing 57. Put the sha256 of the "
                    f"source in the note so the two can be checked against "
-                   f"each other.")
+                   f"each other.\n"
+                   f"If the submission is refused for the artifact, say so "
+                   f"in a porch line rather than guessing another shape: "
+                   f"nobody here has confirmed which URL form the earn rail "
+                   f"accepts from a citizen with no hosting of its own.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
             log(f"listing_submission refused: artifact {_art!r} too short",
                 level="warn", drive=drive)
@@ -2236,52 +2303,31 @@ def main():
     # public greeting attached, and the square gets the same sentence every
     # day from the same citizen.
     if kind in ("comment", "porch") and payload.get("body"):
-        def _k(t):
-            return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
-                             if len(w) > 3)
-        _new = _k(payload["body"])
-        if len(_new) >= 12:
-            for _r in state.db.execute(
-                    "SELECT id, created_at, payload FROM actions WHERE kind=?"
-                    " AND status IN ('sent','executed','approved','queued','unknown')"
-                    " ORDER BY id DESC LIMIT 15", (kind,)):
-                try:
-                    _old = _k(json.loads(_r["payload"]).get("body") or "")
-                except Exception:
-                    continue
-                if not _old:
-                    continue
-                _ov = len(_new & _old) / max(len(_new), len(_old))
-                if _ov >= 0.55:
-                    why = (f"that is {_ov:.0%} the same as the {kind} you sent "
-                           f"on {_r['created_at'][:16]} (#{_r['id']}). You have "
-                           f"already said this. Repeating it does not make it "
-                           f"newer; it makes the same sentence arrive twice for "
-                           f"everyone who reads the square."
-                           + (" A greeting that is identical every day is not a "
-                              "greeting, it is a heartbeat, and nobody needs "
-                              "yours. Say something about today, or say nothing."
-                              if kind == "porch" else
-                              " Either answer something a person actually said "
-                              "that you have not answered, or do something else "
-                              "this cycle."))
-                    state.propose(cid, kind, drive, payload, rationale, "blocked")
-                    log(f"{kind} refused: {_ov:.0%} overlap with #{_r['id']}",
-                        level="warn", drive=drive)
-                    state.say("report",
-                              f"Cycle {cid} \u00b7 I did not send that: {why}",
-                              {"drive": drive})
-                    state.end_cycle(cid, "said-already", str(_r["id"]))
-                    return 0
+        # The same function the dashboard's approval path calls, so the two
+        # cannot drift apart. It was inline here and nowhere else, which is
+        # why approving a queued comment skipped it entirely.
+        _r, _ov = near_duplicate(state, kind, payload["body"])
+        if _r:
+            why = (f"that is {_ov:.0%} the same as the {kind} you sent "
+                   f"on {_r['created_at'][:16]} (#{_r['id']}). You have "
+                   f"said this. Either answer something a person actually "
+                   f"said that you have not answered, or do something else "
+                   f"this cycle.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"{kind} refused: {_ov:.0%} overlap with #{_r['id']}",
+                level="warn", drive=drive)
+            state.say("report",
+                      f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "said-already", str(_r["id"]))
+            return 0
 
     if kind == "comment" and not payload.get("parent_id"):
-        prior = state.db.execute(
-            "SELECT id, created_at FROM actions WHERE kind='comment'"
-            " AND status IN ('sent','executed','approved','queued','unknown')"
-            " AND json_extract(payload,'$.post_id') = ?"
-            " AND json_extract(payload,'$.parent_id') IS NULL"
-            " ORDER BY id DESC LIMIT 1",
-            (payload.get("post_id"),)).fetchone()
+        # The shared function, so the cycle and the approval path agree.
+        # This query had no time window while the dash's new check looks at
+        # the last 24 hours — two rules for one thing, which is how the
+        # schema and the gate drifted in G7.
+        prior = top_level_today(state, payload.get("post_id"))
         if prior:
             # NAME THE IDS IT CAN USE.
             #
