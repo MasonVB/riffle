@@ -19,18 +19,39 @@ Description=run a cycle on request from the dashboard
 After=llama-composer.service network-online.target
 Wants=llama-composer.service network-online.target
 
+# Belt and braces: even if something starts this repeatedly, a generous
+# start limit means the PATH unit is never switched off by it. Without
+# these, systemd's default is 5 starts in 10 seconds and the path unit
+# fails with unit-start-limit-hit, silently, until reset-failed.
+StartLimitIntervalSec=0
+
 [Service]
 Type=oneshot
 User=riffle
 Group=riffle
 WorkingDirectory=/opt/riffle
-# NO ExecStartPre. The flag used to be deleted here, before the cycle tried
-# the lock — so when a cycle was already running, the forced cycle exited
-# ("a cycle is already running") and the request was gone. The button and
-# the post-approval cycle did nothing, and the dash still said "ok".
+# ExecStartPre is BACK, and the loop it used to cause is fixed in the cycle.
 #
-# agent/cycle.py removes the file itself, AFTER taking the lock. A blocked
-# request stays on disk and the path unit fires again while it is there.
+# The history, because both halves were wrong in turn:
+#
+#   Originally the flag was deleted here, before the cycle tried the lock.
+#   A request arriving while a cycle ran was consumed by a wake that then
+#   exited, so the button did nothing and the dash said ok (N11).
+#
+#   I moved the delete into the cycle. That left the file on disk while a
+#   cycle ran — and a PathExists= unit re-checks the moment its service goes
+#   inactive, so it restarted immediately, in a tight loop, until the
+#   default start limit (5 in 10s) stopped the path unit watching at all.
+#   The cure was worse: the button would have gone permanently dead.
+#
+# Now: a FORCED run waits for the lock instead of exiting (agent/cycle.py),
+# so this service does not return until the cycle it asked for has actually
+# run. Deleting the flag up front is therefore safe — the request is being
+# honoured by the process that just removed it.
+#
+# And a timer wake that finds a request treats itself as forced, which
+# covers the gap between the path unit firing and this service starting.
+ExecStartPre=/bin/rm -f /var/lib/riffle/run-cycle.request
 # --force skips the INTERVAL check, which is the entire reason for
 # asking. It does not skip the cycle lock, which is taken inside main()
 # and is what stops two cycles overlapping; a requested cycle arriving
