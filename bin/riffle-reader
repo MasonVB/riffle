@@ -173,8 +173,7 @@ ALLOWED = {
     "www.urban.org", "www.usa.gov", "www.usda.gov", "www.usgbc.org",
     "www.usgs.gov", "www.ushmm.org", "www.uspto.gov", "www.ustravel.org",
     "www.w3.org", "www.whitehouse.gov", "www.who.int", "www.wolfram.com",
-    "www.wri.org", "www.wttc.org", "zbmath.org", "zbmath.org",
-    "readthedocs.io"
+    "www.wri.org", "www.wttc.org", "zbmath.org", "zbmath.org"
 }
 
 
