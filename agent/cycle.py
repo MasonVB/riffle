@@ -409,25 +409,63 @@ def main():
     # however the process dies.
     global _CYCLE_LOCK
     _CYCLE_LOCK = open(os.path.join(data, "cycle.lock"), "a+")
-    try:
-        fcntl.flock(_CYCLE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        log("a cycle is already running (it holds the lock); this wake stops "
-            "here", level="info")
-        return 0
-    # The run request is cleared HERE, with the lock held.
+
+    # A FORCED RUN WAITS FOR THE LOCK. A timer wake does not.
     #
-    # riffle-run-cycle.service used to delete it in ExecStartPre, before this
-    # process tried the lock. A request arriving while a cycle was running
-    # was therefore consumed by a wake that immediately exited, and the work
-    # was simply lost — silently, with the dashboard reporting success.
+    # My N11 fix moved the request-file deletion into the cycle, after the
+    # lock, so a blocked request would survive. systemd's PathExists= unit
+    # re-checks the moment its service goes inactive, so that turned a
+    # blocked request into a tight loop: start Python, fail the lock, log,
+    # exit, start again — and with no StartLimit* set, the default 5-in-10s
+    # would be hit within seconds and the path unit would stop watching
+    # until reset-failed or a reboot. The button would then silently do
+    # nothing, which is worse than the bug I was fixing.
     #
-    # Clearing it after the lock means a blocked request is still on disk
-    # when the path unit looks again.
-    try:
-        os.unlink(os.path.join("/var/lib/riffle", "run-cycle.request"))
-    except OSError:
-        pass
+    # Waiting is the honest answer: a forced run was asked for deliberately,
+    # so it should queue behind the running cycle rather than race it. The
+    # wait is bounded well inside TimeoutStartSec (10800s).
+    if getattr(a, "force", False):
+        _waited = 0
+        while True:
+            try:
+                fcntl.flock(_CYCLE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if _waited >= 2400:
+                    log("a cycle has held the lock for 40 minutes; this "
+                        "forced run gives up rather than waiting longer",
+                        level="warn")
+                    return 0
+                if _waited == 0:
+                    log("a cycle is running; this forced wake waits for the "
+                        "lock rather than exiting", level="info")
+                time.sleep(10)
+                _waited += 10
+    else:
+        try:
+            fcntl.flock(_CYCLE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log("a cycle is already running (it holds the lock); this wake "
+                "stops here", level="info")
+            return 0
+    # ExecStartPre removes the request file again, so this does not.
+    #
+    # Deleting it here consumed a pending request on EVERY wake that took
+    # the lock — including a timer wake that then exited "not due". That is
+    # the N11 symptom by another route, which is what moving the delete in
+    # here was supposed to cure.
+    #
+    # A timer wake that FINDS a request treats itself as forced: somebody
+    # asked for a cycle, the file is still there, so honour it rather than
+    # going back to sleep and deleting the evidence.
+    if not getattr(a, "force", False):
+        try:
+            if os.path.exists(os.path.join("/var/lib/riffle",
+                                           "run-cycle.request")):
+                a.force = True
+                log("a run request was waiting; treating this wake as forced")
+        except OSError:
+            pass
 
     _orphans = state.db.execute(
         "SELECT id, started_at FROM cycles WHERE ended_at IS NULL").fetchall()
@@ -468,9 +506,45 @@ def main():
             apply_local(state, cfg, _acid, _row["kind"],
                         json.loads(_row["payload"]), _row["drive"] or "operator",
                         log, _row["rationale"] or "")
-            state.set_status(_row["id"], "executed", {"applied": "by cycle"})
-            log(f"ran {_row['kind']} #{_row['id']}, which you approved",
-                drive=_row["drive"])
+            # READ THE OUTCOME. A normal return is not success.
+            #
+            # apply_sign, apply_read_page, apply_build and apply_library
+            # report failure by calling end_cycle(cid, "sign-refused" /
+            # "page-failed" / ...) and returning 0. They do not raise. So
+            # this loop recorded a signature the signer REFUSED as
+            # "executed", and told you it ran.
+            _oc = ""
+            try:
+                _r2 = state.db.execute(
+                    "SELECT outcome FROM cycles WHERE id=?", (_acid,)).fetchone()
+                _oc = (_r2["outcome"] if _r2 else "") or ""
+            except Exception:
+                pass
+            _ok = not re.search(r"(refused|failed|blocked|error|unresolvable)",
+                                _oc)
+            state.set_status(_row["id"], "executed" if _ok else "failed",
+                             {"applied": "by cycle", "outcome": _oc})
+            # AND UPDATE THE CARD. It said "waiting for the next cycle to
+            # run it" and nothing ever changed it — whether the action ran
+            # or was refused.
+            try:
+                # Imported here, not at module level: dash imports cycle, so
+                # a top-level import back is circular and would break every
+                # entry point rather than just this line.
+                from agent.dash import update_card
+                update_card(state, _row["id"],
+                            status="executed" if _ok else "failed",
+                            ref=(f"{_row['kind']} ran" if _ok else ""),
+                            error=("" if _ok else
+                                   f"{_row['kind']} did not run: "
+                                   f"{_oc or 'no outcome recorded'}"))
+            except Exception as _e2:
+                log(f"could not update the card for #{_row['id']}: {_e2}",
+                    level="warn")
+            log(f"{'ran' if _ok else 'could not run'} {_row['kind']} "
+                f"#{_row['id']}, which you approved"
+                + ("" if _ok else f": {_oc}"),
+                level="info" if _ok else "warn", drive=_row["drive"])
         except BaseException as _e:
             state.set_status(_row["id"], "failed",
                              {"error": f"{type(_e).__name__}: {_e}"})
