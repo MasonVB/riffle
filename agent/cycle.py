@@ -1001,10 +1001,31 @@ def main():
     budget = cfg["cycle"]["max_context_chars"]
     _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
     _spent = sorted(k for k, v in _left.items() if v <= 0)
-    parts = [f"TODAY (server): {pulse.get('now_utc') or utcnow()}",
-             f"SELECTED DRIVE THIS CYCLE: {drive}",
-             "caps remaining today: " + ", ".join(
-                 f"{k}={_left[k]}" for k in sorted(_left))]
+    # ORDER BY HOW OFTEN IT CHANGES, NOT BY IMPORTANCE.
+    #
+    # These three lines were first, and the first of them is a timestamp
+    # that is different every cycle. A KV cache matches a COMMON PREFIX, so
+    # the first differing token ends reuse for everything after it: putting
+    # the clock at position zero of the user half guaranteed that none of
+    # the user half could ever be cached.
+    #
+    # Measured 2026-10-21, after --kv-unified: 4,923 of 13,493 tokens
+    # reused — exactly the system prefix, and nothing past it. 8,570 tokens
+    # reprocessed at ~25 tok/s is 341 seconds, the largest single cost in a
+    # cycle.
+    #
+    # So the volatile lines move to the END, and the slow-moving blocks go
+    # first. Nothing here changes what riffle is told, only the order, and
+    # every block still carries its own header.
+    #
+    # The remaining limit is honest: the blocks below are mostly board
+    # state, which also changes. The win is whatever sits above the first
+    # change, so the stable material has to lead.
+    _volatile = [f"TODAY (server): {pulse.get('now_utc') or utcnow()}",
+                 f"SELECTED DRIVE THIS CYCLE: {drive}",
+                 "caps remaining today: " + ", ".join(
+                     f"{k}={_left[k]}" for k in sorted(_left))]
+    parts = []
     if _spent:
         # A limit, not a number to read past. "caps remaining: comment=0" was
         # in the prompt for every one of seven cycles that then proposed a
@@ -1525,7 +1546,12 @@ def main():
     elif _sys_chars > _ceiling * 0.25:
         log(f"the system prompt is {_sys_chars} chars of a {_ceiling} ceiling; "
             f"the rest of the prompt gets {_room}", level="warn")
-    parts = _fit(parts, _room, log)
+    # The volatile lines go in LAST, after trimming, so they are always
+    # present and always at the end where they cost the least cache.
+    # _fit never sees them, so they can never be trimmed away either — the
+    # clock and the caps are short and load-bearing.
+    parts = _fit(parts, _room - sum(len(v) + 2 for v in _volatile), log)
+    parts = parts + _volatile
 
     fixed = "\n\n".join(parts)
     room = max(1800, budget - len(fixed) - 400)
