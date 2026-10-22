@@ -304,20 +304,44 @@ for _c in ("/opt/llama.cpp/examples/json_schema_to_grammar.py",
         _conv = _c
         break
 if _conv:
+    # COULD-NOT-RUN IS NOT A FAILURE.
+    #
+    # The first version of this called SchemaConverter positionally. In this
+    # build its __init__ is keyword-only, so it raised TypeError — and I
+    # counted that as "the schema is bad" and rolled back a perfectly good
+    # deploy. A gate that reports its own breakage as a finding is worse
+    # than no gate: it blocks work and points at the wrong file.
+    #
+    # So: construction problems and signature mismatches fall back to the
+    # denylist and say so. ONLY an error raised while actually converting
+    # the schema counts against the schema.
+    _c2 = None
     try:
         _spec = _ilu.spec_from_file_location("j2g", _conv)
         _m = _ilu.module_from_spec(_spec)
         _spec.loader.exec_module(_m)
         _fn = getattr(_m, "SchemaConverter", None)
         if _fn:
-            _c2 = _fn({}, False, None, None) if _fn.__init__.__code__.co_argcount > 4 \
-                else _fn({})
+            import inspect as _insp
+            _params = _insp.signature(_fn).parameters
+            _kw = {}
+            for _name, _default in (("prop_order", {}), ("allow_fetch", False),
+                                    ("dotall", False), ("raw_pattern", False)):
+                if _name in _params:
+                    _kw[_name] = _default
+            _c2 = _fn(**_kw)
+    except BaseException as e:
+        print(f"  (could not load llama.cpp's converter: {type(e).__name__}: "
+              f"{e}; denylist only)")
+        _c2 = None
+    if _c2 is not None:
+        try:
             _c2.visit(schema, "")
             _c2.format_grammar()
             print("  schema compiles with llama.cpp's own converter")
-    except BaseException as e:
-        bad.append(f"/: llama.cpp's converter refused this schema: "
-                   f"{type(e).__name__}: {e}")
+        except BaseException as e:
+            bad.append(f"/: llama.cpp's converter refused this schema: "
+                       f"{type(e).__name__}: {e}")
 else:
     print("  (llama.cpp converter not found; denylist only)")
 for b in bad:
