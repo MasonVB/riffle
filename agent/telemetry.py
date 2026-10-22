@@ -29,6 +29,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import subprocess
 import urllib.request
 
@@ -83,7 +84,20 @@ def temps():
 # reading in a module global. A single reading of a monotonic counter says
 # nothing; the difference between two says what happened in that minute.
 
+# PER-CALLER, not shared.
+#
+# The tick thread and the error-hook dumps both read and wrote this, so a
+# dump landing between two ticks consumed the tick's previous reading and
+# the next tick computed its delta against the dump's timestamp instead —
+# a CPU percentage over the wrong interval, reported as a minute's average.
+#
+# Keyed by label, so "tick", "stall", "error" and the cycle's own samples
+# each keep their own baseline and compare like with like.
 _LAST = {}
+
+
+def _last_for(label):
+    return _LAST.setdefault(label or "tick", {})
 
 
 def fans():
@@ -109,7 +123,7 @@ def fans():
     return out
 
 
-def cores():
+def cores(label="tick"):
     """Per-core usage and clock.
 
     Usage comes from /proc/stat, which is cumulative since boot — so it is
@@ -129,8 +143,9 @@ def cores():
     except (OSError, ValueError, IndexError):
         return out
 
-    prev = _LAST.get("cpustat")
-    _LAST["cpustat"] = now
+    _store = _last_for(label)
+    prev = _store.get("cpustat")
+    _store["cpustat"] = now
     if prev:
         for k, (idle, total) in now.items():
             if k not in prev:
@@ -181,7 +196,7 @@ def processes(names=("llama-server", "python3")):
     return out
 
 
-def diskio():
+def diskio(label="tick"):
     """/proc/diskstats deltas. With swap off this should be near zero during
     generation; if it is not, something is paging and that is the finding."""
     now, out = {}, {}
@@ -198,8 +213,9 @@ def diskio():
             now[dev] = (int(f[5]), int(f[9]), int(f[12]))   # sectors r, w, io ms
     except (OSError, ValueError, IndexError):
         return out
-    prev = _LAST.get("diskstats")
-    _LAST["diskstats"] = now
+    _store = _last_for(label)
+    prev = _store.get("diskstats")
+    _store["diskstats"] = now
     if not prev:
         return {"note": "first sample since restart"}
     for dev, (r, w, ms) in now.items():
@@ -362,8 +378,8 @@ def _now():
 def sample(state, cfg, label="tick"):
     ensure(state)
     payload = {"mem": memory(), "cpu": cpu(), "temps": temps(),
-               "fans": fans(), "cores": cores(),
-               "procs": processes(), "diskio": diskio(),
+               "fans": fans(), "cores": cores(label),
+               "procs": processes(), "diskio": diskio(label),
                "net": network(),
                "disk": disks(), "services": services(),
                "composer": model_health(), "agent": agent_state(state, cfg)}
@@ -379,8 +395,8 @@ def dump(state, cfg, label, note=""):
     ensure(state)
     payload = {"note": note[:2000],
                "mem": memory(), "cpu": cpu(), "temps": temps(),
-               "fans": fans(), "cores": cores(),
-               "procs": processes(), "diskio": diskio(),
+               "fans": fans(), "cores": cores(label),
+               "procs": processes(), "diskio": diskio(label),
                "net": network(),
                "disk": disks(), "services": services(),
                "composer": model_health(), "agent": agent_state(state, cfg)}
@@ -483,9 +499,22 @@ def install(state, cfg):
     from agent import state as state_mod
 
     def on_error(st, level, text):
+        # IN A THREAD. dump() runs five systemctl calls and three
+        # journalctl reads — up to about a minute — and this hook fires
+        # from inside state.log(). So writing an error line blocked the
+        # caller for that minute: a cycle logging a refusal paid a
+        # telemetry dump before it could continue, and the stall detector
+        # would then see the delay and log another error.
+        #
+        # daemon=True so a dump in flight never holds up a restart.
+        def _bg():
+            try:
+                dump(st, cfg, label=level, note=text)
+            except Exception:
+                pass                  # telemetry must never break the watched
         try:
-            dump(st, cfg, label=level, note=text)
+            threading.Thread(target=_bg, daemon=True).start()
         except Exception:
-            pass                      # telemetry must never break the thing it watches
+            pass
 
     state_mod.ERROR_HOOK = on_error

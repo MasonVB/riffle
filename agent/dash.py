@@ -343,9 +343,11 @@ class Handler(BaseHTTPRequestHandler):
     def start_telemetry(cls):
         """A sample a minute, and a prune each hour.
 
-        In the dashboard because it is the only long-lived process. The cycle
-        samples at its own start and end, which is what pairs a reading with
-        the work that produced it.
+        In the dashboard because it is the only long-lived process. The
+        cycle samples at its own start and, via an atexit hook, at its end —
+        which is what pairs a reading with the work that produced it. This
+        docstring claimed both for months while only the start existed, so a
+        cycle-start row had no interval to compare against.
         """
         if cls._tel_started:
             return
@@ -355,8 +357,19 @@ class Handler(BaseHTTPRequestHandler):
 
         def loop():
             import time as _t
-            n, due = 0, _t.time() + 60
+            n = 0
             while True:
+                # TIME ONLY THE SLEEP.
+                #
+                # `due` was set AFTER sample() ran, so the sample's own
+                # duration — five systemctl calls, a health check, journal
+                # reads, an insert — was counted as lateness. On a busy box
+                # that is seconds, and the 30-second threshold could be
+                # crossed by the detector measuring itself.
+                #
+                # Sleeping is the only interval that means anything here: if
+                # a 60-second sleep takes 95 seconds, the scheduler did not
+                # run this thread, and that is the stall.
                 try:
                     telemetry.sample(cls.state, cls.cfg, "tick")
                     n += 1
@@ -364,7 +377,9 @@ class Handler(BaseHTTPRequestHandler):
                         telemetry.prune(cls.state, 24)
                 except Exception:
                     pass          # never let the watcher break the watched
+                _before = _t.time()
                 _t.sleep(60)
+                late = _t.time() - _before - 60
 
                 # --- the loop times ITSELF ---------------------------------
                 # This thread is supposed to wake every 60 seconds. When it
@@ -376,8 +391,6 @@ class Handler(BaseHTTPRequestHandler):
                 # never going to be one. A thread that measures its own
                 # lateness is the cheapest stall detector available, because
                 # it needs no cooperation from whatever is doing the stalling.
-                late = _t.time() - due
-                due = _t.time() + 60
                 if late >= 30:
                     try:
                         cls.state.log(

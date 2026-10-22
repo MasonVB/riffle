@@ -107,6 +107,15 @@ def top_level_today(state, post_id, exclude_id=None):
     return None
 
 
+def _safe_sample(state, cfg, label):
+    """A telemetry sample that can never affect the cycle's outcome."""
+    try:
+        from agent import telemetry
+        telemetry.sample(state, cfg, label)
+    except BaseException:
+        pass
+
+
 def apply_local(state, cfg, cid, kind, payload, drive, log, rationale=""):
     """Run one local action. The single dispatcher for both callers.
 
@@ -666,6 +675,14 @@ def main():
         from agent import telemetry
         telemetry.install(state, cfg)
         telemetry.sample(state, cfg, "cycle-start")
+        # AND AN END SAMPLE. The dash docstring has claimed "start and end"
+        # since telemetry was written and only the start existed, so a
+        # cycle-start reading had no CPU interval to compare against and was
+        # a row of absolute counters nobody could use. Registered here so it
+        # runs however the cycle exits, including the early returns.
+        import atexit as _atexit
+        _atexit.register(
+            lambda: _safe_sample(state, cfg, "cycle-end"))
     except Exception:
         pass
     # The settings page writes these; config.yaml only seeds them.
