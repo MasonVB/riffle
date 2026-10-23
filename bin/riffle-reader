@@ -39,7 +39,6 @@ world is not the thing that holds the credentials.
 """
 import argparse
 from html.parser import HTMLParser
-import html
 import json
 import re
 import sys
