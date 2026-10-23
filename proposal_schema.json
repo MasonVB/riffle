@@ -733,7 +733,12 @@
               "type": "string"
             },
             "cls": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "observation",
+                "dispute",
+                "correction"
+              ]
             },
             "evidence": {
               "type": "array",

@@ -863,6 +863,106 @@ then
   exit 1
 fi
 
+# --- gate 12: every enum the gate enforces is an enum in the grammar ------
+#
+# The grammar decides what the model can write; drives.SCHEMA decides what
+# the gate accepts. Where the gate checks a field against a fixed set and the
+# grammar leaves it a free string, the model can write a value the gate will
+# refuse: a whole cycle spent producing a refusal. G7 and N7 were this, fixed
+# one field at a time. attestation.cls was the next one.
+#
+# The schema enums are copied into proposal_schema.json by hand; nothing
+# generates them. So this compares the copies: for every _enum(...) call in
+# drives.SCHEMA it evaluates the allowed values and requires the same set as
+# the schema's enum for that action and field. It reads the gate's tuples
+# rather than a list kept here, so it cannot itself go stale.
+if ! python3 - <<'PYENUM'
+import ast
+import json
+import sys
+sys.path.insert(0, ".")
+
+from agent import drives
+
+schema = json.load(open("proposal_schema.json"))
+branch = {}
+for b in schema.get("oneOf", []):
+    kind = ((b.get("properties") or {}).get("action") or {}).get("const")
+    if kind:
+        branch[kind] = ((b["properties"].get("payload") or {})
+                        .get("properties") or {})
+
+tree = ast.parse(open("agent/drives.py").read())
+table = None
+for node in ast.walk(tree):
+    if (isinstance(node, (ast.Assign, ast.AnnAssign))
+            and any(isinstance(t, ast.Name) and t.id == "SCHEMA"
+                    for t in (node.targets if isinstance(node, ast.Assign)
+                              else [node.target]))
+            and isinstance(node.value, ast.Dict)):
+        table = node.value
+if table is None:
+    print("  no SCHEMA dict in agent/drives.py; this gate cannot see the gate")
+    sys.exit(1)
+
+bad, seen = [], 0
+ns = vars(drives)
+for k, v in zip(table.keys, table.values):
+    if not (isinstance(k, ast.Constant) and isinstance(v, ast.Tuple)):
+        continue
+    kind = k.value
+    for call in ast.walk(v):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                and call.func.id == "_enum" and len(call.args) == 2):
+            continue
+        # the field: p["x"] or p.get("x") or p.get("x") or "default"
+        a = call.args[0]
+        if isinstance(a, ast.BoolOp):
+            a = a.values[0]
+        field = None
+        if isinstance(a, ast.Subscript) and isinstance(a.slice, ast.Constant):
+            field = a.slice.value
+        elif (isinstance(a, ast.Call) and isinstance(a.func, ast.Attribute)
+              and a.func.attr == "get" and a.args
+              and isinstance(a.args[0], ast.Constant)):
+            field = a.args[0].value
+        if field is None:
+            bad.append(f"{kind}: an _enum this gate cannot read the field of")
+            continue
+        try:
+            allowed = set(eval(compile(ast.Expression(call.args[1]),
+                                       "drives.py", "eval"), ns))
+        except Exception as e:
+            bad.append(f"{kind}.{field}: could not evaluate the gate's "
+                       f"values ({type(e).__name__}: {e})")
+            continue
+        seen += 1
+        prop = (branch.get(kind) or {}).get(field)
+        if prop is None:
+            bad.append(f"{kind}.{field}: the gate checks it; the schema has "
+                       f"no such field")
+        elif "enum" not in prop:
+            bad.append(f"{kind}.{field}: an enum in the gate "
+                       f"{sorted(allowed)}, a free string in the grammar")
+        elif set(prop["enum"]) != allowed:
+            only_g = sorted(allowed - set(prop["enum"]))
+            only_s = sorted(set(prop["enum"]) - allowed)
+            bad.append(f"{kind}.{field}: gate-only {only_g}, "
+                       f"schema-only {only_s}")
+for b in bad:
+    print(f"  ENUM {b}")
+if not seen and not bad:
+    print("  found no _enum calls in drives.SCHEMA; the gate is reading the "
+          "wrong thing")
+    sys.exit(1)
+sys.exit(1 if bad else 0)
+PYENUM
+then
+  echo "!! the grammar and the gate disagree on an enum; rolling back to $BEFORE"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re

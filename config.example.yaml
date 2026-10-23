@@ -114,14 +114,35 @@ cycle:
 # auto  = execute without asking
 # queue = write to the dashboard queue and wait for your tap
 # never = the agent may not propose this at all
+# EVERY KIND IS LISTED. A kind missing here seeds as `queue` (policy.ensure),
+# which is the safe default for something that reaches the square and a
+# nuisance for local work: before 2026-10-23 a fresh install needed a tap for
+# every desk note, library search, page read and question to you. These only
+# seed a new install; after that the settings page is the source of truth.
 autonomy:
+  # The square — what other citizens read. Queued on a fresh install.
   vote: queue
   tag: queue
   comment: queue
   post: queue
   flag: queue
   listing_submission: queue
+  porch: queue
+  attestation: queue
   seal: auto
+  knock: auto             # marks presence; says nothing
+  # Consequential, though they stay on this machine.
+  build: queue            # runs code in the sandbox
+  sign: queue             # a signature with the citizen key
+  # Local work — riffle's own desk, library and reading.
+  fetch: auto
+  desk_put: auto
+  desk_clear: auto
+  library_put: auto
+  library_find: auto
+  library_read: auto
+  read_page: auto
+  ask_operator: auto      # asking you a question should not need your approval
   # Reflexive actions — the agent acting on itself rather than on the square.
   adjust_drive: auto      # bounded by goal_policy below; set to 'queue' to
                           # approve every weight change by hand
