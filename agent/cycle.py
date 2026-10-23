@@ -22,7 +22,6 @@ Order of operations, and why:
 """
 import fcntl
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -34,7 +33,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import (chat, conduct, consolidate, cortex, desk, drives, goals,
+from agent import (chat, consolidate, cortex, desk, drives, goals,
                    library, memory,
                    notify, policy, project)  # noqa: E402  # noqa: E402
 from agent.client import HttpError, Reader, Writer  # noqa: E402
@@ -53,6 +52,35 @@ LOCAL_KINDS = ("read_more", "request_cycle", "read_thread", "build", "sign",
                "desk_put", "desk_clear",
                "library_put", "library_find", "library_read", "read_page",
                "ask_operator")
+
+
+# WHAT EACH LOCAL OUTCOME MEANS, said explicitly.
+#
+# An approved local action used to be marked failed only if its outcome NAME
+# contained refused|failed|blocked|error|unresolvable. Everything else counted
+# as executed, so `library-missing` (approving a read of a document that does
+# not exist) was recorded as done, and so were no-project, not-read,
+# read-no-project and extra-capped. Any new outcome would have been classified
+# by whatever its name happened to contain.
+#
+# Now the status comes from these two lists. An outcome in neither is treated
+# as failed and logged, and gate 13 refuses a deploy in which any apply_*
+# handler can write an outcome that is in neither, or in both.
+_LOCAL_OK = frozenset({
+    "adjusted", "already-read", "asked", "batch-read", "built",
+    "cycle-requested", "desk-cleared", "desk-empty-slot", "desk-placed",
+    "desk-updated", "fetched", "library-read", "library-searched",
+    "library-shelved", "note-added", "page-read", "project-closed",
+    "project-opened", "project-queued", "queued", "remembered", "signed",
+    "thread-exhausted", "thread-read",
+})
+_LOCAL_FAIL = frozenset({
+    "ask-refused", "build-error", "build-failed", "build-refused",
+    "desk-refused", "extra-capped", "fetch-failed", "goal-refused",
+    "library-missing", "library-refused", "no-project", "not-read",
+    "page-failed", "page-refused", "project-refused", "read-failed",
+    "read-no-project", "sign-failed", "sign-refused",
+})
 
 
 def near_duplicate(state, kind, body, exclude_id=None, threshold=0.55):
@@ -450,16 +478,29 @@ def do_witness(state, reader, log, max_pages=8):
     # A bare attest() on a log of 26,728 rows returns "incomplete" at 20,000
     # and the old code simply never saved. Page from the last mark until the
     # chain reports verified or we run out of patience.
+    #
+    # AND BIND THE PAGES TOGETHER. Each page after the first used to send
+    # only _from. The registry's own instruction for an incomplete page is
+    # _from=<id reached> AND _expect=<hash reached>: "without it the two
+    # pages are two adjacent claims, and with it they are one verification."
+    # The first page now expects the saved mark's head as well, so the walk
+    # from the saved mark to the tip is one chain of evidence.
     att, fresh, walked = {}, {}, 0
     cursor = {n: (prior[n]["through_id"] if prior[n] else None)
+              for n in ("identity", "treasury")}
+    expect = {n: (prior[n]["head"] if prior[n] else None)
               for n in ("identity", "treasury")}
     try:
         for _ in range(max_pages):
             kw = {}
             if cursor["identity"] is not None:
                 kw["identity_from"] = cursor["identity"]
+                if expect["identity"]:
+                    kw["identity_expect"] = expect["identity"]
             if cursor["treasury"] is not None:
                 kw["ledger_from"] = cursor["treasury"]
+                if expect["treasury"]:
+                    kw["ledger_expect"] = expect["treasury"]
             att = reader.attest(**kw) if kw else reader.attest()
             walked += 1
             done = True
@@ -471,6 +512,7 @@ def do_witness(state, reader, log, max_pages=8):
                     fresh[name] = (b["head"], b["verified_through_id"])
                 elif verdict == "incomplete" and b.get("verified_through_id"):
                     cursor[name] = b["verified_through_id"]
+                    expect[name] = b.get("verified_head")
                     done = False
                 else:
                     fresh.pop(name, None)
@@ -662,6 +704,14 @@ def main():
 
     goals.seed(state, cfg)
     project.ensure(state)
+    # BEFORE the approved actions below, not after. They ran first, so on a
+    # fresh database an approved library action died on "no such table:
+    # library", and any future migration inside these ensure() calls would
+    # have run after the first approvals on new code. All three are
+    # idempotent; moving them up changes nothing else.
+    desk.ensure(state)
+    library.ensure(state, (cfg.get("library") or {}).get("root", library.ROOT))
+    policy.ensure(state, cfg)
 
     # --- run what the operator approved, with this process's privileges ----
     #
@@ -701,8 +751,12 @@ def main():
                 _oc = (_r2["outcome"] if _r2 else "") or ""
             except Exception:
                 pass
-            _ok = not re.search(r"(refused|failed|blocked|error|unresolvable)",
-                                _oc)
+            _ok = _oc in _LOCAL_OK
+            if _oc not in _LOCAL_OK and _oc not in _LOCAL_FAIL:
+                log(f"approved {_row['kind']} #{_row['id']} ended with "
+                    f"outcome {_oc!r}, which is in neither _LOCAL_OK nor "
+                    f"_LOCAL_FAIL in cycle.py; recorded as failed until it "
+                    f"is classified", level="warn")
             state.set_status(_row["id"], "executed" if _ok else "failed",
                              {"applied": "by cycle", "outcome": _oc})
             # AND UPDATE THE CARD. It said "waiting for the next cycle to
@@ -788,9 +842,7 @@ def main():
     # taken at the top of main() knows, and a guess that is sometimes wrong
     # is worse than a fact. stale_minutes is no longer read by anything.
 
-    desk.ensure(state)
-    library.ensure(state, (cfg.get("library") or {}).get("root", library.ROOT))
-    policy.ensure(state, cfg)
+    # desk, library and policy are ensured ABOVE, before approved actions run.
     try:
         from agent import telemetry
         telemetry.install(state, cfg, wait_at_exit=True)
@@ -894,7 +946,7 @@ def main():
                 level="info")
 
     # --- witness (always) --------------------------------------------------
-    att = do_witness(state, reader, log)
+    do_witness(state, reader, log)
 
     # --- gather ------------------------------------------------------------
     try:
@@ -1488,7 +1540,7 @@ def main():
             f"Choosing none of the three is also a choice, and it is the only "
             f"one that leaves you here tomorrow.")
 
-    parts.append(conduct.CONDUCT)
+    # The conduct guide moved to the system prompt (cortex.stable_prefix).
     parts.append(situation(state, cfg, log))
 
     from agent.state import open_questions, answered_questions
@@ -1609,10 +1661,10 @@ def main():
               "one invented. To answer a "
               "person, put THEIR id there and their post's id in post_id. A "
               "comment with parent_id null is a new opening statement "
-              "addressed to nobody, and you only get one of those per post. "
+              "addressed to nobody, and you get one of those per post in "
+              "any 24 hours. "
               "If your own rationale says you are answering someone, the "
               "parent_id must not be null.")
-    _last_read = _reads[0] if _reads else None
     _lb = state.note("last_build")
     if _lb:
         try:
@@ -2766,7 +2818,8 @@ def walk_changes(state, reader, cfg, log):
 # Data can be cut: the board digest is a sample of a larger thing and losing
 # some of it costs detail. A rule that is half present is not a rule.
 _NEVER_TRIM = (
-    "HOW YOU TAKE PART HERE",
+    # "HOW YOU TAKE PART HERE" is gone from this list: the conduct guide is in
+    # the system prompt now, which _fit never touches.
     "YOUR ACTUAL SITUATION",
     # The header this block actually carries since P9 reworded it. The old
     # string stopped matching the moment it was reworded and the block was
