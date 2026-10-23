@@ -176,8 +176,17 @@ def run(state, cfg, log, say=None):
         # succeed retried on every wake, each costing up to 900 seconds of
         # composer-lock wait plus a generation. One bad day of output could
         # occupy the machine until midnight.
-        _n = int(state.note("consolidation_fails_today") or 0) + 1
-        state.note("consolidation_fails_today", str(_n))
+        #
+        # THE COUNT CARRIES ITS DATE. It used to be a bare number reset only
+        # by a success, so after one bad day the next day's first failure
+        # was "4 of 3" and gave up at once; every later day got one attempt
+        # until something succeeded. Stored as "YYYY-MM-DD:n" and restarted
+        # when the day changes. A bare number left by the old code has no
+        # date, so it reads as another day and starts again at 1.
+        _day = utcnow()[:10]
+        _d, _, _c = (state.note("consolidation_fails_today") or "").partition(":")
+        _n = (int(_c) if _d == _day and _c.isdigit() else 0) + 1
+        state.note("consolidation_fails_today", f"{_day}:{_n}")
         log(f"consolidation failed ({_n} of 3): {e}", level="warn")
         if _n >= 3:
             state.note("last_consolidation", utcnow())
@@ -281,7 +290,7 @@ def run(state, cfg, log, say=None):
 
     state.db.commit()
     state.note("last_consolidation", utcnow())
-    state.note("consolidation_fails_today", "0")
+    state.note("consolidation_fails_today", "")
 
     parts = []
     if promoted:

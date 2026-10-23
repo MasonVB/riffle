@@ -89,11 +89,24 @@ def near_duplicate(state, kind, body, exclude_id=None, threshold=0.55):
 
 
 def top_level_today(state, post_id, exclude_id=None):
-    """A top-level comment already made on this post today, if any."""
+    """A top-level comment made on this post in the last 24 hours, if any.
+
+    THE RULE IS ONE PER POST PER DAY, chosen 2026-10-23. It used to be one
+    per post ever in the cycle and 24 hours in the dash; when the two were
+    unified the 24-hour version won by accident, and the prompt went on
+    saying "ever". Now it is a decision, and the prompt says the same.
+
+    LIKE WITH LIKE. created_at is utcnow()'s "YYYY-MM-DDTHH:MM:SSZ";
+    datetime('now','-24 hours') is "YYYY-MM-DD HH:MM:SS". Compared as
+    strings, 'T' sorts after ' ', so anything on the cutoff's DATE counted as
+    recent and the window really ran 24 to 48 hours. strftime with the same
+    shape as utcnow() makes it 24.
+    """
     for r in state.db.execute(
             "SELECT id, created_at, payload FROM actions WHERE kind='comment'"
             " AND status IN ('sent','executed','approved','queued','unknown')"
-            " AND created_at > datetime('now','-24 hours') ORDER BY id DESC"):
+            " AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')"
+            " ORDER BY id DESC"):
         if exclude_id is not None and r["id"] == exclude_id:
             continue
         try:
@@ -1072,9 +1085,13 @@ def main():
     # replaying unacked, the same mention lost that lottery for days.
     _mentions = [x for x in inbox if x.get("bucket") == "mentions_of_you"]
     if _mentions and "answer" in live_weights:
+        # The DRAWN drive, kept before it is replaced. The log used to read
+        # `drive` after the reassignment, so it always said "rather than
+        # 'answer' by weight" and never named what was actually overridden.
+        _drawn = drive
         drive = "answer"
         log(f"{len(_mentions)} mention(s) waiting, so this cycle answers "
-            f"rather than {drive!r} by weight", drive="answer")
+            f"rather than {_drawn!r} by weight", drive="answer")
 
     from agent.state import live_instructions, spend_instructions
     _pending = live_instructions(state)
@@ -1323,8 +1340,8 @@ def main():
     _cd, _cu, _cl = project.in_cooldown(state)
     _gates.append(f"  posting: {'CLOSED for %.1fh' % _cl if _cd else 'open'}")
     _gates.append("  numcheck: every figure must appear in your sources block")
-    _gates.append("  one top-level comment per post; replies need a parent_id "
-                  "from that post")
+    _gates.append("  one top-level comment per post in any 24 hours; replies "
+                  "need a parent_id from that post")
     _gates.append("  one post queued at a time; a hash you call yours must be "
                   "in your library")
     parts.append(
@@ -1332,7 +1349,8 @@ def main():
         + "\n".join(_gates)
         + "\n  quality checks, which refuse and say why: a figure with no "
           "provenance, a near-copy of something you already said, a second "
-          "top-level comment on one post, a parent_id not on that post, a "
+          "top-level comment on one post within 24 hours, a parent_id not on "
+          "that post, a "
           "hash of your own work that is not in your library, an artifact "
           "named too briefly to fetch, a vote you have already cast or on "
           "your own work."
@@ -1452,8 +1470,8 @@ def main():
             "WHAT YOU HAVE ALREADY SAID, most recent first:\n"
             + "\n".join(_lines)
             + "\nYou may not open a second top-level comment on a post you "
-              "have already commented on \u2014 reply to a specific person "
-              "instead, and answer what THEY said. Before writing, check "
+              "commented on in the last 24 hours \u2014 reply to a specific "
+              "person instead, and answer what THEY said. Before writing, check "
               "whether you are about to make a point you have already made in "
               "different words. Four restatements of one idea are one "
               "contribution and three pieces of noise.")
@@ -2359,9 +2377,7 @@ def main():
 
     if kind == "comment" and not payload.get("parent_id"):
         # The shared function, so the cycle and the approval path agree.
-        # This query had no time window while the dash's new check looks at
-        # the last 24 hours — two rules for one thing, which is how the
-        # schema and the gate drifted in G7.
+        # One per post per day, deliberately; see top_level_today.
         prior = top_level_today(state, payload.get("post_id"))
         if prior:
             # NAME THE IDS IT CAN USE.
@@ -2386,7 +2402,8 @@ def main():
             except Exception:
                 pass
             why = (f"you already made a top-level comment on post "
-                   f"{payload.get('post_id')} (action #{prior['id']}, "
+                   f"{payload.get('post_id')} in the last 24 hours "
+                   f"(action #{prior['id']}, "
                    f"{prior['created_at'][:16]}). Saying the same thing again "
                    f"in different words is not a second contribution. If you "
                    f"have something to add, REPLY: set parent_id to the id of "

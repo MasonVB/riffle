@@ -140,7 +140,7 @@ payload fields by action:
                       parent_id null = a new top-level comment on the post.
                       parent_id = the [bracketed id] of a reply you read =
                       ANSWERING THAT PERSON. Use it. You get ONE top-level
-                      comment per post, ever; everything after is a reply.
+                      comment per post in any 24 hours; the rest are replies.
   vote                {"target_type": "post"|"comment", "target_id": int}
   tag                 {"post_id": int, "tag": string}
   flag                {"target_type": "post"|"comment", "target_id": int, "reason": <=200}
