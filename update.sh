@@ -298,6 +298,10 @@ try:
     # day it writes its longest is the day the budget has to hold.
     sysc = len(cortex.stable_prefix(cfg, cortex.render_continuity(
         "x" * cortex.CONTINUITY_MAX, "2026-01-01T00:00:00Z")))
+    # The user message opens with riffle's own section, under this header,
+    # before <board>. Counted with the rest of the wrapper.
+    from agent.cycle import _OWN_HEADER
+    wrap = WRAP + len(_OWN_HEADER) + 4
 
     data_room = ceiling - sysc - int(budget * 0.10)
     if data_room < 8000:
@@ -308,7 +312,7 @@ try:
 
     capped = ceiling - int(budget * 0.10) + 1800        # front page at its floor
     uncapped = sysc + budget - 400                       # front page given `budget`
-    worst = max(capped, uncapped) + FRONT_HDR + WRAP
+    worst = max(capped, uncapped) + FRONT_HDR + wrap
     tokens = math.ceil(worst / CHARS_PER_TOKEN) + TEMPLATE_TOKENS
     left = ctx - tokens
     print(f"  worst prompt {worst} chars ~ {tokens} tokens of {ctx}; "
@@ -625,64 +629,47 @@ fi
 #
 # A protected header that no code emits protects nothing.
 if ! python3 - <<'PYTRIM'
-# GATE 8 COUNTED MENTIONS, AND A MENTION IS NOT A HEADER.
-#
-# It compared each _NEVER_TRIM entry against the whole of agent/*.py and
-# passed if the string appeared more than once. cortex.py:257 reads
-# "...is in YOUR ACTUAL SITUATION, counted from the actions table" — prose,
-# in a different prompt — and that satisfied the gate, so renaming the real
-# situation block would have gone through unnoticed.
-#
-# _is_rule asks whether the header is in the first 400 characters of a
-# BLOCK. Most blocks are assembled in main() from live state and cannot be
-# built here, so the closest honest proxy is positional: a header STARTS a
-# string literal; a prose reference sits mid-sentence. That distinguishes
-#
-#   "YOUR ACTUAL SITUATION, checked this cycle..."     <- a header
-#   "...proposed is in YOUR ACTUAL SITUATION, counted" <- a mention
-#
-# My first rewrite tried to construct every block and flagged five valid
-# headers it simply could not reach — a gate that vetoes correct work,
-# which is the fault I have now shipped twice in one day.
 import ast
 import glob
 import sys
 
+# _OWN_HEADS too: a block listed as riffle's own that nothing emits is a
+# dead entry, and one whose header was reworded silently falls into <board>.
 bad = []
 try:
     sys.path.insert(0, ".")
-    from agent.cycle import _NEVER_TRIM
+    from agent.cycle import _NEVER_TRIM, _OWN_HEADS
 
-    # Every string literal in the package, with the offset of each header.
-    starts = {k: False for k in _NEVER_TRIM}
+    lists = {"_NEVER_TRIM": _NEVER_TRIM, "_OWN_HEADS": _OWN_HEADS}
+    found = {(n, k): False for n, ks in lists.items() for k in ks}
+    # The tuples' own entries are not uses. Skip exactly those nodes; the old
+    # test skipped any literal equal to a key after strip(), which would also
+    # skip real uses like "caps remaining today: ".
+    own_nodes = set()
+    ctree = ast.parse(open("agent/cycle.py").read())
+    for node in ctree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in lists):
+            own_nodes |= {id(c) for c in ast.walk(node.value)}
     for path in glob.glob("agent/*.py"):
         try:
-            tree = ast.parse(open(path).read())
+            tree = ctree if path == "agent/cycle.py" else ast.parse(open(path).read())
         except (OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            if (not isinstance(node, ast.Constant) or not isinstance(node.value, str)
+                    or id(node) in own_nodes):
                 continue
             lit = node.value
-            for k in _NEVER_TRIM:
-                # Within the first 80 characters IS a header; _is_rule
-                # allows 400, and no real header sits further in than a
-                # short lead-in.
-                #
-                # But skip a literal that is EXACTLY the header: those are
-                # the _NEVER_TRIM entries themselves, and a list that
-                # satisfies its own check tests nothing. Renaming the real
-                # block left the tuple as the only match, and the gate
-                # passed — the audit's exact mutation.
-                if lit.strip() == k:
-                    continue
+            for (n, k) in found:
                 if k in lit[:80]:
-                    starts[k] = True
-    for k, found in starts.items():
-        if not found:
-            bad.append(f"{k!r} is protected from trimming and no string "
-                       f"literal starts with it. Either the header was "
-                       f"renamed and the list was not, or the entry is dead.")
+                    found[(n, k)] = True
+    for (n, k), ok in found.items():
+        if not ok:
+            bad.append(f"{k!r} is in {n} and no string literal starts with "
+                       f"it. Either the header was renamed and the list was "
+                       f"not, or the entry is dead.")
 except BaseException as e:
     bad.append(f"the protected-header check could not run: "
                f"{type(e).__name__}: {e}")
