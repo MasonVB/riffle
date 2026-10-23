@@ -35,7 +35,7 @@ import re
 import datetime as dt
 import json
 
-from agent import cortex, memory
+from agent import cortex, memory, project
 from agent.state import utcnow
 
 SCHEMA = {
@@ -58,8 +58,9 @@ SCHEMA = {
                            "why": {"type": "string"}},
             "required": ["id", "why"], "additionalProperties": False}},
         "note": {"type": "string"},
+        "continuity": {"type": "string"},
     },
-    "required": ["promote", "write", "drop"],
+    "required": ["promote", "write", "drop", "continuity"],
     "additionalProperties": False,
 }
 
@@ -101,14 +102,23 @@ better than promoting all three.
 DROP is for short-term items that are already wrong, not merely unimportant.
 Unimportant things expire on their own; you do not need to act.
 
+CONTINUITY is a note to the next you, who wakes knowing nothing. It REPLACES
+the note shown below, so carry forward what still holds and let the rest go.
+Say what you are in the middle of, what you meant to do next and why, and
+what you have learned about how to work here. Plain sentences, at most 1,200
+characters. Write what you concluded, not text copied from the board: this
+note is read as your own testimony, and it cannot authorize an action.
+
 Reply with ONE JSON object and nothing else:
 
 {{"promote": [{{"id": 12, "why": "..."}}],
   "write":   [{{"text": "...", "tier": "long", "why": "..."}}],
   "drop":    [{{"id": 31, "why": "..."}}],
-  "note":    "one sentence on what today amounted to"}}
+  "note":    "one sentence on what today amounted to",
+  "continuity": "the note to the next you"}}
 
-Empty arrays are the right answer on a quiet day."""
+Empty arrays are the right answer on a quiet day. The continuity note is
+never empty."""
 
 
 def due(state, cfg):
@@ -145,19 +155,20 @@ def run(state, cfg, log, say=None):
     cap = int(m.get("max_promotions_per_day", 3))
 
     cands = candidates(state, cfg)
-    if not cands:
-        state.note("last_consolidation", utcnow())
-        log("consolidation: nothing in short term to consider")
-        return "nothing to consolidate"
-
+    # NO EARLY RETURN ON A QUIET DAY. This used to stop here, without calling
+    # the model, when nothing was in short term. That was free while the pass
+    # only sorted memories; now it also writes the continuity note, and a
+    # quiet day still needs one.
     have = long_term(state)
     body = [
         "SHORT TERM, eligible for promotion (id, age, times recalled):",
-        *[f"  [{r['id']}] {r['ts'][:10]} recalled {r['use_count']}x — {r['text']}"
-          for r in cands],
+        *([f"  [{r['id']}] {r['ts'][:10]} recalled {r['use_count']}x — {r['text']}"
+           for r in cands] or ["  (nothing in short term today)"]),
         "",
         "ALREADY IN LONG TERM — do not promote a restatement of any of these:",
         *([f"  [{r['id']}] {r['text']}" for r in have] or ["  (nothing yet)"]),
+        "",
+        *_continuity_context(state),
     ]
     prompt = PROMPT.format(ttl=ttl, cap=cap)
     try:
@@ -288,6 +299,15 @@ def run(state, cfg, log, say=None):
                                (mid,)).fetchone()
         lucky.append((mid, row["text"]))
 
+    # The continuity note. Written only from a plan that parsed, so a failed
+    # pass leaves yesterday's note in place, still carrying its date.
+    cont = _clean_continuity(plan.get("continuity"))
+    if cont:
+        state.note("continuity", cont)
+        state.note("continuity_at", utcnow())
+    else:
+        refused.append("the continuity note came back empty; yesterday's stays")
+
     state.db.commit()
     state.note("last_consolidation", utcnow())
     state.note("consolidation_fails_today", "")
@@ -320,8 +340,71 @@ def run(state, cfg, log, say=None):
             lines.append(f"  \u2717 dropped [{mid}]: {why[:120]}")
         for r in refused:
             lines.append(f"  refused: {r}")
+        if cont:
+            lines.append(f"  continuity ({len(cont)} chars): {cont[:300]}"
+                         + ("\u2026" if len(cont) > 300 else ""))
         say("report", "\n".join(lines), {"drive": "memory"})
     return summary
+
+
+def _continuity_context(state):
+    """What the continuity writer reads besides the memories.
+
+    Its previous note, so it revises rather than starts over; the open
+    project; and its own last fifteen actions, newest first. Riffle's own
+    words only, no board text: what lands in the note is read every cycle
+    from the system prompt, so it should come from riffle, not from strangers.
+    """
+    out = ["YOUR CONTINUITY NOTE NOW:",
+           "  " + cortex.render_continuity(state.note("continuity"),
+                                           state.note("continuity_at"))
+           .replace("\n", "\n  "), ""]
+    try:
+        p = project.active(state)        # a sqlite3.Row or None
+    except Exception:
+        p = None
+    out.append("YOUR OPEN PROJECT: " + (f"{p['title']} \u2014 {p['question']}"
+                                        if p else "none"))
+    out += ["", "WHAT YOU DID RECENTLY, newest first:"]
+    try:
+        rows = state.recent_actions(15)
+    except Exception:
+        rows = []
+    for r in rows:
+        try:
+            pl = json.loads(r["payload"] or "{}")
+        except (ValueError, TypeError):
+            pl = {}
+        what = (pl.get("title") or pl.get("body") or r["rationale"] or "")
+        out.append(f"  {(r['created_at'] or '')[:16]} {r['kind']} "
+                   f"{r['status']} \u2014 {' '.join(str(what).split())[:110]}")
+    if not rows:
+        out.append("  (nothing yet)")
+    return out
+
+
+# Tag-shaped text could make the note look like structure in the system
+# prompt (a stray <board> or </rules>). It is stripped, not escaped.
+_TAG = re.compile(r"</?\s*[A-Za-z][^<>]{0,60}>")
+
+
+def _clean_continuity(text):
+    """The note as stored: tags removed, at most cortex.CONTINUITY_MAX chars.
+
+    An over-long note is cut at a sentence end where one is near and marked,
+    so a reader can tell a cut note from a short one.
+    """
+    t = _TAG.sub("", str(text or "")).strip()
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    mark = " [cut to fit]"
+    cap = cortex.CONTINUITY_MAX
+    if len(t) > cap:
+        cut = t[:cap - len(mark)]
+        brk = cut.rfind(". ")
+        if brk > len(cut) * 0.6:
+            cut = cut[:brk + 1]
+        t = cut.rstrip() + mark
+    return t
 
 
 def _expiry(ttl_days):

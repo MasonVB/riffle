@@ -1735,7 +1735,11 @@ def main():
     # So the last two rounds of "raise max_tokens" and "shrink the prompt"
     # were both aimed at a budget that was missing a third of the prompt. The
     # ceiling has to cover everything that goes on the wire.
-    _cont = state.note("continuity") or ""
+    # ONE rendering of the continuity note, used for the budget AND the
+    # prompt. These were two strings: "" here and a placeholder sentence at
+    # the system prompt, so the budget measured a prompt that was not sent.
+    _cont = cortex.render_continuity(state.note("continuity"),
+                                     state.note("continuity_at"))
     _sys_chars = len(cortex.stable_prefix(cfg, _cont))
     _ceiling = int(_ccfg.get("max_prompt_chars", 50000))
     # NO FLOOR. max(8000, ...) meant that once the system prompt grew past
@@ -1785,8 +1789,7 @@ def main():
                    "project.\n" + json.dumps(rows, indent=1)[:room])
     parts.append(front_block)
     material = "\n\n".join(parts)
-    continuity = state.note("continuity") or "(nothing yet — this is your first recorded cycle)"
-    system = cortex.stable_prefix(cfg, continuity)
+    system = cortex.stable_prefix(cfg, _cont)
     user = (f"<board>\n{material}\n</board>\n\n"
             f"Choose ONE action for this cycle, driven by '{drive}'. "
             f"Reply with the JSON object only.")
