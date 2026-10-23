@@ -509,24 +509,42 @@ def main():
             log("a cycle is already running (it holds the lock); this wake "
                 "stops here", level="info")
             return 0
-    # ExecStartPre removes the request file again, so this does not.
+    # ExecStartPre removes the request file for a run the path unit starts.
     #
-    # Deleting it here consumed a pending request on EVERY wake that took
-    # the lock — including a timer wake that then exited "not due". That is
-    # the N11 symptom by another route, which is what moving the delete in
-    # here was supposed to cure.
+    # Deleting it on EVERY wake that took the lock consumed a pending request
+    # even when that wake then exited "not due" — the N11 symptom by another
+    # route. So a plain timer wake leaves the file alone.
     #
     # A timer wake that FINDS a request treats itself as forced: somebody
-    # asked for a cycle, the file is still there, so honour it rather than
-    # going back to sleep and deleting the evidence.
+    # asked for a cycle, the file is still there, so honour it. AND DELETE
+    # IT, because this wake is the one serving it. It used not to, and
+    # nothing else would: with the path unit stopped or failed the file
+    # stayed for good, every timer wake treated itself as forced, and the
+    # interval gate was bypassed — a full cycle every five minutes. With the
+    # path unit running, it fired again afterwards for a request already
+    # served. A forced wake never exits "not due", so this cannot reopen N11.
+    #
+    # A file still here at a timer wake means the path unit did not see it,
+    # so the age goes in the log: minutes old says the path unit is down.
     if not getattr(a, "force", False):
+        _req = os.path.join("/var/lib/riffle", "run-cycle.request")
         try:
-            if os.path.exists(os.path.join("/var/lib/riffle",
-                                           "run-cycle.request")):
-                a.force = True
-                log("a run request was waiting; treating this wake as forced")
+            _age = time.time() - os.stat(_req).st_mtime
         except OSError:
-            pass
+            _age = None
+        if _age is not None:
+            a.force = True
+            try:
+                os.unlink(_req)
+            except FileNotFoundError:
+                pass                     # the path unit's ExecStartPre won
+            except OSError as _e:
+                log(f"could not remove the run request: {_e}", level="warn")
+            log(f"a run request was waiting ({int(_age)}s old); serving it "
+                f"as a forced wake and removing it"
+                + (" \u2014 the path unit should have taken it; check "
+                   "riffle-run-cycle.path" if _age > 120 else ""),
+                level="warn" if _age > 120 else "info")
 
     _orphans = state.db.execute(
         "SELECT id, started_at FROM cycles WHERE ended_at IS NULL").fetchall()
@@ -673,7 +691,7 @@ def main():
     policy.ensure(state, cfg)
     try:
         from agent import telemetry
-        telemetry.install(state, cfg)
+        telemetry.install(state, cfg, wait_at_exit=True)
         telemetry.sample(state, cfg, "cycle-start")
         # AND AN END SAMPLE. The dash docstring has claimed "start and end"
         # since telemetry was written and only the start existed, so a

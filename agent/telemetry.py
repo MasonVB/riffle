@@ -31,6 +31,7 @@ import re
 import shutil
 import threading
 import subprocess
+import time
 import urllib.request
 
 SCHEMA = """
@@ -91,13 +92,19 @@ def temps():
 # the next tick computed its delta against the dump's timestamp instead —
 # a CPU percentage over the wrong interval, reported as a minute's average.
 #
-# Keyed by label, so "tick", "stall", "error" and the cycle's own samples
-# each keep their own baseline and compare like with like.
+# Keyed by PURPOSE, not label. "tick", "stall", "error" each keep their own
+# baseline, and the cycle's two samples share one.
+#
+# Keying by the raw label broke the cycle's pair: "cycle-start" and
+# "cycle-end" each had their own store, so the end sample never saw the
+# start reading and both rows said "first sample since restart". Pairing
+# them was the whole reason the end sample was added.
 _LAST = {}
 
 
 def _last_for(label):
-    return _LAST.setdefault(label or "tick", {})
+    key = "cycle" if (label or "").startswith("cycle-") else (label or "tick")
+    return _LAST.setdefault(key, {})
 
 
 def fans():
@@ -490,13 +497,40 @@ def as_jsonl(state, hours=24):
 
 
 # --------------------------------------------------------------- the hook
-def install(state, cfg):
+# Dump threads started by a process that asked to wait for them at exit.
+_PENDING = []
+_JOIN_REGISTERED = False
+
+
+def _join_pending(limit=30):
+    """Give in-flight dumps up to `limit` seconds, in total, to finish."""
+    end = time.monotonic() + limit
+    for t in list(_PENDING):
+        left = end - time.monotonic()
+        if left <= 0:
+            break
+        t.join(left)
+
+
+def install(state, cfg, wait_at_exit=False):
     """Make an error or alarm in the journal trigger a dump.
 
     Registered rather than called: state.py must not import this module, and
     a hook keeps the dependency pointing one way.
+
+    wait_at_exit is for the CYCLE. Dumps run in daemon threads, which suits
+    the long-lived dash. But the cycle usually logs the error that ends it
+    just before it returns, and Python kills daemon threads at exit, so the
+    dump for the error that mattered most was probably never written. With
+    this set, an atexit hook waits up to 30 s for dumps in flight. The dash
+    leaves it off: a restart should not wait on a dump.
     """
+    global _JOIN_REGISTERED
     from agent import state as state_mod
+    if wait_at_exit and not _JOIN_REGISTERED:
+        import atexit
+        atexit.register(_join_pending)
+        _JOIN_REGISTERED = True
 
     def on_error(st, level, text):
         # IN A THREAD. dump() runs five systemctl calls and three
@@ -513,7 +547,10 @@ def install(state, cfg):
             except Exception:
                 pass                  # telemetry must never break the watched
         try:
-            threading.Thread(target=_bg, daemon=True).start()
+            t = threading.Thread(target=_bg, daemon=True)
+            t.start()
+            if wait_at_exit:
+                _PENDING[:] = [x for x in _PENDING if x.is_alive()] + [t]
         except Exception:
             pass
 
