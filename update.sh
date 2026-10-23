@@ -220,7 +220,8 @@ fi
 # also refuses if those expressions are no longer in cycle.py's code.
 #
 # The context size comes from the composer unit (installed and repo copy,
-# the smaller one), not config.yaml, which has never carried it.
+# the smaller one), not config.yaml, which has never carried it. The system
+# prompt is measured with the continuity note at cortex.CONTINUITY_MAX.
 if ! python3 - <<'PYFIT'
 import io
 import math
@@ -293,7 +294,10 @@ try:
     want = int(comp.get("max_tokens", 1600))           # cortex's default
     ceiling = int((cfg.get("cycle") or {}).get("max_prompt_chars", 50000))
     budget = int(cfg["cycle"]["max_context_chars"])     # cycle has no default
-    sysc = len(cortex.stable_prefix(cfg, ""))
+    # With the continuity note at its cap: riffle writes it daily, and the
+    # day it writes its longest is the day the budget has to hold.
+    sysc = len(cortex.stable_prefix(cfg, cortex.render_continuity(
+        "x" * cortex.CONTINUITY_MAX, "2026-01-01T00:00:00Z")))
 
     data_room = ceiling - sysc - int(budget * 0.10)
     if data_room < 8000:
@@ -308,7 +312,7 @@ try:
     tokens = math.ceil(worst / CHARS_PER_TOKEN) + TEMPLATE_TOKENS
     left = ctx - tokens
     print(f"  worst prompt {worst} chars ~ {tokens} tokens of {ctx}; "
-          f"{left} left, max_tokens {want} (system {sysc}, empty continuity)")
+          f"{left} left, max_tokens {want} (system {sysc}, continuity at its cap)")
     if left < want:
         print("  TOO TIGHT: lower max_prompt_chars, max_context_chars or max_tokens")
         sys.exit(1)
