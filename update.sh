@@ -493,10 +493,14 @@ try:
     # ceiling should assume the bad case.
     worst = sum(waits[:5])
 
-    # THE INSTALLED UNIT, falling back to the repo copy with a warning.
+    # THE REPO COPY, because it is what this deploy installs. This read the
+    # installed unit while update.sh never installed units, so a deploy that
+    # raised TimeoutStartSec alongside a longer wait was refused against the
+    # old unit for good. update.sh now installs changed units after the gates
+    # pass, so the unit that will be running is the one in the repo.
     unit = None
-    for cand in ("/etc/systemd/system/riffle-cycle.service",
-                 "systemd/riffle-cycle.service"):
+    for cand in ("systemd/riffle-cycle.service",
+                 "/etc/systemd/system/riffle-cycle.service"):
         try:
             unit = open(cand).read()
             where = cand
@@ -504,10 +508,10 @@ try:
         except OSError:
             continue
     if unit is None:
-        bad.append("no riffle-cycle.service found, installed or in the repo")
+        bad.append("no riffle-cycle.service found, in the repo or installed")
     else:
-        if where.startswith("systemd/"):
-            print("  (no installed unit readable here; checking the repo copy)")
+        if where.startswith("/etc/"):
+            print("  (no repo copy of the unit; checking the installed one)")
         m = re.search(r"^TimeoutStartSec=([0-9]+)", unit, re.M)
         if not m:
             bad.append(f"no TimeoutStartSec in {where}")
@@ -562,16 +566,31 @@ for path in ("agent/cycle.py", "agent/dash.py", "agent/project.py",
         # `def f(x): return f(x)` followed by the genuine code — passed,
         # and is just as infinitely recursive. Catch that shape directly:
         # a bare `return <self>(...)` with nothing guarding it.
+        #
+        # PAST THE DOCSTRING, AND PAST ANYTHING THAT CANNOT END THE CALL.
+        # This stopped at the first statement that was not a return, and
+        # apply_local's first statement is its docstring, so a self-call
+        # where a patch would put it — after the docstring — was never
+        # examined. The same held after an import or an assignment. A
+        # docstring, assignment, import, global or pass cannot return or
+        # branch, so a bare `return <self>(...)` after them is still
+        # unconditional. Anything that can branch, raise or assert stops
+        # the search: that may be a base case.
+        _INERT = (ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign,
+                  ast.Import, ast.ImportFrom, ast.Global, ast.Nonlocal,
+                  ast.Pass)
         for _n in fn.body:
-            if not isinstance(_n, ast.Return):
-                break           # something real happens first; stop looking
-            _v = _n.value
-            if (isinstance(_v, ast.Call) and isinstance(_v.func, ast.Name)
-                    and _v.func.id == fn.name):
-                bad.append(f"{path}:{_n.lineno} {fn.name}() returns a call "
-                           f"to itself as its first statement, with no "
-                           f"condition — unconditional infinite recursion")
-            break
+            if isinstance(_n, ast.Return):
+                _v = _n.value
+                if (isinstance(_v, ast.Call) and isinstance(_v.func, ast.Name)
+                        and _v.func.id == fn.name):
+                    bad.append(f"{path}:{_n.lineno} {fn.name}() returns a "
+                               f"call to itself before anything that could "
+                               f"stop it \u2014 unconditional infinite "
+                               f"recursion")
+                break
+            if not isinstance(_n, _INERT):
+                break           # this may branch or raise; stop looking
 
         names = {c.func.id for c in ast.walk(fn)
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
@@ -977,6 +996,63 @@ if missing:
     print("  NOTE: config.example.yaml has sections your config.yaml lacks: "
           + ", ".join(sorted(missing)))
 PY
+fi
+
+# --- install changed unit files -------------------------------------------
+#
+# update.sh used to restart the dash and nothing else, so a change under
+# systemd/ reached the box only when someone copied it by hand. That is how
+# the installed riffle-cycle.service fell behind the repo's, and gate 6 then
+# refused deploys for a reason the deploy could have fixed itself.
+#
+# AFTER the gates, not before: a gate that fails rolls the code back, and a
+# unit installed ahead of it would stay behind, describing code that is gone.
+# Only units already installed are updated. A unit that is in the repo but
+# not installed is reported and left alone: installing it is a decision, and
+# enabling it is another. A unit symlinked to the repo is already current.
+# Failures are reported, not fatal: set -e would otherwise stop the script
+# here, before the dash restart, with the new code half-deployed.
+UNITDIR="${RIFFLE_UNITDIR:-/etc/systemd/system}"
+changed=()
+for f in systemd/*; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f")
+  dest="$UNITDIR/$name"
+  if [ -L "$dest" ]; then
+    continue
+  elif [ ! -e "$dest" ]; then
+    echo "  $name is in the repo but not installed; left alone"
+  elif ! cmp -s "$f" "$dest"; then
+    if sudo install -m 0644 -o root -g root "$f" "$dest"; then
+      changed+=("$name")
+    else
+      echo "!! could not install $name; the old copy is still in place"
+    fi
+  fi
+done
+if [ "${#changed[@]}" -gt 0 ]; then
+  echo "installed changed unit files: ${changed[*]}"
+  if sudo systemctl daemon-reload; then
+    for name in "${changed[@]}"; do
+      case "$name" in
+        # A timer or path unit runs continuously; restarting re-arms it with
+        # the new definition. Neither starts a cycle by itself.
+        *.timer|*.path) sudo systemctl restart "$name" \
+                          || echo "!! could not restart $name" ;;
+        riffle-dash.service) ;;      # restarted just below
+        # The model servers keep running on the old definition until they
+        # restart, and a restart reloads the model, so that is left to you.
+        llama-*) echo "  $name takes effect when it next restarts" \
+                      "(sudo systemctl restart $name reloads the model)" ;;
+        # The riffle oneshots (cycle, run-cycle, restart-composer) pick it up
+        # the next time they run. Do NOT restart them to "apply" it: starting
+        # riffle-cycle.service runs a cycle.
+        *) echo "  $name takes effect the next time it runs" ;;
+      esac
+    done
+  else
+    echo "!! daemon-reload failed; the new unit files are on disk but not loaded"
+  fi
 fi
 
 sudo systemctl restart riffle-dash
