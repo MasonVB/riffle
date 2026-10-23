@@ -986,6 +986,79 @@ then
   exit 1
 fi
 
+# --- gate 13: every local outcome is classified ---------------------------
+#
+# An approved local action's status (executed or failed) comes from the
+# outcome its apply_* handler writes, looked up in _LOCAL_OK / _LOCAL_FAIL
+# in cycle.py. It used to be guessed from the outcome's NAME, so
+# `library-missing` was recorded as executed. This refuses a deploy where a
+# handler can write an outcome that is in neither list, or in both, or where
+# a list names an outcome nothing writes. A new outcome is then a decision
+# someone makes, not whatever its spelling happens to imply.
+if ! python3 - <<'PYOUT'
+import ast
+import sys
+
+tree = ast.parse(open("agent/cycle.py").read())
+sets, produced, unreadable = {}, {}, []
+for node in tree.body:
+    if (isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in ("_LOCAL_OK", "_LOCAL_FAIL")):
+        sets[node.targets[0].id] = set(ast.literal_eval(node.value.args[0]))
+
+
+def literals(e):
+    """Every outcome an end_cycle argument can be: a constant, or either
+    branch of `a if cond else b`."""
+    if isinstance(e, ast.Constant) and isinstance(e.value, str):
+        return [e.value]
+    if isinstance(e, ast.IfExp):
+        return literals(e.body) + literals(e.orelse)
+    return None
+
+
+for fn in tree.body:
+    if not (isinstance(fn, ast.FunctionDef) and fn.name.startswith("apply_")):
+        continue
+    for c in ast.walk(fn):
+        if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "end_cycle" and len(c.args) >= 2):
+            got = literals(c.args[1])
+            if got is None:
+                unreadable.append(f"{fn.name}:{c.lineno}")
+            else:
+                for v in got:
+                    produced.setdefault(v, set()).add(fn.name)
+
+bad = []
+if set(sets) != {"_LOCAL_OK", "_LOCAL_FAIL"}:
+    bad.append("could not find both _LOCAL_OK and _LOCAL_FAIL in cycle.py")
+else:
+    ok, fail = sets["_LOCAL_OK"], sets["_LOCAL_FAIL"]
+    for v in sorted(ok & fail):
+        bad.append(f"{v!r} is in BOTH lists")
+    for v in sorted(set(produced) - ok - fail):
+        bad.append(f"{v!r} (from {', '.join(sorted(produced[v]))}) is in "
+                   f"neither list; an approval that ends with it is recorded "
+                   f"as failed")
+    for v in sorted((ok | fail) - set(produced)):
+        bad.append(f"{v!r} is listed but no apply_* handler writes it")
+for u in unreadable:
+    bad.append(f"{u}: an outcome this gate cannot read; write it as a literal")
+if not produced and not bad:
+    bad.append("found no end_cycle outcomes in apply_*; the gate is reading "
+               "the wrong thing")
+for b in bad:
+    print(f"  OUTCOME {b}")
+sys.exit(1 if bad else 0)
+PYOUT
+then
+  echo "!! an apply_* outcome is unclassified; rolling back to $BEFORE"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
