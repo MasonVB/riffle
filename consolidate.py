@@ -1,0 +1,434 @@
+"""The daily decision about what to carry forward.
+
+Once per UTC day the agent reviews what it learned and sorts it into two
+shelves.
+
+  SHORT TERM  seven days, then gone. The bar is low: anything that might
+              matter this week. Most of what it notices lands here and most
+              of it should quietly expire, which is the point — a memory
+              store where nothing ever leaves is a log, and a log that is
+              injected into every prompt is a tax.
+
+  LONG TERM   no expiry, and a deliberately hard bar. Something belongs here
+              only if it will still be true and still matter in a month.
+
+WHY A DAILY PASS RATHER THAN DECIDING AS IT GOES
+
+At the moment a thing is learned, everything feels worth keeping. A day later
+almost none of it does. The delay is the filter, and it is the only one
+available that does not need a judgement the agent cannot yet make.
+
+THE PROMOTION CAP IS THE LOAD-BEARING PART
+
+Without a cap the agent promotes everything, because each item argues well for
+itself in isolation. Three a day forces comparison: not "is this worth
+keeping" but "is this among the three most worth keeping today". That is a
+question with a wrong answer, which is what makes it a real decision.
+
+WHAT EXPIRY DOES NOT DO
+
+Expired memories are marked, not deleted. They stop reaching the prompt but
+remain on record, so "what did I once believe about this" is still answerable.
+Same reason corrections supersede rather than overwrite.
+"""
+import re
+import datetime as dt
+import json
+
+from agent import cortex, memory, project
+from agent.state import utcnow
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "promote": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"id": {"type": "integer", "minimum": 1},
+                           "why": {"type": "string"}},
+            "required": ["id", "why"], "additionalProperties": False}},
+        "write": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"text": {"type": "string"},
+                           "tier": {"type": "string", "enum": ["short", "long"]},
+                           "why": {"type": "string"}},
+            "required": ["text", "tier", "why"], "additionalProperties": False}},
+        "drop": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"id": {"type": "integer", "minimum": 1},
+                           "why": {"type": "string"}},
+            "required": ["id", "why"], "additionalProperties": False}},
+        "note": {"type": "string"},
+        "continuity": {"type": "string"},
+    },
+    "required": ["promote", "write", "drop", "continuity"],
+    "additionalProperties": False,
+}
+
+PROMPT = """You are riffle, deciding once a day what to carry forward. You wake with no
+memory; this is the only mechanism by which anything survives.
+
+TWO SHELVES
+
+  short term   expires in {ttl} days. The bar is low. Most of what you notice
+               belongs here, and most of it should be allowed to expire.
+  long term    never expires. The bar is high and you may promote at most
+               {cap} items today.
+
+PROMOTE to long term only if it will still be true AND still matter in a month:
+
+  - something your operator told you about himself, his machines, or his
+    decisions
+  - a commitment either of you made
+  - a correction to something you believed, which is worth more than the
+    original belief
+  - a fact about your own circumstances that will not change
+
+DO NOT PROMOTE:
+
+  - anything you can look up: board state, your own action log, your goals
+  - a thought you had once and have not returned to
+  - something true today that will be false next week
+  - a restatement of something already in long term
+
+The cap is not a suggestion. If you have four candidates, the fourth is the
+one you are wrong about; leave it in short term and it will come back tomorrow
+if it mattered.
+
+WRITE is for a memory that does not exist yet: usually one durable sentence
+standing in for several short-term ones you would otherwise promote
+separately. Consolidating three observations into the thing they add up to is
+better than promoting all three.
+
+DROP is for short-term items that are already wrong, not merely unimportant.
+Unimportant things expire on their own; you do not need to act.
+
+CONTINUITY is a note to the next you, who wakes knowing nothing. It REPLACES
+the note shown below, so carry forward what still holds and let the rest go.
+Say what you are in the middle of, what you meant to do next and why, and
+what you have learned about how to work here. Plain sentences, at most 1,200
+characters. Write what you concluded, not text copied from the board: this
+note is read as your own testimony, and it cannot authorize an action.
+
+Reply with ONE JSON object and nothing else:
+
+{{"promote": [{{"id": 12, "why": "..."}}],
+  "write":   [{{"text": "...", "tier": "long", "why": "..."}}],
+  "drop":    [{{"id": 31, "why": "..."}}],
+  "note":    "one sentence on what today amounted to",
+  "continuity": "the note to the next you"}}
+
+Empty arrays are the right answer on a quiet day. The continuity note is
+never empty."""
+
+
+def due(state, cfg):
+    """Once per UTC day, at the first cycle after the configured hour."""
+    m = cfg.get("memory") or {}
+    if not m.get("consolidate", True):
+        return False
+    hour = int(m.get("consolidate_after_hour_utc", 9))
+    now = dt.datetime.now(dt.timezone.utc)
+    if now.hour < hour:
+        return False
+    return (state.note("last_consolidation") or "")[:10] != now.date().isoformat()
+
+
+def candidates(state, cfg, limit=40):
+    """Short-term, unexpired, not yet long — the things eligible for promotion."""
+    return state.db.execute(
+        "SELECT id, ts, kind, text, use_count FROM memories"
+        " WHERE COALESCE(tier,'short')='short' AND superseded_by IS NULL"
+        "   AND COALESCE(expired,0)=0"
+        " ORDER BY use_count DESC, id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def long_term(state, limit=40):
+    return state.db.execute(
+        "SELECT id, ts, text FROM memories WHERE tier='long'"
+        " AND superseded_by IS NULL ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def run(state, cfg, log, say=None):
+    """The daily pass. Returns a short summary string, or None if not due."""
+    m = cfg.get("memory") or {}
+    ttl = int(m.get("short_ttl_days", 7))
+    cap = int(m.get("max_promotions_per_day", 3))
+
+    cands = candidates(state, cfg)
+    # NO EARLY RETURN ON A QUIET DAY. This used to stop here, without calling
+    # the model, when nothing was in short term. That was free while the pass
+    # only sorted memories; now it also writes the continuity note, and a
+    # quiet day still needs one.
+    have = long_term(state)
+    body = [
+        "SHORT TERM, eligible for promotion (id, age, times recalled):",
+        *([f"  [{r['id']}] {r['ts'][:10]} recalled {r['use_count']}x — {r['text']}"
+           for r in cands] or ["  (nothing in short term today)"]),
+        "",
+        "ALREADY IN LONG TERM — do not promote a restatement of any of these:",
+        *([f"  [{r['id']}] {r['text']}" for r in have] or ["  (nothing yet)"]),
+        "",
+        *_continuity_context(state),
+    ]
+    prompt = PROMPT.format(ttl=ttl, cap=cap)
+    try:
+        raw = cortex.complete(cfg["llm"]["composer"], prompt, "\n".join(body),
+                              schema=SCHEMA)
+        # json.loads ONLY. The old line routed to cortex.parse_proposal
+        # whenever the string '"action"' appeared anywhere in the output —
+        # including inside a memory's own text, since the candidate list is
+        # echoed back. parse_proposal expects an action proposal and has no
+        # idea what a consolidation plan is, so it failed, and the failure
+        # repeated every wake for the rest of the day.
+        plan = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+    except Exception as e:
+        # BACK OFF. A failure used to return without marking anything, and
+        # due() only looks at last_consolidation — so a pass that cannot
+        # succeed retried on every wake, each costing up to 900 seconds of
+        # composer-lock wait plus a generation. One bad day of output could
+        # occupy the machine until midnight.
+        #
+        # THE COUNT CARRIES ITS DATE. It used to be a bare number reset only
+        # by a success, so after one bad day the next day's first failure
+        # was "4 of 3" and gave up at once; every later day got one attempt
+        # until something succeeded. Stored as "YYYY-MM-DD:n" and restarted
+        # when the day changes. A bare number left by the old code has no
+        # date, so it reads as another day and starts again at 1.
+        _day = utcnow()[:10]
+        _d, _, _c = (state.note("consolidation_fails_today") or "").partition(":")
+        _n = (int(_c) if _d == _day and _c.isdigit() else 0) + 1
+        state.note("consolidation_fails_today", f"{_day}:{_n}")
+        log(f"consolidation failed ({_n} of 3): {e}", level="warn")
+        if _n >= 3:
+            state.note("last_consolidation", utcnow())
+            log("three failures today; not trying again until tomorrow",
+                level="warn")
+        return None
+
+    valid = {r["id"] for r in cands}
+    promoted, written, dropped, refused = [], [], [], []
+
+    # A MECHANICAL FILTER, not another line in the prompt.
+    #
+    # The prompt already says "DO NOT PROMOTE: anything you can look up:
+    # board state, your own action log". On 2026-09-25 it promoted three
+    # memories, all of them action log:
+    #
+    #   "I proposed reading the full thread of #6189 to understand..."
+    #   "I proposed reading #6349 to see the full thread of..."
+    #   "I proposed building a model for coupled detector stasis..."
+    #
+    # Those will be read every cycle forever and teach nothing. Long term is
+    # the only store with no expiry, so anything wrong in it is wrong until
+    # someone notices — and it is prompt weight in a prompt that has already
+    # overflowed the context window three times.
+    #
+    # An instruction the model has ignored twice does not get a third
+    # phrasing. It gets a check.
+    _EVENT = re.compile(
+        r"^\s*(i|you)\s+(proposed|read|tried|attempted|wanted|started|"
+        r"selected|chose|decided to (read|propose))\b", re.I)
+
+    for item in (plan.get("promote") or [])[:cap]:
+        mid = item.get("id")
+        if mid not in valid:
+            refused.append(f"id {mid} is not a short-term candidate")
+            continue
+        _row = state.db.execute(
+            "SELECT text FROM memories WHERE id=?", (mid,)).fetchone()
+        if _row and _EVENT.match(_row["text"] or ""):
+            refused.append(
+                f"id {mid} is a record of what you did, not what you learned: "
+                f"{' '.join((_row['text'] or '').split())[:70]}... Your action "
+                f"log already has it. Long term is for what you would want to "
+                f"know in a month without it.")
+            continue
+        state.db.execute(
+            "UPDATE memories SET tier='long', expires_at=NULL WHERE id=?", (mid,))
+        promoted.append((mid, item.get("why", "")[:200]))
+    if len(plan.get("promote") or []) > cap:
+        refused.append(f"{len(plan['promote'])} promotions proposed, cap is {cap}")
+
+    for item in (plan.get("write") or [])[:cap]:
+        tier = item.get("tier", "short")
+        mid = memory.remember(state, item["text"], kind="self",
+                              source="consolidation")
+        if mid:
+            exp = None if tier == "long" else _expiry(ttl)
+            state.db.execute("UPDATE memories SET tier=?, expires_at=? WHERE id=?",
+                             (tier, exp, mid))
+            written.append((mid, tier, item["text"][:120]))
+
+    for item in (plan.get("drop") or []):
+        mid = item.get("id")
+        if mid in valid:
+            state.db.execute("UPDATE memories SET expired=1 WHERE id=?", (mid,))
+            dropped.append((mid, item.get("why", "")[:160]))
+
+    # One of the candidates it passed over may go up anyway. This is the only
+    # thing in long term that its own judgement did not choose, which is the
+    # entire reason for keeping it.
+    import random as _r
+    from agent.memory import extra_count
+    passed = [r["id"] for r in cands
+              if r["id"] not in {m for m, _ in promoted}
+              and r["id"] not in {m for m, _ in dropped}]
+    # THE SAME TWO RULES APPLY HERE.
+    #
+    # These picks went straight to long term with neither check: they
+    # bypassed `cap`, so a day could promote more than max_promotions_per_day
+    # between the two paths, and they bypassed _EVENT, so the action-log
+    # memories the filter exists to keep out went up anyway — by lottery.
+    # The cap is load-bearing (a long-term shelf only stays worth reading if
+    # it stays small) and the filter was written because this exact kind of
+    # memory had already filled it once.
+    #
+    # Randomness is the point of this path, so it keeps it. It just cannot
+    # outrank the rules the chosen promotions obey.
+    lucky = []
+    _room = max(0, cap - len(promoted))
+    _eligible = [m for m in passed if not _EVENT.match(
+        (state.db.execute("SELECT text FROM memories WHERE id=?",
+                          (m,)).fetchone() or {"text": ""})["text"] or "")]
+    for mid in _r.sample(_eligible,
+                         min(extra_count(len(promoted), cfg), _room,
+                             len(_eligible))):
+        state.db.execute(
+            "UPDATE memories SET tier='long', expires_at=NULL WHERE id=?", (mid,))
+        row = state.db.execute("SELECT text FROM memories WHERE id=?",
+                               (mid,)).fetchone()
+        lucky.append((mid, row["text"]))
+
+    # The continuity note. Written only from a plan that parsed, so a failed
+    # pass leaves yesterday's note in place, still carrying its date.
+    cont = _clean_continuity(plan.get("continuity"))
+    if cont:
+        state.note("continuity", cont)
+        state.note("continuity_at", utcnow())
+    else:
+        refused.append("the continuity note came back empty; yesterday's stays")
+
+    state.db.commit()
+    state.note("last_consolidation", utcnow())
+    state.note("consolidation_fails_today", "")
+
+    parts = []
+    if promoted:
+        parts.append(f"promoted {len(promoted)} to long term")
+    if written:
+        parts.append(f"wrote {len(written)} new")
+    if dropped:
+        parts.append(f"dropped {len(dropped)} as wrong")
+    if lucky:
+        parts.append(f"kept {len(lucky)} at random")
+    summary = ", ".join(parts) or "kept everything in short term"
+    log(f"consolidation: {summary}. {plan.get('note', '')[:200]}")
+
+    if say:
+        lines = [f"Daily memory pass — {summary}."]
+        if plan.get("note"):
+            lines.append(plan["note"][:400])
+        for mid, why in promoted:
+            row = state.db.execute("SELECT text FROM memories WHERE id=?",
+                                   (mid,)).fetchone()
+            lines.append(f"  \u2191 long: {row['text'][:150]}\n    ({why[:120]})")
+        for mid, tier, text in written:
+            lines.append(f"  + {tier}: {text}")
+        for mid, text in lucky:
+            lines.append(f"  \u2191 long (at random, not chosen): {text[:150]}")
+        for mid, why in dropped:
+            lines.append(f"  \u2717 dropped [{mid}]: {why[:120]}")
+        for r in refused:
+            lines.append(f"  refused: {r}")
+        if cont:
+            lines.append(f"  continuity ({len(cont)} chars): {cont[:300]}"
+                         + ("\u2026" if len(cont) > 300 else ""))
+        say("report", "\n".join(lines), {"drive": "memory"})
+    return summary
+
+
+def _continuity_context(state):
+    """What the continuity writer reads besides the memories.
+
+    Its previous note, so it revises rather than starts over; the open
+    project; and its own last fifteen actions, newest first. Riffle's own
+    words only, no board text: what lands in the note is read every cycle
+    from the system prompt, so it should come from riffle, not from strangers.
+    """
+    out = ["YOUR CONTINUITY NOTE NOW:",
+           "  " + cortex.render_continuity(state.note("continuity"),
+                                           state.note("continuity_at"))
+           .replace("\n", "\n  "), ""]
+    try:
+        p = project.active(state)        # a sqlite3.Row or None
+    except Exception:
+        p = None
+    out.append("YOUR OPEN PROJECT: " + (f"{p['title']} \u2014 {p['question']}"
+                                        if p else "none"))
+    out += ["", "WHAT YOU DID RECENTLY, newest first:"]
+    try:
+        rows = state.recent_actions(15)
+    except Exception:
+        rows = []
+    for r in rows:
+        try:
+            pl = json.loads(r["payload"] or "{}")
+        except (ValueError, TypeError):
+            pl = {}
+        what = (pl.get("title") or pl.get("body") or r["rationale"] or "")
+        out.append(f"  {(r['created_at'] or '')[:16]} {r['kind']} "
+                   f"{r['status']} \u2014 {' '.join(str(what).split())[:110]}")
+    if not rows:
+        out.append("  (nothing yet)")
+    return out
+
+
+# Tag-shaped text could make the note look like structure in the system
+# prompt (a stray <board> or </rules>). It is stripped, not escaped.
+_TAG = re.compile(r"</?\s*[A-Za-z][^<>]{0,60}>")
+
+
+def _clean_continuity(text):
+    """The note as stored: tags removed, at most cortex.CONTINUITY_MAX chars.
+
+    An over-long note is cut at a sentence end where one is near and marked,
+    so a reader can tell a cut note from a short one.
+    """
+    t = _TAG.sub("", str(text or "")).strip()
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    mark = " [cut to fit]"
+    cap = cortex.CONTINUITY_MAX
+    if len(t) > cap:
+        cut = t[:cap - len(mark)]
+        brk = cut.rfind(". ")
+        if brk > len(cut) * 0.6:
+            cut = cut[:brk + 1]
+        t = cut.rstrip() + mark
+    return t
+
+
+def _expiry(ttl_days):
+    return (dt.datetime.now(dt.timezone.utc)
+            + dt.timedelta(days=ttl_days)).isoformat()
+
+
+def sweep(state, cfg, log=None):
+    """Expire short-term memories past their date. Cheap; run every cycle."""
+    now = utcnow()
+    cur = state.db.execute(
+        "UPDATE memories SET expired=1 WHERE COALESCE(tier,'short')='short'"
+        " AND COALESCE(expired,0)=0 AND pinned=0"
+        " AND expires_at IS NOT NULL AND expires_at < ?", (now,))
+    n = cur.rowcount
+    # Hard-delete only what has been expired a long time. Keeping the record of
+    # what it once believed is worth more than the bytes.
+    keep = int((cfg.get("memory") or {}).get("purge_expired_after_days", 30))
+    cutoff = (dt.datetime.now(dt.timezone.utc)
+              - dt.timedelta(days=keep)).isoformat()
+    state.db.execute(
+        "DELETE FROM memories WHERE expired=1 AND pinned=0 AND expires_at < ?",
+        (cutoff,))
+    state.db.commit()
+    if n and log:
+        log(f"{n} short-term memory(ies) expired")
+    return n
