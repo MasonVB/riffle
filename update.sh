@@ -201,33 +201,122 @@ fi
 # that was never counted. Each fix was aimed at part of the prompt because
 # nothing measured all of it.
 #
-# This measures what actually goes on the wire — system plus user plus the
-# front page — against the model's window, and refuses a deploy that leaves
-# too little room to answer in.
+# THIS GATE COULD NOT FAIL UNTIL 2026-10-23. It sat inside an
+# `except BaseException`, which caught its own sys.exit(1), and it ended on
+# sys.exit(0). With max_prompt_chars at 70000 it printed "TOO TIGHT ... -1612
+# fit", then "COULD NOT RUN: SystemExit: 1", and deployed. Now every path
+# that is not a clean pass exits 1, including "could not run".
+#
+# WHAT IT CHECKS is the worst case the cycle's own arithmetic allows, not
+# one sample prompt. A prompt assembled from fixture data proves that one
+# prompt fits; the bound proves every prompt does. The bound is:
+#
+#   system + data blocks + volatile lines  <= max_prompt_chars - budget/10
+#   front page                             <= max(1800, budget - data - 400)
+#
+# The second line is not covered by the ceiling: when the data blocks are
+# small, the front page takes up to `budget` on its own. Both cases are
+# checked. Because this mirrors cycle.py rather than calling it, the gate
+# also refuses if those expressions are no longer in cycle.py's code.
+#
+# The context size comes from the composer unit (installed and repo copy,
+# the smaller one), not config.yaml, which has never carried it.
 if ! python3 - <<'PYFIT'
+import io
+import math
+import os
+import re
 import sys
+import tokenize
 sys.path.insert(0, ".")
+
+CHARS_PER_TOKEN = 3.25   # measured 3.52 (73,864 chars = 20,964 tokens); kept low
+TEMPLATE_TOKENS = 64     # chat-template wrapping around system and user
+FRONT_HDR = 260          # the FRONT PAGE header (228 chars) plus slack
+WRAP = 140               # <board> tags and the closing instruction (99 + drive)
+
+# The cycle's budget arithmetic, as code with comments, strings and
+# whitespace removed. If any is gone, this gate's model of the prompt is out
+# of date and its answer means nothing.
+MIRRORED = ("_room=_ceiling-_sys_chars-int(budget*0.10)",
+            "room=max(1800,budget-len(fixed)-400)",
+            "if_room<8000:")
+
+
+def code_only(path):
+    skip = (tokenize.COMMENT, tokenize.STRING, tokenize.NL, tokenize.NEWLINE,
+            tokenize.INDENT, tokenize.DEDENT)
+    toks = tokenize.generate_tokens(io.StringIO(open(path).read()).readline)
+    return "".join(t.string for t in toks if t.type not in skip)
+
+
+def unit_ctx(path):
+    """Per-sequence context from a llama-server unit, or None."""
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return None
+    text = " ".join(l for l in lines if not l.lstrip().startswith("#"))
+    m = re.search(r"(?:--ctx-size|(?<!\S)-c)[\s=]+(\d+)", text)
+    if not m:
+        return None
+    p = re.search(r"(?:--parallel|(?<!\S)-np)[\s=]+(\d+)", text)
+    return int(m.group(1)) // max(1, int(p.group(1)) if p else 1)
+
+
 try:
+    if not os.path.exists("config.yaml"):
+        print("  no config.yaml here, and the cycle cannot run without one")
+        sys.exit(1)
     import yaml
     from agent import cortex
     cfg = yaml.safe_load(open("config.yaml"))
-    ctx = int(cfg.get("llm", {}).get("composer", {}).get("ctx", 20480))
-    want = int(cfg.get("llm", {}).get("composer", {}).get("max_tokens", 3000))
-    ceiling = int(cfg.get("cycle", {}).get("max_prompt_chars", 46000))
-    sysc = len(cortex.stable_prefix(cfg, ""))
-    total = ceiling + 1800
-    tokens = int(total / 3.25)
-    left = ctx - tokens
-    print(f"  prompt ceiling {ceiling} chars (system {sysc} of it)"
-          f" = ~{tokens} tokens of {ctx}; {left} left to answer in")
-    if left < want:
-        print(f"  TOO TIGHT: max_tokens is {want} and only {left} fit.")
+
+    code = code_only("agent/cycle.py")
+    gone = [m for m in MIRRORED if m not in code]
+    if gone:
+        for m in gone:
+            print(f"  cycle.py no longer contains {m!r}")
+        print("  the prompt budget changed; update gate 4 to match it")
         sys.exit(1)
-except FileNotFoundError:
-    print("  (no config.yaml here; skipping the fit check)")
+
+    ctxs = {p: unit_ctx(p) for p in
+            ("/etc/systemd/system/llama-composer.service",
+             "systemd/llama-composer.service")}
+    found = [v for v in ctxs.values() if v]
+    if not found:
+        print("  no --ctx-size in either llama-composer.service")
+        sys.exit(1)
+    ctx = min(found)
+
+    comp = (cfg.get("llm") or {}).get("composer") or {}
+    want = int(comp.get("max_tokens", 1600))           # cortex's default
+    ceiling = int((cfg.get("cycle") or {}).get("max_prompt_chars", 50000))
+    budget = int(cfg["cycle"]["max_context_chars"])     # cycle has no default
+    sysc = len(cortex.stable_prefix(cfg, ""))
+
+    data_room = ceiling - sysc - int(budget * 0.10)
+    if data_room < 8000:
+        print(f"  the system prompt is {sysc} chars of a {ceiling} ceiling, "
+              f"leaving {data_room} for the rest; the cycle logs an error "
+              f"every wake at that size")
+        sys.exit(1)
+
+    capped = ceiling - int(budget * 0.10) + 1800        # front page at its floor
+    uncapped = sysc + budget - 400                       # front page given `budget`
+    worst = max(capped, uncapped) + FRONT_HDR + WRAP
+    tokens = math.ceil(worst / CHARS_PER_TOKEN) + TEMPLATE_TOKENS
+    left = ctx - tokens
+    print(f"  worst prompt {worst} chars ~ {tokens} tokens of {ctx}; "
+          f"{left} left, max_tokens {want} (system {sysc}, empty continuity)")
+    if left < want:
+        print("  TOO TIGHT: lower max_prompt_chars, max_context_chars or max_tokens")
+        sys.exit(1)
+except SystemExit:
+    raise
 except BaseException as e:
     print(f"  FIT GATE COULD NOT RUN: {type(e).__name__}: {e}")
-sys.exit(0)
+    sys.exit(1)
 PYFIT
 then
   echo "!! the prompt does not leave room to answer; rolling back to $BEFORE"
@@ -721,6 +810,55 @@ sys.exit(1 if bad else 0)
 PYROW
 then
   echo "!! .get() called on a sqlite3.Row; rolling back"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
+# --- gate 11: no stray copies of agent modules ----------------------------
+#
+# Four cycle.py files have been uploaded to the repo root (f53c416, 8cb25db,
+# bccce71, a78bd82). Nothing ran them, so every other gate passed, but each
+# was a stale copy waiting to be edited instead of agent/cycle.py. That is
+# how the noop gate was lost in October, and the likeliest way the changes
+# reported done and later found missing went missing. Gate 9 also read the
+# last one, so a config key only it used would have counted as live.
+#
+# The GitHub uploader drops a file wherever the page you are on is, so this
+# is a routine mistake rather than a strange one. Two rules:
+#   - a .py at the root must be one of the known hand-run tools;
+#   - no .py outside agent/ may share a name with a module in agent/.
+#
+# ROOT_TOOLS is a hand-maintained list. Adding a new root tool means adding
+# it here, which is the point: it should be a decision, not an accident.
+if ! python3 - <<'PYSTRAY'
+import os
+import subprocess
+import sys
+
+# TRACKED files, not the working tree: the problem is what is in the repo,
+# and an untracked scratch file on the box should not block every deploy.
+tracked = [p for p in subprocess.run(
+    ["git", "ls-files", "-z"], capture_output=True, check=True
+).stdout.decode().split("\0") if p.endswith(".py")]
+ROOT_TOOLS = {"ed25519_pure.py", "join.py", "keyutil.py", "numcheck.py",
+              "repo_setup.py", "witness.py"}
+agent = {os.path.basename(p) for p in tracked
+         if os.path.dirname(p) == "agent"}
+bad = []
+for p in sorted(tracked):
+    if "/" not in p and p not in ROOT_TOOLS:
+        bad.append(f"{p} at the repo root is not a known tool")
+for p in sorted(tracked):
+    if os.path.dirname(p) != "agent" and os.path.basename(p) in agent:
+        bad.append(f"{p} shares a name with agent/{os.path.basename(p)}")
+for b in sorted(set(bad)):
+    print(f"  STRAY {b}")
+if bad:
+    print("  delete it on GitHub, or add it to ROOT_TOOLS if it is a new tool")
+sys.exit(1 if bad else 0)
+PYSTRAY
+then
+  echo "!! a stray .py is in the tree; rolling back to $BEFORE"
   git reset --hard "$BEFORE"
   exit 1
 fi
