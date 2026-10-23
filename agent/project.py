@@ -451,12 +451,17 @@ def missing_kind(state, cfg, pid):
             + str(s["by_kind"].get("draft", 0)) + ".")
 
 
-def as_context(state, cfg, budget=5000):
+def as_context(state, cfg, budget=5000, include_thread=True):
     """The project block for the cycle prompt.
 
     Split three ways: the newest thread read in full, the note list, and a
     line per thread already read. The full read gets the largest share because
     it is the thing the next cycle has to act on.
+
+    include_thread=False leaves the full thread out; the cycle puts it inside
+    <board> with recent_thread() instead, because it is strangers' words and
+    the rest of this block is riffle's own. The notes keep the same share of
+    the budget either way, so neither half changes size.
     """
     read_budget = int(budget * 0.55)
     budget = budget - read_budget
@@ -539,9 +544,10 @@ def as_context(state, cfg, budget=5000):
     rs = reads(state, proj["id"])
     if rs:
         newest = rs[0]
-        head.append("THE THREAD YOU READ MOST RECENTLY:\n"
-                    + render_read(newest, read_budget)
-                    + _unread_hint(state, newest))
+        if include_thread:
+            head.append("THE THREAD YOU READ MOST RECENTLY:\n"
+                        + render_read(newest, read_budget)
+                        + _unread_hint(state, newest))
         if len(rs) > 1:
             head.append("THREADS YOU HAVE ALREADY READ — do not read them "
                         "again, what mattered is in your notes:\n"
@@ -639,6 +645,23 @@ def record_read(state, pid, cycle_id, post_id, title, author,
         (pid, cycle_id, utcnow(), post_id, title[:200], author[:80],
          total, shown, body, replies, digest))
     state.db.commit()
+
+
+def recent_thread(state, cfg, budget=5000):
+    """The newest thread read in full, for the <board> side of the prompt.
+
+    The same text as_context() includes by default, at the same size (the
+    0.55 share of `budget`), or "" when there is no project or no read.
+    """
+    proj = active(state)
+    if not proj:
+        return ""
+    rs = reads(state, proj["id"])
+    if not rs:
+        return ""
+    return ("THE THREAD YOU READ MOST RECENTLY:\n"
+            + render_read(rs[0], int(budget * 0.55))
+            + _unread_hint(state, rs[0]))
 
 
 def render_read(r, budget):
