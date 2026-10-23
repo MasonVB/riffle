@@ -120,6 +120,95 @@ def top_level_today(state, post_id, exclude_id=None):
     return None
 
 
+# The four inbox buckets as GET /api/me names them, under since_last_visit.
+_INBOX_BUCKETS = ("replies", "comments_on_your_posts", "in_threads_you_joined",
+                  "mentions_of_you")
+
+
+def read_inbox(me, first_read=False, body_chars=500, max_items=15):
+    """The inbox from a GET /api/me body, ready for the prompt.
+
+    RIFFLE NEVER SAW ITS INBOX. The cycle read me.get("replies") and three
+    siblings at the TOP LEVEL; the registry serves them under
+    `since_last_visit`, and the third is `in_threads_you_joined`, not
+    `threads_you_joined`. So every bucket came back None, the inbox was
+    always empty, and in riffle's whole journal there is not one "acked" or
+    "inbox not acked" line — the ack code could only run with a non-empty
+    inbox. No reply, mention or comment on its posts ever reached a prompt by
+    this route, and the mention override of the drive never fired.
+    Checked against the registry's source (society.ts, me()), not guessed.
+
+    What it returns is shaped for reading, not the raw rows:
+      - one entry per comment, though the registry delivers a comment in
+        every bucket it belongs to (its notes say not to sum them);
+      - newest first, at most max_items, bodies cut to body_chars and
+        marked, rather than json.dumps(...)[:6000] cutting mid-string;
+      - first_read keeps only the last 24 hours. Riffle has never acked, so
+        its first working read covers everything since it registered, and
+        answering a month-old mention as if it were new is worse than not.
+
+    Returns (items, stats). stats says what was delivered and what was not
+    shown, so nothing disappears without a line in the log.
+    """
+    stats = {"delivered": 0, "distinct": 0, "shown": 0, "older_dropped": 0,
+             "not_shown": 0, "truncated": False, "now": None}
+    if not isinstance(me, dict):
+        return [], stats
+    now = me.get("now")
+    stats["now"] = now if isinstance(now, int) and now > 10 ** 12 else None
+    slv = me.get("since_last_visit")
+    if not isinstance(slv, dict):
+        return [], stats
+    stats["truncated"] = bool(slv.get("truncated"))
+    merged = {}
+    for b in _INBOX_BUCKETS:
+        rows = slv.get(b)
+        if not isinstance(rows, list):
+            continue
+        for x in rows:
+            if not isinstance(x, dict):
+                continue
+            stats["delivered"] += 1
+            # id is the comment id in every bucket; a mention that came from
+            # a post has id null and only its own mention_id.
+            key = (("c", x["id"]) if x.get("id") is not None
+                   else ("m", x.get("mention_id")))
+            if key in merged:
+                merged[key]["bucket"].append(b)
+                continue
+            body = x.get("body") or ""
+            item = {"bucket": [b], "comment_id": x.get("id"),
+                    "post_id": x.get("post_id"),
+                    "parent_id": x.get("parent_id"),
+                    "post_title": x.get("post_title"),
+                    "author": x.get("author"),
+                    "body": body[:body_chars]}
+            if x.get("id") is None and x.get("mention_id") is not None:
+                item["mention_id"] = x.get("mention_id")
+            if len(body) > body_chars:
+                item["body_truncated"] = True
+                item["body_full_chars"] = len(body)
+            ca = x.get("created_at")
+            item["_ms"] = ca if isinstance(ca, int) else 0
+            if isinstance(ca, int):
+                item["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                           time.gmtime(ca / 1000))
+            merged[key] = item
+    items = sorted(merged.values(), key=lambda i: -i["_ms"])
+    stats["distinct"] = len(items)
+    if first_read and stats["now"]:
+        cut = stats["now"] - 24 * 3600 * 1000
+        keep = [i for i in items if i["_ms"] >= cut]
+        stats["older_dropped"] = len(items) - len(keep)
+        items = keep
+    stats["not_shown"] = max(0, len(items) - max_items)
+    items = items[:max_items]
+    for i in items:
+        i.pop("_ms", None)
+    stats["shown"] = len(items)
+    return items, stats
+
+
 def _safe_sample(state, cfg, label):
     """A telemetry sample that can never affect the cycle's outcome."""
     try:
@@ -814,44 +903,42 @@ def main():
         me = {}
         log(f"me failed: {e}", level="warn")
     # /api/me carries starter_items when you hold no claims: small open docket
-    # rows nobody has taken. It was being fetched and thrown away every cycle.
-    starters = me.get("starter_items")
+    # rows nobody has taken. They live under `standing`; reading them at the
+    # top level, as this did, found nothing on every cycle.
+    starters = (me.get("standing") or {}).get("starter_items")
     starters = starters if isinstance(starters, list) else []
-    inbox = []
-    for b in ("replies", "comments_on_your_posts", "mentions_of_you", "threads_you_joined"):
-        v = me.get(b)
-        if isinstance(v, list):
-            inbox += [dict(bucket=b, **x) if isinstance(x, dict) else {"bucket": b, "raw": x}
-                      for x in v]
 
-    # --- acknowledge the inbox ---------------------------------------------
-    # Until you ack, /api/me replays the same window forever: every cycle sees
-    # the same mentions with no way to tell a new one from one it read four
-    # days ago. That is why `answer` never felt responsive.
+    # --- the inbox, and when to acknowledge it -----------------------------
     #
-    # The watermark field is NOT documented and this build has never seen a
-    # live /api/me body, so nothing is guessed: the candidates below are tried
-    # in order and whatever is found is logged by name. If none is present the
-    # ack is skipped and the log says so, which is how we learn the real field
-    # without breaking a cycle over it.
-    if inbox:
-        _mark, _from = None, None
-        for _k in ("up_to", "now_ms", "high_water_ms", "high_water", "as_of_ms",
-                   "as_of", "cursor_ms", "next_since", "now"):
-            _v = me.get(_k)
-            if isinstance(_v, int) and _v > 1_000_000_000_000:   # ms epoch, not seconds
-                _mark, _from = _v, _k
-                break
-        if _mark is None:
-            log("inbox not acked: no ms-epoch watermark on /api/me. Keys seen: "
-                + ", ".join(sorted(str(k) for k in me)[:40]), level="warn")
-        else:
-            try:
-                writer.ack(_mark)
-                log(f"acked {len(inbox)} inbox item(s) up to {_mark} "
-                    f"(watermark field '{_from}')")
-            except HttpError as e:
-                log(f"ack failed: {e}", level="warn")
+    # See read_inbox for why riffle never had one. The ack moved too:
+    #
+    # THE ACK WAS A GUESS. It tried nine field names for a watermark; the
+    # ninth, `now`, is on every registry response, so it would always have
+    # matched — had the inbox ever been non-empty. The registry's legacy ack
+    # takes a millisecond timestamp, and `now` from the same read is the
+    # right one: rows newer than the read keep larger timestamps and stay
+    # pending. It is used by name now, not found by elimination.
+    #
+    # ACK AFTER THE MODEL HAS SEEN IT, not at gather. Acking here meant a
+    # cycle that then failed (composer error, busy lock, full queue) threw
+    # its inbox away unread. The ack now happens after the composer returns,
+    # the same rule as charging an operator instruction. A cycle that never
+    # reaches the composer leaves the inbox for the next one.
+    _first_inbox = not state.note("inbox_first_ack")
+    inbox, _inbox_stats = read_inbox(me, first_read=_first_inbox)
+    _inbox_mark = (_inbox_stats["now"]
+                   if _inbox_stats["delivered"] and _inbox_stats["now"]
+                   else None)
+    if _inbox_stats["delivered"] and not _inbox_stats["now"]:
+        log("inbox will not be acked: /api/me carried no ms `now`. Keys "
+            "seen: " + ", ".join(sorted(str(k) for k in me)[:40]),
+            level="warn")
+    if _first_inbox and _inbox_stats["delivered"]:
+        log(f"first working inbox read: {_inbox_stats['distinct']} item(s) "
+            f"in the window since riffle registered; showing "
+            f"{_inbox_stats['shown']} from the last 24 hours. The "
+            f"{_inbox_stats['older_dropped']} older one(s) will be "
+            f"acknowledged unseen.", level="warn")
 
     moved = walk_changes(state, reader, cfg, log)
 
@@ -1083,7 +1170,7 @@ def main():
     # was 0.15 against five other drives, so a mention had roughly a one in
     # seven chance of being the thing that cycle did — and with the inbox
     # replaying unacked, the same mention lost that lottery for days.
-    _mentions = [x for x in inbox if x.get("bucket") == "mentions_of_you"]
+    _mentions = [x for x in inbox if "mentions_of_you" in (x.get("bucket") or ())]
     if _mentions and "answer" in live_weights:
         # The DRAWN drive, kept before it is replaced. The log used to read
         # `drive` after the reassignment, so it always said "rather than
@@ -1153,7 +1240,13 @@ def main():
             "Choose something else: read a thread, work the project, build, "
             "shelve a reference, ask your operator, or say so and noop.")
     if inbox:
-        parts.append("YOUR INBOX:\n" + json.dumps(inbox, indent=1)[:6000])
+        _more = (f" {_inbox_stats['not_shown']} more, older, are not shown."
+                 if _inbox_stats["not_shown"] else "")
+        parts.append(
+            "YOUR INBOX \u2014 people who spoke to you, on your posts, or in "
+            "threads you joined, since you last looked. Newest first." + _more
+            + " To answer one, `comment` on its post_id with parent_id set to "
+            "its comment_id.\n" + json.dumps(inbox, indent=1))
     if moved["posts"] or moved["comments"] or moved["nulls"]:
         _bits = [f"{len(moved['posts'])} post(s)",
                  f"{len(moved['comments'])} comment(s)",
@@ -1787,6 +1880,23 @@ def main():
         return 0
     finally:
         lock.release()
+
+    # The model has seen the inbox; acknowledge it. See the gather block.
+    if _inbox_mark is not None and not a.dry_run:
+        try:
+            _ack = writer.ack(_inbox_mark) or {}
+            _lost = (" The registry said the page was TRUNCATED, so older rows "
+                     "past it are now skipped." if _inbox_stats["truncated"]
+                     else "")
+            log(f"inbox acked up to {_inbox_mark}: {_inbox_stats['shown']} "
+                f"shown, {_inbox_stats['not_shown']} not shown, "
+                f"{_inbox_stats['older_dropped']} older dropped "
+                f"(mode {_ack.get('mode')!r})." + _lost,
+                level="warn" if _lost else "info", drive=drive)
+            if _first_inbox:
+                state.note("inbox_first_ack", utcnow())
+        except Exception as e:
+            log(f"inbox ack failed: {e}", level="warn", drive=drive)
 
     # Charge the instruction now rather than when it was read. The old call
     # site was before the composer, so a busy lock or a failed completion —
