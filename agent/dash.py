@@ -654,7 +654,18 @@ class Handler(BaseHTTPRequestHandler):
         # server's now_utc, so for part of every day the check and the
         # increment disagreed about which day it was: a cap could read full
         # against one day and be spent against another.
-        _day = (self.state.note("server_day") or utcnow())[:10]
+        #
+        # BUT ONLY WHILE THE NOTE IS CURRENT. server_day is written by a cycle,
+        # so between midnight UTC and the next cycle it still names yesterday,
+        # and an approval in that window was checked against yesterday's
+        # spend: "today's comment allowance is used up" with nothing spent
+        # today. The longest such window is when cycles have stopped. The note
+        # is trusted when it is today or later (the server past midnight
+        # before this clock, which is what it exists to match); a stale one
+        # falls back to this machine's UTC date.
+        _today = utcnow()[:10]
+        _noted = (self.state.note("server_day") or "")[:10]
+        _day = _noted if _noted >= _today else _today
         _left = self.cfg["caps"].get(a["kind"])
         if _left is not None and s.cap_used(_day, a["kind"]) >= _left:
             s.set_status(aid, "rejected",
@@ -771,64 +782,6 @@ class Handler(BaseHTTPRequestHandler):
 
         _th.Thread(target=worker, daemon=True).start()
         return {"ok": True, "status": "sending"}
-
-    def _decide_old_unused(self, aid, verdict):
-        s = self.state
-        a = s.action(aid)
-        if not a or a["status"] != "queued":
-            return {"error": "not queued"}
-        payload = json.loads(a["payload"])
-        base = {"kind": a["kind"], "drive": a["drive"], "action_id": aid,
-                "payload": json.dumps(payload, indent=2)}
-        if verdict != "approve":
-            s.set_status(aid, "rejected")
-            s.say("proposal", f"You rejected this {a['kind']}. Not sent.",
-                  dict(base, status="rejected"))
-            s.log(f"you rejected {a['kind']} #{aid}", drive=a["drive"])
-            return {"ok": True}
-        # Reflexive actions change the agent, not the square. Approving one
-        # must never turn into an HTTP POST to the registry.
-        if a["kind"] in ("adjust_drive", "add_goal", "remember"):
-            try:
-                if a["kind"] == "adjust_drive":
-                    old, new = goals.set_weight(s, self.cfg, payload["name"],
-                                                payload["weight"], "you",
-                                                payload.get("reason", "approved by operator"))
-                    msg = f"Approved — '{payload['name']}' moved {old} → {new}."
-                elif a["kind"] == "add_goal":
-                    goals.add(s, self.cfg, payload["name"], payload["weight"],
-                              payload["description"], "you",
-                              payload.get("reason", "approved by operator"))
-                    msg = (f"Approved — new goal '{payload['name']}' at "
-                           f"{payload['weight']}.")
-                else:
-                    memory.remember(s, payload["text"], kind="self",
-                                    source=f"action:{aid}", pinned=payload.get("pinned"))
-                    msg = "Approved — remembered."
-                s.set_status(aid, "executed", {"applied": "locally"})
-                s.say("proposal", msg, dict(base, status="executed"))
-                return {"ok": True}
-            except goals.Rejected as e:
-                s.set_status(aid, "failed", {"error": str(e)})
-                s.say("error", f"Could not apply {a['kind']} #{aid}: {e}")
-                return {"error": str(e)}
-
-        data = os.path.expanduser(self.cfg["data_dir"])
-        secret = open(os.path.join(data, f"{self.cfg['handle']}.secret")).read().strip()
-        try:
-            resp = execute(Writer(self.cfg["base"], secret), a["kind"], payload)
-            s.set_status(aid, "executed", resp)
-            s.cap_bump(utcnow()[:10], a["kind"])
-            ref = resp.get("id") or resp.get("post_id") or ""
-            s.say("proposal", f"Sent{f' — live as {ref}' if ref else ''}.",
-                  dict(base, status="executed"))
-            s.log(f"you approved and sent {a['kind']} #{aid}", drive=a["drive"])
-            return {"ok": True}
-        except HttpError as e:
-            s.set_status(aid, "failed", {"error": str(e)})
-            s.say("error", f"The registry refused {a['kind']} #{aid}: {e}")
-            return {"error": str(e)}
-
 
 def main():
     ap = argparse.ArgumentParser()

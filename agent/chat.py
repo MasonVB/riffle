@@ -439,6 +439,39 @@ def build_record(state, cfg, day):
     }
 
 
+def _history(state, mid, n=10):
+    """The last n turns of the CONVERSATION, oldest first.
+
+    This took the last ten rows of any kind and kept reports among them. A
+    cycle report and often a witness line land every wake, so most of the
+    window was reports and what you had actually said was pushed out of it.
+    The reports are not lost to the model: MY RECORD carries recent cycles,
+    actions and the journal.
+
+    `question` rows are in, as riffle's own turns: they are what it asked
+    you, and a reply without its question is half a conversation. They were
+    left out entirely before. Archived rows stay in, as tail() kept them:
+    clearing the screen is not meant to give the agent amnesia.
+    """
+    rows = state.db.execute(
+        "SELECT * FROM messages WHERE role IN ('user','agent','question')"
+        " AND id != ? ORDER BY id DESC LIMIT ?", (mid, n)).fetchall()
+    out = []
+    for m in reversed(rows):
+        text = (m["content"] or "").strip()
+        if not text:
+            continue
+        if m["role"] == "user":
+            out.append({"role": "user", "content": text[:4000]})
+        elif m["role"] == "question":
+            out.append({"role": "assistant",
+                        "content": ("(I asked you this from a cycle) "
+                                    + text)[:4000]})
+        else:
+            out.append({"role": "assistant", "content": text[:4000]})
+    return out
+
+
 def answer(state, cfg, question, day):
     """Run one chat turn. Writes an assistant message and streams into it."""
     mid = state.say("agent", "", done=False)
@@ -453,14 +486,7 @@ def answer(state, cfg, question, day):
     try:
         reader = Reader(cfg["base"])
         record = json.dumps(build_record(state, cfg, day), indent=1, default=str)[:16000]
-        history = []
-        for m in state.tail(10):
-            if m["id"] == mid:
-                continue
-            if m["role"] == "user":
-                history.append({"role": "user", "content": m["content"][:4000]})
-            elif m["role"] in ("agent", "report") and m["content"].strip():
-                history.append({"role": "assistant", "content": m["content"][:4000]})
+        history = _history(state, mid)
 
         recalled = memory.recall(state, question, limit=8)
         system = (f"{CHAT_SYSTEM}\n\n{TOOLS}\n\nWHAT I REMEMBER (durable, across "
