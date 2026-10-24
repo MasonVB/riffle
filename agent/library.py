@@ -35,10 +35,8 @@ stopping entirely.
 """
 import datetime as dt
 import hashlib
-import json
 import os
 import re
-import shutil
 
 ROOT = "/var/lib/riffle-library"
 MAX_BYTES = 300 * 1024 * 1024 * 1024        # 300 GB

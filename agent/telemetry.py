@@ -27,7 +27,6 @@ import datetime as dt
 import glob
 import json
 import os
-import re
 import shutil
 import threading
 import subprocess

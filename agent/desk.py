@@ -40,7 +40,6 @@ the oldest UNTOUCHED item goes — touched meaning read or updated — so a thin
 being actively worked survives and a thing put down and forgotten does not.
 """
 import datetime as dt
-import json
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS desk (

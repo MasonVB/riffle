@@ -448,12 +448,26 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
     # at this model's ratio, exactly the configured ceiling. A whole cycle's
     # work was lost and the log blamed the model's formatting.
     if choice.get("finish_reason") == "length":
+        # WHAT FILLED IT. On 2026-10-23 a 4,000-token cutoff came back as
+        # 4,175 chars: about one character a token, where this model writes
+        # ~3.5. Thinking is off at the server, so that points at a run of
+        # whitespace or a repeated token (a JSON grammar permits unlimited
+        # whitespace between tokens), not at a body that was simply too
+        # long. The message only kept the length, so one event could not
+        # tell the two apart. It now carries the whitespace share, the
+        # characters per token, and the tail of what came back.
+        t = text or ""
+        ws = sum(c.isspace() for c in t) / len(t) if t else 0.0
+        usage = out.get("usage") or {}
+        ntok = usage.get("completion_tokens") or body.get("max_tokens")
         raise ValueError(
             f"the model hit its {body.get('max_tokens')}-token ceiling and "
-            f"was cut off mid-output ({len(text or '')} chars). The JSON is "
-            f"incomplete because it never finished, not because the model "
-            f"wrote it wrongly. Raise llm.composer.max_tokens, or the body "
-            f"being written is too long for one call.")
+            f"was cut off mid-output ({len(t)} chars, "
+            f"{len(t) / max(1, ntok):.1f} chars/token, {ws:.0%} whitespace; "
+            f"ends {t[-120:]!r}). Under ~2 chars/token or mostly whitespace "
+            f"means the model looped, not that the body was too long. "
+            f"Otherwise raise llm.composer.max_tokens, or the body being "
+            f"written is too long for one call.")
     return text
 
 

@@ -1254,12 +1254,17 @@ def main():
             + ("" if _can_answer else
                " This cycle cannot comment (the drive or today's allowance), "
                "so these are shown for context only."))
+    # One compact line per message: about a third smaller than indented
+    # JSON, and when _fit has to cut the block it cuts between messages.
+    def _lines(items):
+        return "\n".join(json.dumps(o, ensure_ascii=False, separators=(",", ":"))
+                         for o in inbox_mod.for_prompt(items))
     if _show_live:
-        parts.append("INBOX \u2014 NEW, newest first:\n"
-                     + json.dumps(inbox_mod.for_prompt(_show_live), indent=1))
+        parts.append("INBOX \u2014 NEW, newest first, one message per line:\n"
+                     + _lines(_show_live))
     if _show_back:
-        parts.append("INBOX \u2014 OLDER, from before it worked:\n"
-                     + json.dumps(inbox_mod.for_prompt(_show_back), indent=1))
+        parts.append("INBOX \u2014 OLDER, from before it worked, one message "
+                     "per line:\n" + _lines(_show_back))
     if moved["posts"] or moved["comments"] or moved["nulls"]:
         _bits = [f"{len(moved['posts'])} post(s)",
                  f"{len(moved['comments'])} comment(s)",
@@ -1447,6 +1452,13 @@ def main():
     _cd, _cu, _cl = project.in_cooldown(state)
     _gates.append(f"  posting: {'CLOSED for %.1fh' % _cl if _cd else 'open'}")
     _gates.append("  numcheck: every figure must appear in your sources block")
+    # It was never told. A build written past this ceiling is cut off
+    # mid-JSON and the whole cycle is lost (2026-10-23, drive `make`).
+    _maxtok = int(((cfg.get("llm") or {}).get("composer") or {}).get("max_tokens", 1600))
+    _gates.append(f"  length: your whole reply is cut off at {_maxtok} tokens "
+                  f"(about {_maxtok * 3:,} characters, JSON included). A post "
+                  f"body or a build's code must fit well inside that, or "
+                  f"nothing is sent")
     _gates.append("  one top-level comment per post in any 24 hours; replies "
                   "need a parent_id from that post")
     _gates.append("  one post queued at a time; a hash you call yours must be "
@@ -1775,9 +1787,9 @@ def main():
             f"max_prompt_chars or shorten the contract; the prompt cannot "
             f"fit as configured.", level="error")
         _room = max(2000, _room)
-    elif _sys_chars > _ceiling * 0.25:
-        log(f"the system prompt is {_sys_chars} chars of a {_ceiling} ceiling; "
-            f"the rest of the prompt gets {_room}", level="warn")
+    # (A warning when the system prompt passed 25% of the ceiling stood here.
+    # It had fired on every wake since before 2026-10-23, so it said nothing;
+    # _fit logs the real symptom, data trimmed or left out, when it happens.)
     # The volatile lines go in LAST, after trimming, so they are always
     # present and always at the end where they cost the least cache.
     # _fit never sees them, so they can never be trimmed away either — the
@@ -1913,8 +1925,14 @@ def main():
 
     # The model has seen these inbox items; count the showing (see
     # inbox.mark_shown for why it is here and not at prompt time).
+    # Only messages that are actually IN the prompt: _fit may have cut the
+    # inbox blocks, and a message cut away was not seen.
     if _can_answer:
-        inbox_mod.mark_shown(state, _show_live + _show_back)
+        inbox_mod.mark_shown(state, [
+            d for d in _show_live + _show_back
+            if (f'"comment_id":{d["comment_id"]},' in user
+                if d.get("comment_id") is not None
+                else f'"mention_id":{d.get("mention_id")}' in user)])
 
     # Charge the instruction now rather than when it was read. The old call
     # site was before the composer, so a busy lock or a failed completion —
@@ -1982,7 +2000,28 @@ def main():
     # A constraint, not advice. The previous version explained itself and
     # was ignored eight cycles running, because an explanation the model will
     # not remember cannot change what it does next.
-    if kind not in ("open_project", "noop") and not project.active(state):
+    # EXCEPT A REPLY TO SOMEONE IN THE INBOX. "No project, no action" keeps
+    # riffle's reading inside a question, which is its purpose; it also
+    # refused every answer to a person who had spoken to riffle whenever no
+    # project happened to be open, while the inbox guidance told it to
+    # answer. A comment whose parent is an inbox message (or, for a mention
+    # in a post, that post) is a reply, not reading, and goes through every
+    # other gate as before.
+    _inbox_reply = False
+    if kind == "comment":
+        try:
+            if payload.get("parent_id") is not None:
+                _inbox_reply = bool(state.db.execute(
+                    "SELECT 1 FROM inbox_items WHERE comment_id=?",
+                    (int(payload["parent_id"]),)).fetchone())
+            elif payload.get("post_id") is not None:
+                _inbox_reply = bool(state.db.execute(
+                    "SELECT 1 FROM inbox_items WHERE comment_id IS NULL"
+                    " AND post_id=?", (int(payload["post_id"]),)).fetchone())
+        except Exception:
+            _inbox_reply = False
+    if (kind not in ("open_project", "noop") and not project.active(state)
+            and not _inbox_reply):
         state.propose(cid, kind, drive, payload, rationale, "blocked")
         log(f"{kind} refused: no project is open", level="info", drive=drive)
         _last = state.db.execute(
@@ -2470,6 +2509,54 @@ def main():
                           {"drive": drive})
                 state.end_cycle(cid, "wrong-parent", str(payload["parent_id"]))
                 return 0
+        # AND WHEN RIFFLE HAS NOT READ THE THREAD. The check above only ran
+        # when there was a stored read of this post, so on any other post a
+        # parent_id went to the registry unchecked: on 2026-10-22 it refused
+        # parent 115595, which did not exist anywhere ('id_class': 'absent').
+        # With the inbox live, replying on posts riffle never opened is now
+        # the common case. So: a parent the inbox has seen is checked against
+        # the post the inbox saw it on; any other parent is looked up with
+        # one GET /api/comment/:id, which returns {"comment": {...,
+        # "post_id"}} or 404. A transport failure lets it through: the
+        # registry still refuses a bad parent, this only saves the cycle.
+        if (payload.get("parent_id") is not None and not (_rd and _seen)):
+            _par = int(payload["parent_id"])
+            _where, _why = None, None
+            try:
+                _ib = state.db.execute(
+                    "SELECT post_id FROM inbox_items WHERE comment_id=?",
+                    (_par,)).fetchone()
+                _where = _ib["post_id"] if _ib else None
+            except Exception:
+                _where = None
+            if _where is None:
+                try:
+                    _where = ((reader.get(f"/api/comment/{_par}") or {})
+                              .get("comment") or {}).get("post_id")
+                except HttpError as e:
+                    if e.status == 404:
+                        _why = (f"comment {_par} does not exist. You cannot "
+                                f"reply to an id you have not seen: take the "
+                                f"comment_id from your inbox or from a thread "
+                                f"you have read.")
+                    else:
+                        log(f"could not check parent {_par}: {e}",
+                            level="warn", drive=drive)
+                except Exception as e:
+                    log(f"could not check parent {_par}: {e}",
+                        level="warn", drive=drive)
+            if (_why is None and _where is not None
+                    and int(_where) != int(payload["post_id"])):
+                _why = (f"comment {_par} is on post {_where}, not post "
+                        f"{payload['post_id']}. A reply goes on the post its "
+                        f"parent is on.")
+            if _why:
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log(f"parent {_par}: {_why}", level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {_why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "wrong-parent", str(_par))
+                return 0
 
     # PORCH TOO, not just comments.
     #
@@ -2876,69 +2963,93 @@ def _is_rule(part):
     return any(k in head for k in _NEVER_TRIM)
 
 
-def _fit(parts, budget, log=None, floor=900):
+def _fit(parts, budget, log=None, floor=900, min_floor=250):
     """Bring the assembled blocks under a character budget, loudly.
 
     Longest data block first, and rules never. A 9,000-character desk dump
-    gives way before a board digest; neither gives way before the conduct
-    guide, which is the whole of what riffle knows about how to behave.
+    gives way before a board digest; neither gives way before a rule block.
 
-    Each oversized block is cut at a paragraph break where one is near, and
-    marked, so the agent can tell a truncation from an absence — this project
-    has published twice on that distinction.
+    THREE PASSES, because one could not succeed. This used to cut each data
+    block to a floor of 900 and stop, so what it could save was bounded by
+    the number of blocks: each one it could not shrink further still cost
+    ~1,000 characters. When the prompt grew more blocks (the inbox, the
+    project thread on its own), the floors alone passed the budget, and from
+    2026-10-23 every cycle logged "STILL over budget" and sent a prompt over
+    the ceiling gate 4's guarantee depends on. Now:
+      1. trim longest-first to `floor`, cutting only what is needed;
+      2. if still over, the same down to `min_floor`;
+      3. if still over, leave whole blocks out, longest first, each replaced
+         by one line saying it exists and did not fit.
+    Only the rule blocks can then keep it over, and that is logged as before.
+
+    Each cut is re-made from the block's ORIGINAL text, so a block trimmed in
+    two passes carries one marker, not two, and it is cut at a paragraph
+    break where one is near, else at a line break, so a block written one
+    item per line (the inbox) loses whole items rather than half of one.
     """
     total = sum(len(p) for p in parts) + 2 * len(parts)
     if total <= budget:
         return parts
-    order = [i for i in sorted(range(len(parts)), key=lambda i: -len(parts[i]))
-             if not _is_rule(parts[i])]
-    cut = []
-    for i in order:
-        if total <= budget:
-            break
-        # 160, not 60: the marker appended below is about 110 characters and
-        # the separator is 2. Reserving 60 left each trimmed block ~100 over,
-        # which is where the 315-578 char overage came from — several blocks
-        # trimmed, each one short by the length of the note saying it was
-        # trimmed.
-        keep = max(floor, len(parts[i]) - (total - budget) - 160)
-        if keep >= len(parts[i]):
-            continue
-        head = parts[i][:keep]
-        brk = head.rfind("\n\n")
-        if brk > keep * 0.6:
-            head = head[:brk]
-        dropped = len(parts[i]) - len(head)
-        total -= dropped
-        cut.append((parts[i][:40].split("\n")[0], dropped))
-        _marker = (f"\n[...{dropped} characters of this section were "
-                   f"cut to fit the context window. It is shortened, "
-                   f"not empty.]")
-        # The marker is ~110 characters and used not to be counted, so each
-        # trimmed block put the total back over by that much. With several
-        # blocks trimmed per cycle that is most of the 315-578 char overage
-        # the "STILL over budget" error was reporting.
-        total += len(_marker)
-        parts[i] = head + _marker
-    if cut and log:
-        log("prompt over budget by "
-            + str(sum(d for _, d in cut)) + " chars; trimmed "
-            + ", ".join(f"{n}(-{d})" for n, d in cut[:4]), level="warn")
-    # SAY SO WHEN IT STILL DOES NOT FIT.
-    #
-    # Protecting the rules moves the problem rather than removing it: if the
-    # data blocks cannot give up enough, the prompt is still over and the
-    # model gets a request llama-server will refuse with a 400. That used to
-    # show up as a composer failure with no cause attached.
-    #
-    # This is an error, not a warning, because nothing downstream can recover
-    # from it and the fix is a config change.
+    orig = list(parts)
+    cut, left_out = {}, []
+
+    def _data_longest_first():
+        return [i for i in sorted(range(len(parts)), key=lambda i: -len(parts[i]))
+                if not _is_rule(parts[i])]
+
+    for fl in (floor, min_floor):
+        for i in _data_longest_first():
+            if total <= budget:
+                break
+            keep = max(fl, len(parts[i]) - (total - budget) - 160)
+            if keep >= len(parts[i]) or keep >= len(orig[i]):
+                continue
+            head = orig[i][:keep]
+            brk = head.rfind("\n\n")
+            if brk <= keep * 0.6:
+                brk = head.rfind("\n")
+            if brk > keep * 0.6:
+                head = head[:brk]
+            dropped = len(orig[i]) - len(head)
+            new = (head + f"\n[...{dropped} characters of this section were "
+                   f"cut to fit the context window. It is shortened, not "
+                   f"empty.]")
+            if len(new) >= len(parts[i]):
+                continue
+            total += len(new) - len(parts[i])
+            parts[i] = new
+            cut[i] = dropped
+
+    if total > budget:
+        for i in _data_longest_first():
+            if total <= budget:
+                break
+            name = orig[i].lstrip().split("\n", 1)[0][:70].rstrip(":")
+            stub = (f"[{name} \u2014 left out this cycle to fit the context "
+                    f"window ({len(orig[i])} characters). It exists; it did "
+                    f"not fit.]")
+            if len(stub) >= len(parts[i]):
+                continue
+            total += len(stub) - len(parts[i])
+            parts[i] = stub
+            cut.pop(i, None)
+            left_out.append(name[:40])
+
+    if log and cut:
+        log("prompt over budget by " + str(sum(cut.values())) + " chars; "
+            "trimmed " + ", ".join(
+                f"{orig[i][:40].split(chr(10))[0]}(-{d})"
+                for i, d in list(cut.items())[:4]), level="warn")
+    if log and left_out:
+        log(f"prompt still over budget after trimming every data block to "
+            f"{min_floor} chars; left out whole: {', '.join(left_out)}",
+            level="warn")
     if total > budget and log:
         rules = sum(len(p) + 2 for p in parts if _is_rule(p))
-        log(f"prompt STILL over budget by {total - budget} chars after "
-            f"trimming every data block; {rules} chars of that is protected "
-            f"rules. Lower the data caps or raise max_prompt_chars \u2014 the "
-            f"model call is likely to be refused.", level="error")
+        log(f"prompt STILL over budget by {total - budget} chars with every "
+            f"data block trimmed or left out; {rules} chars of that is "
+            f"protected rules. Lower the data caps or raise max_prompt_chars "
+            f"\u2014 the model call is likely to be refused.", level="error")
     return parts
 
 
