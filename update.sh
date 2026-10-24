@@ -1074,7 +1074,10 @@ fi
 # here, before the dash restart, with the new code half-deployed.
 UNITDIR="${RIFFLE_UNITDIR:-/etc/systemd/system}"
 changed=()
-for f in systemd/*; do
+# TRACKED files only, as gate 11 reads them: untracked leftovers on the box
+# (riffle-cycle.timer.bak-notify, riffle-dash.service.bak-alarms) were being
+# installed into /etc/systemd/system with the real units.
+for f in $(git ls-files systemd/); do
   [ -f "$f" ] || continue
   name=$(basename "$f")
   dest="$UNITDIR/$name"
