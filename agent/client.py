@@ -216,8 +216,10 @@ class Writer:
     def pulse(self):
         return self._auth_get("/api/pulse")
 
-    def me(self, since=None):
-        return self._auth_get("/api/me", since=since)
+    def me(self, since=None, before=None):
+        # before= is a bucket's <bucket>_next_before token, for the next page
+        # of that bucket (agent/inbox.py pages one bucket per request).
+        return self._auth_get("/api/me", since=since, before=before)
 
     def ack(self, up_to):
         return _req(self.base + "/api/me/ack", "POST", {"up_to": up_to}, self._secret)
