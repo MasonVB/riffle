@@ -11,10 +11,20 @@ Group=riffle
 # -t 6 = one thread per physical core. The 8500T has no SMT, so 6 is the
 # ceiling and oversubscribing costs throughput.
 # --mlock pins weights so the kernel never pages them out mid-generation.
-# --cache-reuse keeps the stable system prefix in KV across cycles, which is
-# the difference between a 5-minute prefill and a 20-second one.
+# --cache-reuse would let the server reuse KV chunks that moved. IT DOES NOT
+# WORK FOR THIS MODEL, with or without --kv-unified: measured 2026-10-24,
+# the server still logs "cache_reuse is not supported by this context, it
+# will be disabled" at every start. The flag is ignored and left in place;
+# removing it would change nothing but needs a model reload.
 #
-# --kv-unified IS WHAT MAKES IT WORK. Without it the server logs
+# The prefix is reused anyway, by plain prompt caching (cache_prompt in each
+# request): after a restart the first cycle processed 14,136 tokens, and
+# each later one 7,000-7,800, so about 6,300-7,100 tokens of the stable
+# prefix are reused per cycle. Prefill is still about 5 minutes at ~24
+# tokens a second; what remains is the part of the prompt that changes.
+#
+# The history below is kept: --kv-unified was added believing it would make
+# cache_reuse work. Before it the server logged
 #
 #   srv load_model: initializing, ..., kv_unified = 'false'
 #   srv load_model: cache_reuse is not supported by this context, it will
@@ -31,8 +41,8 @@ Group=riffle
 # this change anyway — on a 32 GiB box next to a 20.6 GiB model, assume
 # nothing.
 #
-# Confirm it took: the kv_unified line should read 'true' and the
-# cache_reuse warning should be gone.
+# kv_unified does read 'true' now. The cache_reuse warning is still there,
+# so that part of this change did not do what it was for.
 ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/composer.gguf \
   --host 127.0.0.1 --port 8080 \
