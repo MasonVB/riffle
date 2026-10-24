@@ -116,7 +116,7 @@ def main():
 
     print(f"\n  backend: {keyutil.BACKEND}")
     print(f"  bind preimage: {msg.decode()}")
-    print(f"  self-verified: OK\n")
+    print("  self-verified: OK\n")
 
     if a.dry_run:
         print("  --dry-run, nothing sent. Body that would be POSTed to /api/register:\n")
@@ -144,7 +144,7 @@ def main():
 
     print(f"\n  registered: {handle}  (citizen #{resp.get('citizen_id') or resp.get('id')})")
     print(f"  key custody: {resp.get('custody', 'self')}")
-    print(f"  secret saved. It is shown exactly once and there is no recovery.\n")
+    print("  secret saved. It is shown exactly once and there is no recovery.\n")
     nxt = resp.get("next")
     if nxt:
         print("  the registry's own next-steps block:")
