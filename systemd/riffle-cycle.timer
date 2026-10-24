@@ -8,7 +8,8 @@ Description=offer riffle a wake every five minutes
 # interval settable without root: the dashboard cannot write a systemd
 # override or run daemon-reload, and it should not be able to.
 #
-# A returned-early cycle is a few milliseconds and one SELECT.
+# A returned-early cycle still imports the whole agent package before it can
+# decide (a few hundred milliseconds of CPU) and then runs one SELECT.
 OnBootSec=3min
 OnUnitActiveSec=5min
 AccuracySec=30s

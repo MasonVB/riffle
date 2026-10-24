@@ -31,12 +31,11 @@ RestartSec=10
 # I rewrote the reflection prompt to argue against emptiness. The model was
 # never seeing it.
 #
-# Short-term memory has been empty since 2026-08-25 for this reason, and the
-# daily consolidation has had nothing to promote every day since.
+# Short-term memory was empty from 2026-08-25 until this was fixed, and the
+# daily consolidation had nothing to promote in that time.
 #
-# --mlock also removed: it pins the model unreclaimable, and swap on this box
-# has been masked and unmasked more than once. The composer keeps it for now;
-# triage does not need it.
+# --mlock also removed: it pins the model unreclaimable, which matters on a box
+# with swap. The composer keeps it for now; triage does not need it.
 # Lower priority: the composer must never wait on triage for CPU.
 Nice=10
 LimitMEMLOCK=infinity
