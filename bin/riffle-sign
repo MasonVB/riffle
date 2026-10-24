@@ -2,7 +2,8 @@
 """Produce a citizen-key signature. The key lives here and nowhere else.
 
     /usr/local/bin/riffle-sign          0755 root:root
-    /var/lib/riffle/keys/citizen.seed   0400 riffle-signer:riffle-signer
+    /var/lib/riffle-signer/citizen.seed 0400 riffle-signer:riffle-signer
+    /usr/local/lib/riffle-signer/       keyutil.py, ed25519_pure.py  0644 root:root
     /etc/riffle/payout.conf             0444 root:root
     /etc/sudoers.d/riffle-sign          riffle -> (riffle-signer) NOPASSWD
 
@@ -38,7 +39,7 @@ boundary is real.
 EVERYTHING IS LOGGED
 
 Every signature, refused or issued, appends one line to
-/var/lib/riffle/keys/signatures.log, which is append-only and owned by
+/var/lib/riffle-signer/signatures.log, which is append-only and owned by
 riffle-signer. The agent cannot read it, edit it or truncate it. If this
 program is ever tricked, the log is the record of what it was tricked into.
 """
@@ -181,38 +182,58 @@ def load_seed():
 # import path. The agent never needs to be able to change the code that
 # handles the key.
 #
-# So: a root-owned copy beside this program first, and /opt/riffle only as
-# a last resort with a loud warning — a machine mid-migration should still
-# work, but should say what it is doing.
+# So: ONLY a root-owned copy, and no fallback. There used to be one, to
+# /opt/riffle, with a warning on stderr that apply_sign shows only when a
+# signature fails, so on a working machine it was silent, and the agent could
+# write the code that handles the key. A missing copy is now fatal.
+#
+# AND BOTH FILES. keyutil imports ed25519_pure (when `cryptography` is not
+# installed) inside its functions, at signing time, from whatever is on
+# sys.path then. Checking keyutil.py and not ed25519_pure.py left the second
+# half of the signing code unchecked. Both are checked, the directory too
+# (a writable directory lets someone swap a file between the check and the
+# load), and that directory goes first on sys.path so the lazy import finds
+# the checked copy.
 _KEYUTIL_DIRS = ("/usr/local/lib/riffle-signer", "/usr/local/bin")
+_SIGNER_FILES = ("keyutil.py", "ed25519_pure.py")
+_INSTALL = ("sudo install -d -m 0755 -o root -g root /usr/local/lib/riffle-signer"
+            " && sudo install -m 0644 -o root -g root /opt/riffle/keyutil.py"
+            " /opt/riffle/ed25519_pure.py /usr/local/lib/riffle-signer/")
+_LOADED = []
+
+
+def _root_only(path):
+    st = os.stat(path)
+    if st.st_uid != 0 or (st.st_mode & 0o022):
+        die(f"{path} is not root-owned and unwritable by others "
+            f"(uid {st.st_uid}, mode {st.st_mode & 0o777:o}); refusing to "
+            f"load signing code from it")
 
 
 def _keyutil():
+    if _LOADED:
+        return _LOADED[0]
     import importlib.util
-    import os as _os
     for d in _KEYUTIL_DIRS:
-        path = _os.path.join(d, "keyutil.py")
-        if not _os.path.exists(path):
+        if not os.path.exists(os.path.join(d, "keyutil.py")):
             continue
-        st = _os.stat(path)
-        # Root-owned and not group/other writable, or it is no better than
-        # the path it replaces.
-        if st.st_uid != 0 or (st.st_mode & 0o022):
-            die(f"{path} is not root-owned and unwritable by others "
-                f"(uid {st.st_uid}, mode {st.st_mode & 0o777:o}); refusing "
-                f"to load signing code from it")
-        spec = importlib.util.spec_from_file_location("keyutil", path)
+        _root_only(d)
+        for name in _SIGNER_FILES:
+            path = os.path.join(d, name)
+            if not os.path.exists(path):
+                die(f"{path} is missing beside keyutil.py; install both: "
+                    f"{_INSTALL}")
+            _root_only(path)
+        sys.path.insert(0, d)
+        spec = importlib.util.spec_from_file_location(
+            "keyutil", os.path.join(d, "keyutil.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        _LOADED.append(mod)
         return mod
-    print(f"riffle-sign: WARNING: no keyutil.py in {', '.join(_KEYUTIL_DIRS)}; "
-          f"falling back to /opt/riffle, which the agent can write. Install "
-          f"it with: sudo install -m 0644 -o root -g root "
-          f"/opt/riffle/keyutil.py /usr/local/lib/riffle-signer/keyutil.py",
-          file=sys.stderr)
-    sys.path.insert(0, "/opt/riffle")
-    import keyutil
-    return keyutil
+    die(f"no keyutil.py in {', '.join(_KEYUTIL_DIRS)}. Signing code is "
+        f"loaded only from a root-owned copy, never from /opt/riffle. "
+        f"Install it with: {_INSTALL}")
 
 
 def sign_bytes(seed, message):
@@ -397,7 +418,9 @@ def cmd_attest(a):
 
 
 # --------------------------------------------------------------------------
-# custom: bytes the agent composed. Approved by you, on the card, in full.
+# custom: bytes composed elsewhere, signed only when you run it yourself.
+# The agent cannot reach it: it is absent from the sudoers allowlist, and
+# SUDO_USER is checked below. No card approves it.
 # --------------------------------------------------------------------------
 def cmd_custom(a):
     """Sign arbitrary bytes.

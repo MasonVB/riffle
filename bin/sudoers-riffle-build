@@ -5,8 +5,9 @@
 # scope with no network and hard limits, and runs `python3 <entry>` inside it.
 # Nothing from the agent reaches a shell.
 #
-# It needs root because systemd-run --scope cannot set a uid or a private
-# network without it, and polkit will not grant that non-interactively.
+# It needs root because systemd-run (a transient service, not --scope) cannot
+# set a uid or a private network without it, and polkit will not grant that
+# non-interactively.
 #
 # Install with:
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin riffle-build
