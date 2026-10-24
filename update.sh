@@ -596,18 +596,11 @@ for path in ("agent/cycle.py", "agent/dash.py", "agent/project.py",
             if not isinstance(_n, _INERT):
                 break           # this may branch or raise; stop looking
 
-        names = {c.func.id for c in ast.walk(fn)
-                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
-        # Builtins and exception constructors are not "work": a function
-        # whose only real call is itself still does nothing, whether or not
-        # it raises on the way out. The first version of this gate counted
-        # ValueError and so missed the very bug it was written for.
-        names -= set(dir(__builtins__)) | {
-            "ValueError", "TypeError", "OSError", "KeyError", "RuntimeError",
-            "len", "str", "int", "float", "dict", "list", "set", "sorted",
-            "print", "open", "range", "max", "min", "sum", "any", "all"}
-        if fn.name in names and len(names) == 1:
-            bad.append(f"{path}:{fn.lineno} {fn.name}() calls only itself")
+        # The older rule that stood here, "calls only itself", is gone (R4.4,
+        # audit 4). It refused any helper whose only non-builtin call was to
+        # itself, including real recursion with a base case. The check above
+        # (a self-call reached before anything that could stop it) covers the
+        # bug the old rule was written for.
 for b in bad:
     print(f"  SELF-RECURSION {b}")
 sys.exit(1 if bad else 0)
