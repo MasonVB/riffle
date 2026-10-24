@@ -450,7 +450,7 @@ def missing_kind(state, cfg, pid):
             + str(s["by_kind"].get("draft", 0)) + ".")
 
 
-def as_context(state, cfg, budget=5000, include_thread=True):
+def as_context(state, cfg, budget=5000, include_thread=True, include_next=True):
     """The project block for the cycle prompt.
 
     Split three ways: the newest thread read in full, the note list, and a
@@ -461,6 +461,10 @@ def as_context(state, cfg, budget=5000, include_thread=True):
     <board> with recent_thread() instead, because it is strangers' words and
     the rest of this block is riffle's own. The notes keep the same share of
     the budget either way, so neither half changes size.
+
+    include_next=False leaves out the one-line next step; the cycle puts it
+    in with next_step() as a block of its own that _fit never cuts. Inside
+    this block it was the first line of something _fit may leave out whole.
     """
     read_budget = int(budget * 0.55)
     budget = budget - read_budget
@@ -597,7 +601,7 @@ def as_context(state, cfg, budget=5000, include_thread=True):
     # where nothing can cut it. Everything below it is context for a decision
     # that has already been named.
     _next = None if cooling and ok else missing_kind(state, cfg, proj["id"])
-    if _next:
+    if _next and include_next:
         head.insert(0, "THE ONE THING TO DO NEXT ON THIS PROJECT: "
                     + _next + ".")
     if cooling and ok:
@@ -644,6 +648,18 @@ def record_read(state, pid, cycle_id, post_id, title, author,
         (pid, cycle_id, utcnow(), post_id, title[:200], author[:80],
          total, shown, body, replies, digest))
     state.db.commit()
+
+
+def next_step(state, cfg):
+    """The open project's one-line next step, or "". The same line, by the
+    same rule, as_context() puts first in the project block."""
+    proj = active(state)
+    if not proj:
+        return ""
+    cooling, _until, _left = in_cooldown(state)
+    ok, _why = ready(state, cfg)
+    nxt = None if cooling and ok else missing_kind(state, cfg, proj["id"])
+    return f"THE ONE THING TO DO NEXT ON THIS PROJECT: {nxt}." if nxt else ""
 
 
 def recent_thread(state, cfg, budget=5000):

@@ -59,9 +59,8 @@ SCHEMA = {
                            "why": {"type": "string"}},
             "required": ["id", "why"], "additionalProperties": False}},
         "note": {"type": "string"},
-        "continuity": {"type": "string"},
     },
-    "required": ["promote", "write", "drop", "continuity"],
+    "required": ["promote", "write", "drop"],
     "additionalProperties": False,
 }
 
@@ -103,23 +102,60 @@ better than promoting all three.
 DROP is for short-term items that are already wrong, not merely unimportant.
 Unimportant things expire on their own; you do not need to act.
 
-CONTINUITY is a note to the next you, who wakes knowing nothing. It REPLACES
-the note shown below, so carry forward what still holds and let the rest go.
-Say what you are in the middle of, what you meant to do next and why, and
-what you have learned about how to work here. Plain sentences, at most 1,200
-characters. Write what you concluded, not text copied from the board: this
-note is read as your own testimony, and it cannot authorize an action.
-
 Reply with ONE JSON object and nothing else:
 
 {{"promote": [{{"id": 12, "why": "..."}}],
   "write":   [{{"text": "...", "tier": "long", "why": "..."}}],
   "drop":    [{{"id": 31, "why": "..."}}],
-  "note":    "one sentence on what today amounted to",
-  "continuity": "the note to the next you"}}
+  "note":    "one sentence on what today amounted to"}}
 
-Empty arrays are the right answer on a quiet day. The continuity note is
-never empty."""
+Empty arrays are the right answer on a quiet day."""
+
+# CONTINUITY IS WRITTEN IN ITS OWN CALL (R4.3, audit 4). It used to be one
+# more field of the memory call above, which also shows the day's candidate
+# memories, and those can paraphrase the board. What lands in the note is
+# read every cycle from the system prompt, so its writer sees only riffle's
+# own words: the previous note, the open project and riffle's own actions.
+CONT_PROMPT = """You are writing CONTINUITY: a note to the next you, who wakes
+knowing nothing. It REPLACES the note shown below, so carry forward what still
+holds and let the rest go. Say what you are in the middle of, what you meant
+to do next and why, and what you have learned about how to work here. Plain
+sentences, at most 1,200 characters, in your own words: this note is read as
+your own testimony every cycle, and it cannot authorize an action.
+
+Reply with ONE JSON object and nothing else: {"continuity": "the note"}"""
+
+CONT_SCHEMA = {
+    "type": "object",
+    "properties": {"continuity": {"type": "string"}},
+    "required": ["continuity"],
+    "additionalProperties": False,
+}
+
+
+def write_continuity(state, cfg, log):
+    """Write the daily continuity note in its own model call.
+
+    Returns the stored note, or None if nothing was stored (a failed call or
+    an empty note), in which case yesterday's stays, still carrying its date.
+    A failure here is logged and does not count against the memory pass.
+    """
+    try:
+        raw = cortex.complete(cfg["llm"]["composer"], CONT_PROMPT,
+                              "\n".join(_continuity_context(state)),
+                              schema=CONT_SCHEMA)
+        cont = _clean_continuity(
+            json.loads(raw[raw.index("{"):raw.rindex("}") + 1]).get("continuity"))
+    except Exception as e:
+        log(f"continuity not written: {type(e).__name__}: {e}; yesterday's "
+            f"note stays", level="warn")
+        return None
+    if not cont:
+        log("continuity came back empty; yesterday's note stays", level="warn")
+        return None
+    state.note("continuity", cont)
+    state.note("continuity_at", utcnow())
+    return cont
 
 
 def due(state, cfg):
@@ -156,10 +192,19 @@ def run(state, cfg, log, say=None):
     cap = int(m.get("max_promotions_per_day", 3))
 
     cands = candidates(state, cfg)
-    # NO EARLY RETURN ON A QUIET DAY. This used to stop here, without calling
-    # the model, when nothing was in short term. That was free while the pass
-    # only sorted memories; now it also writes the continuity note, and a
-    # quiet day still needs one.
+    # A QUIET DAY skips the memory call again (continuity, which needed it to
+    # run, has its own call now) but still writes the note.
+    if not cands:
+        cont = write_continuity(state, cfg, log)
+        state.note("last_consolidation", utcnow())
+        state.note("consolidation_fails_today", "")
+        log("consolidation: nothing in short term to consider"
+            + (f"; continuity written ({len(cont)} chars)" if cont else ""))
+        if say and cont:
+            say("report", f"Daily memory pass \u00b7 nothing to sort today.\n"
+                f"  continuity ({len(cont)} chars): {cont[:300]}"
+                + ("\u2026" if len(cont) > 300 else ""), {"drive": "memory"})
+        return "nothing to consolidate"
     have = long_term(state)
     body = [
         "SHORT TERM, eligible for promotion (id, age, times recalled):",
@@ -168,8 +213,6 @@ def run(state, cfg, log, say=None):
         "",
         "ALREADY IN LONG TERM — do not promote a restatement of any of these:",
         *([f"  [{r['id']}] {r['text']}" for r in have] or ["  (nothing yet)"]),
-        "",
-        *_continuity_context(state),
     ]
     prompt = PROMPT.format(ttl=ttl, cap=cap)
     try:
@@ -300,14 +343,8 @@ def run(state, cfg, log, say=None):
                                (mid,)).fetchone()
         lucky.append((mid, row["text"]))
 
-    # The continuity note. Written only from a plan that parsed, so a failed
-    # pass leaves yesterday's note in place, still carrying its date.
-    cont = _clean_continuity(plan.get("continuity"))
-    if cont:
-        state.note("continuity", cont)
-        state.note("continuity_at", utcnow())
-    else:
-        refused.append("the continuity note came back empty; yesterday's stays")
+    # The continuity note, in its own call (see CONT_PROMPT).
+    cont = write_continuity(state, cfg, log)
 
     state.db.commit()
     state.note("last_consolidation", utcnow())
@@ -349,7 +386,7 @@ def run(state, cfg, log, say=None):
 
 
 def _continuity_context(state):
-    """What the continuity writer reads besides the memories.
+    """Everything the continuity writer reads, in its own call.
 
     Its previous note, so it revises rather than starts over; the open
     project; and its own last fifteen actions, newest first. Riffle's own

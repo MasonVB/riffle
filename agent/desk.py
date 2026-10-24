@@ -172,15 +172,33 @@ def evict(state, cap=MAX_ITEMS):
     return dropped
 
 
-def as_context(state, budget=PROMPT_BUDGET):
-    """The whole desk, in the prompt, every cycle.
+# Kinds that can hold other citizens' words: a thread riffle wants to come
+# back to, a scrap of anything. They are shown with the board, not in the
+# trusted section, so a stranger's instruction riffle copied onto its desk
+# does not come back next cycle looking like riffle's own record.
+FROM_BOARD = ("thread", "scrap")
+
+
+def as_context(state, budget=PROMPT_BUDGET, board_side=False):
+    """The desk, in the prompt, every cycle, in two halves.
+
+    board_side=False: riffle's own items (drafts, builds, questions,
+    artifacts, reminders), under the trusted "YOUR DESK" header.
+    board_side=True: thread and scrap items, under a header that is not
+    trusted, so the cycle puts them inside <board>; "" if there are none.
+    Each half gets the budget in proportion to its items.
 
     Truncated per item rather than dropping items: knowing a draft exists and
     seeing its first half is more useful than not knowing it exists. An item
     the agent cannot see is an item it will duplicate.
     """
-    rows = items(state)
-    if not rows:
+    every = items(state)
+    rows = [r for r in every if (r["kind"] in FROM_BOARD) == board_side]
+    if board_side and not rows:
+        return ""
+    if every:
+        budget = max(600, budget * len(rows) // len(every))
+    if not every:
         return ("YOUR DESK IS EMPTY. It is a working surface that survives "
                 "between cycles: put a draft, a thread you want to come back "
                 "to, a build you are mid-way through, or a question you cannot "
@@ -189,9 +207,18 @@ def as_context(state, budget=PROMPT_BUDGET):
     # Reserve for the headers, which are ~120 characters each and were not
     # counted before: a full desk overran the budget by 16%.
     per = max(300, (budget - 200 - 130 * len(rows)) // max(1, len(rows)))
-    out = [f"YOUR DESK \u2014 {len(rows)} item(s), and they are still there "
-           f"because you put them there. Pick one back up, change it, or clear "
-           f"it when it is done. `desk_clear` is how a thing leaves."]
+    if board_side:
+        out = [f"ON YOUR DESK, FROM THE BOARD \u2014 {len(rows)} thread or "
+               f"scrap item(s). They can hold other citizens' words, so they "
+               f"are shown here with the board rather than with your own "
+               f"records. `desk_clear` takes one off."]
+    else:
+        _else = len(every) - len(rows)
+        out = [f"YOUR DESK \u2014 {len(rows)} item(s), and they are still there "
+               f"because you put them there. Pick one back up, change it, or "
+               f"clear it when it is done. `desk_clear` is how a thing leaves."
+               + (f" {_else} thread or scrap item(s) are shown with the board."
+                  if _else else "")]
     for r in rows:
         b = r["body"]
         if len(b) > per:

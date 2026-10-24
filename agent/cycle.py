@@ -1547,6 +1547,9 @@ def main():
             "published one of them.")
 
     parts.append(desk.as_context(state))
+    _desk_board = desk.as_context(state, board_side=True)
+    if _desk_board:
+        parts.append(_desk_board)
     parts.append(library.as_context(
         state, int((cfg.get("library") or {}).get("max_bytes", library.MAX_BYTES))))
     _lf2 = state.note("last_library_read")
@@ -1714,23 +1717,36 @@ def main():
         # this. Still not new RULES — the gate, the caps and numcheck all
         # apply exactly as they would otherwise, and an instruction to do
         # something forbidden is refused like anything else.
+        # One line of preamble, then the instructions. The preamble was 253
+        # chars, so a trim to _fit's lower floor kept it and cut every
+        # instruction; the block is protected now too (_NEVER_TRIM).
         parts.insert(0,
-                     "YOUR OPERATOR ASKED FOR THIS, most recent last. This "
-                     "cycle exists to carry it out — do it now rather than "
-                     "describing what you would do, and do not substitute "
-                     "something else you find more interesting. The gate, the "
-                     "caps and the number check still apply:\n"
+                     "YOUR OPERATOR ASKED FOR THIS (most recent last); do it "
+                     "this cycle, not a description of it:\n"
                      + "\n".join("  - " + r["text"] for r in _pending))
         log("cycle carried " + str(len(_pending)) + " operator instruction(s)",
             drive=drive)
     # The project block is riffle's own; the thread it read last is not, so
     # it goes in separately and lands inside <board>.
+    # The next step is its own small block, protected from _fit; inside the
+    # project block it was the first line of something that can be left out.
+    _step = project.next_step(state, cfg)
+    if _step:
+        parts.append(_step)
     parts.append(project.as_context(state, cfg, budget=int(budget * 0.40),
-                                    include_thread=False))
+                                    include_thread=False, include_next=False))
     _thread = project.recent_thread(state, cfg, budget=int(budget * 0.40))
     if _thread:
         parts.append(_thread)
-    parts.append("WHAT YOU REMEMBER:\n" + memory.as_context(recalled))
+    # Only riffle's own and the operator's memories are trusted. The rest
+    # (incidental notes, legacy `board` rows) can paraphrase strangers, so
+    # they go board-side under a header with no trusted prefix.
+    _mine = [r for r in recalled if r["kind"] in ("self", "operator")]
+    _theirs = [r for r in recalled if r["kind"] not in ("self", "operator")]
+    parts.append("WHAT YOU REMEMBER:\n" + memory.as_context(_mine))
+    if _theirs:
+        parts.append("THINGS YOU NOTED FROM THE BOARD \u2014 memories that can "
+                     "carry other citizens' words:\n" + memory.as_context(_theirs))
     parts.append("YOUR GOALS RIGHT NOW (you may propose adjust_drive on an "
                  "unlocked one):\n" + goal_lines)
 
@@ -2883,6 +2899,20 @@ _NEVER_TRIM = (
     "WAITING ON YOUR OPERATOR",
     "YOU HAVE BEEN STUCK ON THIS PROJECT",
     "COMMENTS YOU COULD ANSWER",
+    # The operator's instruction and the project's next step (R4.1, audit 4).
+    # _fit's lower floor kept the operator block's old 253-char preamble and
+    # cut every instruction; its third pass could leave the project block out
+    # whole, and the next step was that block's first line. Both are short;
+    # the next step is now a block of its own so only it is held, not the
+    # whole project.
+    "YOUR OPERATOR ASKED FOR THIS",
+    "THE ONE THING TO DO NEXT ON THIS PROJECT",
+    # The inbox messages themselves. On the box _fit cut the NEW block by
+    # ~7,800 of ~9,000 chars every cycle, the longest data block going
+    # first. Protected now, and bounded: inbox.pick shows at most 5 + 2
+    # messages, and inbox.for_prompt caps each line: at most 4,802 chars.
+    "INBOX \u2014 NEW",
+    "INBOX \u2014 OLDER",
 )
 
 
@@ -2991,6 +3021,7 @@ def _fit(parts, budget, log=None, floor=900, min_floor=250):
     if total <= budget:
         return parts
     orig = list(parts)
+    over0 = total - budget
     cut, left_out = {}, []
 
     def _data_longest_first():
@@ -3036,8 +3067,10 @@ def _fit(parts, budget, log=None, floor=900, min_floor=250):
             left_out.append(name[:40])
 
     if log and cut:
-        log("prompt over budget by " + str(sum(cut.values())) + " chars; "
-            "trimmed " + ", ".join(
+        # The overage and the amount cut, separately. This said "over budget
+        # by" and gave the amount cut, which is not the same number.
+        log(f"prompt was {over0} chars over budget; cut "
+            f"{sum(cut.values())} from " + ", ".join(
                 f"{orig[i][:40].split(chr(10))[0]}(-{d})"
                 for i, d in list(cut.items())[:4]), level="warn")
     if log and left_out:

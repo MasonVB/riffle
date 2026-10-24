@@ -28,6 +28,7 @@ other, and replying to a thousand of those would be spam.
 prints where it stands.
 """
 import sys
+import time
 
 from agent.state import utcnow
 
@@ -213,8 +214,14 @@ def reconcile(state):
         if it["comment_id"] is not None:
             acts = by_parent.get(it["comment_id"], [])
         else:
+            # Since the MENTION was made, not since the store first saw it:
+            # backlog items were all first seen on the import day, so an
+            # answer riffle gave in September looked pending (R4.5, audit 4).
+            _since = (time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                    time.gmtime(it["created_ms"] / 1000))
+                      if it["created_ms"] else (it["first_seen"] or ""))
             acts = [a for a in top_level.get(it["post_id"], [])
-                    if (a["created_at"] or "") >= (it["first_seen"] or "")]
+                    if (a["created_at"] or "") >= _since]
         sent = [a for a in acts if a["status"] in _SENT]
         if sent:
             state.db.execute(
@@ -283,8 +290,17 @@ def counts(state):
     return out
 
 
-def pick(state, n_live=10, n_backlog=3):
-    """What this cycle's prompt shows: (live, backlog) item dicts."""
+def pick(state, n_live=5, n_backlog=2):
+    """What this cycle's prompt shows: (live, backlog) item dicts.
+
+    Five new and two older, with bodies cut to 300 chars, titles to 80 and
+    authors to 40 in for_prompt: at most 4,802 chars, measured with both
+    headers and every field at its cap. It was ten and three at 500, ~9,000 chars, which
+    _fit cut by ~7,800 every cycle on the box (2026-10-24), leaving riffle a
+    message or two of the inbox it was meant to work through. The two INBOX
+    blocks are protected from _fit now (_NEVER_TRIM), which is only safe
+    because this keeps them small.
+    """
     return pending(state, "live")[:n_live], pending(state, "backlog")[:n_backlog]
 
 
@@ -301,15 +317,19 @@ def mark_shown(state, items):
     state.db.commit()
 
 
-def for_prompt(items, body_chars=500):
+def for_prompt(items, body_chars=300):
     """Item dicts trimmed and labelled for the prompt."""
     import time
     out = []
     for d in items:
         body = d.get("body") or ""
+        # Title and author capped too: the inbox blocks are protected from
+        # _fit, so their worst case has to be bounded, and a 300-char title
+        # on every line was most of it.
         o = {"comment_id": d.get("comment_id"), "post_id": d.get("post_id"),
-             "parent_id": d.get("parent_id"), "post_title": d.get("post_title"),
-             "author": d.get("author"), "bucket": d.get("bucket"),
+             "parent_id": d.get("parent_id"),
+             "post_title": (d.get("post_title") or "")[:80],
+             "author": (d.get("author") or "")[:40], "bucket": d.get("bucket"),
              "body": body[:body_chars]}
         if d.get("comment_id") is None and d.get("mention_id") is not None:
             o["mention_id"] = d["mention_id"]
