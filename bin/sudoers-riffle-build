@@ -2,7 +2,8 @@
 #
 # The agent may run one program as root, and that program's entire job is to
 # stop being root: riffle-build drops to the riffle-build user, sets up a
-# scope with no network and hard limits, and runs `python3 <entry>` inside it.
+# transient service with no network and hard limits, and runs
+# `python3 <entry>` inside it.
 # Nothing from the agent reaches a shell.
 #
 # It needs root because systemd-run (a transient service, not --scope) cannot

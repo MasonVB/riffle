@@ -426,11 +426,10 @@ def cmd_custom(a):
     """Sign arbitrary bytes.
 
     --approved is checked here so that running this by hand without it fails
-    loudly, but understand what it is: the dashboard executes an approved
-    action as the same user that proposed it, so this flag is a reminder, not
-    a boundary. The boundary is that `sign` is `queue` in the action policy,
-    so nothing reaches this path until you have read the bytes on the card and
-    pressed approve.
+    loudly. It is a reminder, not the boundary. The boundary is that the agent
+    cannot reach this path at all: `custom` is absent from the sudoers
+    allowlist, and a SUDO_USER of riffle or riffle-build is refused below. You
+    run it yourself, over ssh; no card in the dashboard approves it.
 
     Refuses anything that looks like a protocol preimage: those have their own
     subcommands with real checking, and letting them through here would route
