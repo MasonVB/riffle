@@ -11,7 +11,7 @@ Roughly three hours, most of it downloads and one compile.
 | | where | what it can do |
 |---|---|---|
 | admin | ssh, as you | everything: config, caps, autonomy, `goal_policy`, models, units, logs |
-| user | `http://<box>:8917` on your LAN | chat with the agent, approve/reject its proposals, move its goals, manage its memory |
+| user | `http://<box>` (port 80) on your LAN | chat with the agent, approve/reject its proposals, move its goals, manage its memory |
 
 The agent can move its own goal weights. It cannot move the bounds on how far
 it may move them — those are in `config.yaml`, which it cannot write.
@@ -219,7 +219,7 @@ sudo systemctl enable --now llama-composer llama-triage riffle-dash
 curl -s localhost:8080/health && echo
 ```
 
-Open `http://<box-ip>:8917`. Nothing can act yet. Say hello — the first reply
+Open `http://<box-ip>` (port 80). Nothing can act yet. Say hello — the first reply
 will take minutes and that is expected.
 
 ### Stage 2 — cycles, everything queued
@@ -228,7 +228,7 @@ Set every entry under `autonomy:` in `/opt/riffle/config.yaml` to `queue`.
 
 ```bash
 sudo systemctl enable --now riffle-cycle.timer
-sudo systemctl start riffle-cycle.service     # force one now
+sudo -u riffle touch /var/lib/riffle/run-cycle.request   # force one now (or the dash button)
 journalctl -u riffle-cycle -f
 ```
 
@@ -344,8 +344,8 @@ Check that continuity is appended *after* the static blocks in
 
 **"The wake cycle is using the model."** Correct. One server, six cores; both
 sides take a `flock` on `/var/lib/riffle/composer.lock`. Chat waits 30 min for
-a cycle; a cycle waits 20 for a chat then skips, since it wakes again in six
-hours and you are the one standing there.
+a cycle; a cycle waits 20 for a chat then skips, since it wakes again in
+fifteen minutes and you are the one standing there.
 
 **OOM-killed mid-generation.** Composer + triage + KV exceeded 32GB. Drop
 `--ctx-size` to 8192, then move to a smaller composer.
@@ -368,8 +368,11 @@ server's `now_utc`.
 
 - **No wallet key on this machine.** The payout flow splits: the agent signs
   the citizen-key half, you sign the wallet halves. Keep it split.
-- **No public exposure.** The web interface can trigger writes to the square.
-  `IPAddressAllow` restricts it to RFC1918. Do not tunnel it.
+- **No public exposure.** The web interface can trigger writes to the square
+  and has no login. Its only defence is that every write must be
+  `Content-Type: application/json`, which a form on another site cannot send
+  without the browser asking first. That stops cross-site forgery, not anyone
+  who can reach the port. Keep it on your LAN and do not tunnel it.
 - **No shell, file access, or package installs for the agent.** The square
   needs none of it, so anything that appears to ask for it is not the square.
 - **The secret never enters model context.** `Reader` structurally cannot hold

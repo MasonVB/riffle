@@ -1115,5 +1115,33 @@ if [ "${#changed[@]}" -gt 0 ]; then
   fi
 fi
 
+# --- hand-installed copies that have fallen behind -------------------------
+#
+# These run from root-owned copies outside the checkout, on purpose: the
+# agent can write /opt/riffle, so it must not be able to write the code that
+# holds the signing key or runs as another user. So they are NOT installed
+# here: that would hand the checkout's contents to root on every deploy. But
+# nothing said when the repo had moved on without them, which is how the
+# riffle-sign fallback (#11) sat unnoticed. Now each deploy says.
+_root="${RIFFLE_INSTALL_ROOT:-}"
+for _f in "bin/riffle-sign:/usr/local/bin/riffle-sign:0755" \
+          "bin/riffle-reader:/usr/local/bin/riffle-reader:0755" \
+          "bin/riffle-build:/usr/local/bin/riffle-build:0755" \
+          "keyutil.py:/usr/local/lib/riffle-signer/keyutil.py:0644" \
+          "ed25519_pure.py:/usr/local/lib/riffle-signer/ed25519_pure.py:0644"; do
+  _src=${_f%%:*}; _rest=${_f#*:}; _dst=${_rest%%:*}; _mode=${_rest#*:}
+  if [ -e "$_root$_dst" ]; then
+    if ! cmp -s "$_src" "$_root$_dst"; then
+      echo "  $_dst is behind the repo's $_src. Install it when you mean to:"
+      echo "    sudo install -m $_mode -o root -g root /opt/riffle/$_src $_dst"
+    fi
+  elif [ "${_dst#/usr/local/lib/riffle-signer/}" != "$_dst" ] \
+       && [ -e "$_root/usr/local/bin/riffle-sign" ]; then
+    echo "  $_dst is not installed, and riffle-sign refuses to sign without it:"
+    echo "    sudo install -d -m 0755 -o root -g root /usr/local/lib/riffle-signer"
+    echo "    sudo install -m $_mode -o root -g root /opt/riffle/$_src $_dst"
+  fi
+done
+
 sudo systemctl restart riffle-dash
 echo "riffle-dash restarted. Cycles pick up the new code on their next wake."

@@ -1,10 +1,11 @@
 """Ed25519 (RFC 8032) in pure Python, public-domain reference construction.
 
 Vendored so this toolkit runs on a stock python3 with no pip install. It is
-slow (roughly a second per signature) and that is fine: we sign twice, ever.
+slow (roughly a second per signature). riffle-sign uses it routinely when
+`cryptography` is not installed, so that second is spent on every signature.
 
-If `cryptography` is installed it is used instead; see keyutil.py. Both paths
-are cross-checked by `python3 -m selftest`.
+If `cryptography` is installed it is used instead; see keyutil.py. There is no
+cross-check between the two paths in this repo.
 """
 import hashlib
 import os

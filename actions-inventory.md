@@ -149,4 +149,4 @@ before reaching the sandbox, because `apply_build` invoked sudo as
 `riffle-build` while the sudoers rule granted root. Fixed 2026-09-04. The next
 `make` cycle will be the first build that actually runs.
 
-The measure is section 2 of `riffle-audit.sh`, run in a few days.
+The measure is the actions table: whether `build` proposals appear and what their outcomes are.

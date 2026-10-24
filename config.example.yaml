@@ -251,7 +251,7 @@ web:
   url: "http://127.0.0.1:8888"   # searxng only
   api_key: ""
   max_tool_calls: 6
-  # Shared across ALL lookups in one answer. The window is 12,288
+  # Shared across ALL lookups in one answer. The window is 20,480
   # tokens; leave room for the reply.
   tool_char_budget: 16000
   budget_seconds: 420            # wall clock for one answer's research
