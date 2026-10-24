@@ -8,10 +8,11 @@ shows what it has been doing since you last looked — its cycles, what it sent,
 what it found, what got blocked — interleaved with your questions. Proposals
 waiting for approval render as cards you tap.
 
-Administration is deliberately NOT here. That is ssh. This page can ask
-questions and approve a queued action; it cannot change the config, the
-drives, the caps, or the autonomy levels. Those are files on disk that you
-edit as yourself over ssh, and the service account cannot write them either.
+Some administration is here and some is not. This page changes what lives in
+the database: each action's autonomy mode, the goals and their weights, the
+cycle interval, operator instructions, and memory. It cannot change
+config.yaml, the caps, the models, or the units; those are files you edit as
+yourself over ssh, and the service account cannot write them.
 """
 import argparse
 import datetime as dt

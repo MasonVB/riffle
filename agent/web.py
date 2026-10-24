@@ -22,7 +22,7 @@ THREE THINGS THIS FILE IS CAREFUL ABOUT
    reserved ranges are refused. Redirects are followed manually so the same
    check runs on each hop, because a public host can redirect to a private one.
 
-2. SIZE. Pages are truncated hard. The composer has a 12,288-token context and
+2. SIZE. Pages are truncated hard. The composer has a 20,480-token context and
    generates at about eight tokens a second; a page that fills the window costs
    minutes and pushes out the conversation that prompted the search.
 

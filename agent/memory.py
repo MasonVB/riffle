@@ -16,7 +16,10 @@ Two rules that keep the store honest:
   belong in a post where numcheck can see them.
 
   Corrections SUPERSEDE rather than delete, so the record of having been wrong
-  survives. That is the same reason the square keeps retractions.
+  survives. That is the same reason the square keeps retractions. It is not
+  true of the record as a whole: forget() deletes on request, prune() drops
+  the least useful short-term memories, and the daily pass purges expired
+  ones after memory.purge_expired_after_days (30 by default).
 """
 import re
 

@@ -150,7 +150,8 @@ def items(state):
 def evict(state, cap=MAX_ITEMS):
     """Drop the least recently WORKED items over the cap. Returns their slots.
 
-    Ordered by updated_at, not touched_at and not created_at.
+    Ordered by seq, the counter bumped on every write: not touched_at and
+    not created_at.
 
     touched_at was the first attempt and it does not carry information: the
     desk is read in full every cycle, so if reading counted as touching,

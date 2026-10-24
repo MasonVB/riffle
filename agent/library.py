@@ -146,7 +146,7 @@ def put(state, title, body, kind="note", tags="", summary="", source="",
 
 
 def find(state, query, limit=10, root=ROOT):
-    """Search titles, tags, summaries and sources. Never the bodies.
+    """Search titles, tags, summaries and sources; the bodies only as a fallback.
 
     Bodies are not searched on purpose: grepping gigabytes on a box that is
     already stalling under load is a good way to cause the thing we spent a

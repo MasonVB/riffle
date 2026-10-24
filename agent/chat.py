@@ -7,7 +7,8 @@ Three things live here:
    box thermally throttles on top of it. Both sides take this lock; whoever
    is second waits or is told to wait.
 
-2. STREAMING. At roughly a dozen tokens a second a reply takes minutes, so
+2. STREAMING. At 8.6 tokens a second on a short context, and about 4 at 13k
+   tokens, a reply takes minutes, so
    the browser must see it arriving. The worker appends deltas to the message
    row and the page polls. A blank page for four minutes reads as a crash.
 
@@ -23,7 +24,7 @@ import threading
 import time
 import urllib.request
 
-from agent import cortex, goals, memory, web
+from agent import goals, memory, web
 from agent.client import HttpError, Reader
 from agent.state import utcnow
 

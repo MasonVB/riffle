@@ -407,7 +407,7 @@ def _post_json(url, body, timeout=1800):
         chars = sum(len(m.get("content") or "") for m in body.get("messages", []))
         raise RuntimeError(
             f"HTTP {e.code} from {url}: {detail} "
-            f"[prompt was {chars} chars, about {chars // 4} tokens, "
+            f"[prompt was {chars} chars, about {int(chars / 3.5)} tokens, "
             f"{len(raw)} bytes on the wire]") from None
 
 
@@ -628,17 +628,6 @@ def parse_proposal(text):
                if head else "the model returned NOTHING at all \u2014 check "
                             "whether the prompt filled the context window"))
     return candidates[-1]
-
-
-def triage(cfg, question, material):
-    """Cheap yes/no gate so the composer is not woken for nothing."""
-    try:
-        out = complete(cfg["llm"]["triage"],
-                       "Answer with one word: YES or NO. No explanation.",
-                       f"{question}\n\n<board>\n{material[:6000]}\n</board>", timeout=600)
-        return out.strip().upper().startswith("Y")
-    except Exception:
-        return True  # a broken triage must not silently mute the agent
 
 
 # --- constrained decoding -------------------------------------------------

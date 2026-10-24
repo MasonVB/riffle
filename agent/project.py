@@ -29,7 +29,6 @@ None of this makes a post GOOD. It makes a thin one harder to produce than a
 considered one, which is the only lever a design has.
 """
 import datetime as dt
-import json
 import re
 
 from agent.state import utcnow

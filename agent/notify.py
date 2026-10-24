@@ -5,8 +5,8 @@
 
 DEFERRED, NOT DROPPED. A proposal queued at 03:00 does not vanish; it is
 marked un-notified and the next cycle that wakes inside the window sends it.
-With an hourly timer that means at most an hour's delay after the window
-opens, and no silent loss — which matters, because the whole point of the
+With a five-minute timer and a fifteen-minute interval that means at most
+about fifteen minutes' delay after the window opens, and no silent loss — which matters, because the whole point of the
 queue is that nothing reaches the square without you.
 
 The `notified` flag lives on the action row, so a proposal is announced once
@@ -91,7 +91,10 @@ def send(cfg, title, message, url=None, priority=0):
 
 def dash_url(cfg):
     host = (cfg.get("notify") or {}).get("dash_host") or "riffle"
-    port = cfg.get("dash", {}).get("port", 8917)
+    # 80, as in config.example.yaml. The dash itself has no default (it reads
+    # dash.port or fails), so this only matters when the key is missing; it
+    # was 8917, a port nothing listened on.
+    port = cfg.get("dash", {}).get("port", 80)
     return f"http://{host}/" if int(port) == 80 else f"http://{host}:{port}/"
 
 

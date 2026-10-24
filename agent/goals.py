@@ -5,8 +5,9 @@ change its own weights, and the agent deliberately cannot write /opt/riffle.
 config.yaml seeds this table once, on first run, and is never written back.
 
 The boundary that matters is unchanged: WEIGHTS are negotiable and live here;
-CAPS, AUTONOMY, the model and the base URL are not and stay in the file, which
-only you can edit, over ssh.
+CAPS, the model and the base URL are not and stay in the file, which only you
+can edit, over ssh. AUTONOMY is seeded from the file once and then lives on
+the settings page.
 
 Three protections on the agent's own hand:
 

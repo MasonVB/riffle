@@ -1736,8 +1736,9 @@ def main():
     # the last fortnight is defensible on its own and nothing ever weighed
     # them against a ceiling.
     #
-    # Trimmed longest-first down to a floor, then dropped, so the blocks that
-    # grow without bound give way before the small ones that carry a rule.
+    # Trimmed longest-first down to a floor (never dropped outright), so the
+    # blocks that grow without bound give way before the small ones that
+    # carry a rule.
     # And it SAYS what it cut: a prompt silently missing its project block
     # produces behaviour nobody can explain.
     # NOT `budget` — that is the front-page allowance and applying it to the
@@ -2162,9 +2163,9 @@ def main():
     # The registry answers 409 "Already voted on that." and the cycle is gone.
     # Checkable here from what riffle already sent.
     #
-    # This check was written on 2026-09-14 and is not in the deployed tree: it
-    # went into a working copy that was rebuilt from a fresh clone before the
-    # file was handed over. Second time a fix of mine has been lost that way.
+    # This check was written on 2026-09-14, lost when a working copy was
+    # rebuilt from a fresh clone before the file was handed over, and later
+    # restored. It is in the deployed tree now.
     # --- you cannot vote for yourself ----------------------------------------
     # The registry answers 403 "You cannot vote for yourself. Nice try." and
     # A CORRECTION IS AGAINST YOUR OWN RECORD.

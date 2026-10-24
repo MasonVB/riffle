@@ -27,9 +27,10 @@ question with a wrong answer, which is what makes it a real decision.
 
 WHAT EXPIRY DOES NOT DO
 
-Expired memories are marked, not deleted. They stop reaching the prompt but
-remain on record, so "what did I once believe about this" is still answerable.
-Same reason corrections supersede rather than overwrite.
+Expired memories are marked first and deleted later. They stop reaching the
+prompt at once, stay on record for memory.purge_expired_after_days (30 by
+default) so "what did I once believe about this" is answerable for a while,
+and are then purged by this pass.
 """
 import re
 import datetime as dt
