@@ -2590,20 +2590,17 @@ def main():
         except Exception:
             _rd = None
         if _rd and _seen:
-            if str(payload["parent_id"]) not in _seen:
-                why = (f"comment {payload['parent_id']} is not on post "
-                       f"{payload['post_id']}. The ids you can reply to there "
-                       f"are: {', '.join(sorted(_seen)) or '(none read yet)'}. "
-                       f"Reply ids belong to one post; an id you saw on another "
-                       f"thread will be refused by the registry. If you meant a "
-                       f"comment you have not read, read that post first.")
-                state.propose(cid, kind, drive, payload, rationale, "blocked")
-                log(f"parent {payload['parent_id']} not on post "
-                    f"{payload['post_id']}", level="warn", drive=drive)
-                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
-                          {"drive": drive})
-                state.end_cycle(cid, "wrong-parent", str(payload["parent_id"]))
-                return 0
+            # NOT IN THE SNAPSHOT IS NOT PROOF. The read is a snapshot: a
+            # comment written after it is not in it. With the inbox showing
+            # riffle new comments on threads it had read, a correct reply to
+            # one was refused here as "not on post". (2026-10-25 logged 11
+            # wrong-parent in 12 hours; this is a likely share of them, not a
+            # confirmed one.) A parent outside the snapshot now goes to
+            # the lookup below, which refuses only a parent that does not
+            # exist or is on another post.
+            _unknown = str(payload["parent_id"]) not in _seen
+        else:
+            _unknown = False
         # AND WHEN RIFFLE HAS NOT READ THE THREAD. The check above only ran
         # when there was a stored read of this post, so on any other post a
         # parent_id went to the registry unchecked: on 2026-10-22 it refused
@@ -2614,7 +2611,8 @@ def main():
         # one GET /api/comment/:id, which returns {"comment": {...,
         # "post_id"}} or 404. A transport failure lets it through: the
         # registry still refuses a bad parent, this only saves the cycle.
-        if (payload.get("parent_id") is not None and not (_rd and _seen)):
+        if (payload.get("parent_id") is not None
+                and (not (_rd and _seen) or _unknown)):
             _par = int(payload["parent_id"])
             _where, _why = None, None
             try:
