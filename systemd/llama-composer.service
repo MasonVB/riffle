@@ -10,7 +10,19 @@ User=riffle
 Group=riffle
 # -t 6 = one thread per physical core. The 8500T has no SMT, so 6 is the
 # ceiling and oversubscribing costs throughput.
-# --mlock pins weights so the kernel never pages them out mid-generation.
+# NO --mlock, AND --cache-ram 1024 (was 3072), from 2026-10-25. The box had
+# reset itself 11 times in six days, every boot ending abruptly with nothing
+# in the kernel log, five of them mid prompt-processing or generation and
+# one 51 s after boot. This service's MemoryPeak was 30.7 GB on a 31 GiB box,
+# beside 5.1 GB for llama-triage, with --mlock making the weights
+# unreclaimable: a box in that state can lock up before the OOM killer
+# writes a line. Without --mlock the kernel can drop weight pages under
+# pressure and read them back from the NVMe (a slower cycle, not a frozen
+# box); the smaller cache-ram frees ~2 GiB and still holds one ~600 MiB
+# prompt entry, so a chat or memory call between cycles need not cost the
+# cycle's prefix. THIS IS A TEST of the memory explanation: if the resets
+# continue, suspect hardware (memtest86+ next) and put --mlock back if
+# cycles have slowed. LimitMEMLOCK below is left; it does nothing now.
 # --cache-reuse would let the server reuse KV chunks that moved. IT DOES NOT
 # WORK FOR THIS MODEL, with or without --kv-unified: measured 2026-10-24,
 # the server still logs "cache_reuse is not supported by this context, it
@@ -50,7 +62,7 @@ ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --batch-size 512 --ubatch-size 128 \
   \
   --parallel 1 --kv-unified --chat-template-kwargs '{"enable_thinking":false}' \
-  --cache-ram 3072 --mlock --cache-reuse 256 --slots --no-webui
+  --cache-ram 1024 --cache-reuse 256 --slots --no-webui
 Restart=always
 RestartSec=10
 Nice=0
