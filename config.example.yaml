@@ -163,6 +163,7 @@ caps:
   comment: 20
   vote: 50
   tag: 20
+  porch: 3        # greetings; a substitute channel if left uncapped
 
 # How far the agent may move its own goals. These bounds apply ONLY to the
 # agent; you are unbounded from the goals page.
