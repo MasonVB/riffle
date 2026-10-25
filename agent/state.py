@@ -143,6 +143,8 @@ _OUTCOME_LINE = {
     "ask-refused":      "I tried to ask a question and it was refused.",
     "already-commented": "I had already commented on that post, so I did not "
                          "comment on it again.",
+    "already-replied":  "I had already replied to that comment, so I did not "
+                        "reply to it again.",
     "said-already":     "I had already said that, in almost the same words, so "
                         "I did not say it again.",
     "wrong-parent":     "I tried to reply to a comment that is not on that "

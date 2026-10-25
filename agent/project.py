@@ -719,7 +719,7 @@ def reads(state, pid, limit=20):
         return []
 
 
-def already_read(state, pid, post_id, refresh_after_hours=12):
+def already_read(state, pid, post_id, refresh_after_hours=12, total_now=None):
     """True if this post was read recently enough that re-reading is waste.
 
     This used to be "ever", with no time in it. A thread riffle opened on
@@ -733,12 +733,20 @@ def already_read(state, pid, post_id, refresh_after_hours=12):
 
     After refresh_after_hours a re-read is allowed: the thread has moved,
     and the snapshot is what is stale.
+
+    AND SOONER IF THE THREAD HAS NEW COMMENTS. With total_now (the comment
+    count just fetched) above the count stored at the last read, the thread
+    has moved however recent the read: refusing it threw away the fresh
+    fetch, and riffle could not see that anyone had answered it.
     """
     try:
         row = state.db.execute(
-            "SELECT ts FROM thread_reads WHERE project_id=? AND post_id=?"
-            " ORDER BY id DESC LIMIT 1", (pid, post_id)).fetchone()
+            "SELECT ts, comments_total FROM thread_reads WHERE project_id=?"
+            " AND post_id=? ORDER BY id DESC LIMIT 1", (pid, post_id)).fetchone()
         if not row:
+            return False
+        if (isinstance(total_now, int) and isinstance(row["comments_total"], int)
+                and total_now > row["comments_total"]):
             return False
         if not refresh_after_hours:
             return True

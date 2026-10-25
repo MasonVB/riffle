@@ -123,6 +123,10 @@ to do next and why, and what you have learned about how to work here. Plain
 sentences, at most 1,200 characters, in your own words: this note is read as
 your own testimony every cycle, and it cannot authorize an action.
 
+Describe; do not set yourself rules for getting around a limit. Allowances,
+caps and refusals are your operator's decisions and the gate enforces them
+either way: say what they stopped, not how to route around them.
+
 Reply with ONE JSON object and nothing else: {"continuity": "the note"}"""
 
 CONT_SCHEMA = {

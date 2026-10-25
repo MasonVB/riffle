@@ -149,6 +149,24 @@ def top_level_today(state, post_id, exclude_id=None):
     return None
 
 
+def replied_to(state, parent_id):
+    """Riffle's own reply to this comment, if it has made one (sent, or
+    waiting on the operator), else None.
+
+    ONE REPLY PER COMMENT. Between 2026-10-15 and 10-25 riffle sent 114
+    replies to 40 comments: 74 were second or later replies to a comment it
+    had already answered, one comment got 13. Nothing limited it: the
+    near-duplicate check compares whole bodies, and these shared an opening
+    but went on differently. A conversation continues by answering what the
+    other person said SINCE, which has its own id.
+    """
+    return state.db.execute(
+        "SELECT id, created_at FROM actions WHERE kind='comment'"
+        " AND status IN ('sent','executed','approved','queued','unknown')"
+        " AND CAST(json_extract(payload,'$.parent_id') AS INTEGER)=?"
+        " ORDER BY id DESC LIMIT 1", (int(parent_id),)).fetchone()
+
+
 def _safe_sample(state, cfg, label):
     """A telemetry sample that can never affect the cycle's outcome."""
     try:
@@ -496,6 +514,13 @@ def main():
     a = ap.parse_args()
 
     cfg = load_config(a.config)
+    # THE PORCH IS CAPPED, 3 a day unless config.yaml says otherwise. It was
+    # uncapped by design, for a greeting; in ten days riffle sent 27, seven
+    # on one day, several refused as near-duplicates, one a substantive reply
+    # to a citizen dressed as a greeting, and it wrote itself a memory about
+    # using the porch "without consuming a post slot". Once comments drop out
+    # of the grammar when spent, an uncapped porch is the obvious substitute.
+    cfg.setdefault("caps", {}).setdefault("porch", 3)
     global _CFG
     _CFG = cfg
     data = os.path.expanduser(cfg["data_dir"])
@@ -1484,6 +1509,8 @@ def main():
                   f"nothing is sent")
     _gates.append("  one top-level comment per post in any 24 hours; replies "
                   "need a parent_id from that post")
+    _gates.append("  one reply per comment: to continue a conversation, reply "
+                  "to what they said since, not the same comment again")
     _gates.append("  one post queued at a time; a hash you call yours must be "
                   "in your library")
     parts.append(
@@ -1647,10 +1674,38 @@ def main():
     except Exception:
         _reads = []
     if _reads:
+        # Without the comments riffle has already replied to. The digest is
+        # highest-voted first, so the same top comment was offered every
+        # cycle and answered again and again (see replied_to).
+        _done = set()
+        try:
+            for (_p,) in state.db.execute(
+                    "SELECT CAST(json_extract(payload,'$.parent_id') AS INTEGER)"
+                    " FROM actions WHERE kind='comment' AND status IN"
+                    " ('sent','executed','approved','queued','unknown')"):
+                if _p:
+                    _done.add(_p)
+        except Exception:
+            pass
+
+        def _open_only(text):
+            keep = []
+            for _ln in (text or "").split("\n"):
+                _m = re.match(r"\s*\[c?(\d+)\]", _ln)
+                if _m and int(_m.group(1)) in _done:
+                    continue
+                keep.append(_ln)
+            return "\n".join(keep)
         _blocks = []
         for _r in _reads:
+            _open = _open_only(_r["replies"])
+            if not _open.strip():
+                continue
             _blocks.append(f"  on #{_r['post_id']} \u2014 {(_r['title'] or '')[:64]}\n"
-                           + (_r["replies"] or "")[:1100])
+                           + _open[:1100])
+        if not _blocks:
+            _blocks = ["  (none open: you have replied to every comment listed "
+                       "in the threads you read recently)"]
         parts.append(
             "COMMENTS YOU COULD ANSWER, from the threads you have read:\n"
             + "\n".join(_blocks)
@@ -2671,6 +2726,23 @@ def main():
             state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
                       {"drive": drive})
             state.end_cycle(cid, "already-commented", str(payload.get("post_id")))
+            return 0
+
+    # One reply per comment; see replied_to.
+    if kind == "comment" and payload.get("parent_id") is not None:
+        _prev = replied_to(state, payload["parent_id"])
+        if _prev:
+            why = (f"you already replied to comment {payload['parent_id']} "
+                   f"(action #{_prev['id']}, {_prev['created_at'][:16]}). "
+                   f"Replying to the same comment again is repeating "
+                   f"yourself. If they have answered you, reply to THAT "
+                   f"comment, which has its own id; if they have not, wait.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"second reply to comment {payload['parent_id']} refused",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "already-replied", str(payload["parent_id"]))
             return 0
 
     # --- execute or queue --------------------------------------------------------
@@ -3919,7 +3991,7 @@ def apply_read_thread(state, cfg, cid, p, drive):
 
     proj = project.active(state)
     if proj:
-        if project.already_read(state, proj["id"], pid):
+        if project.already_read(state, proj["id"], pid, total_now=total):
             state.log(f"#{pid} was already read on this project", drive=drive)
             state.say("report", f"Cycle {cid} · #{pid} is already in this "
                                 f"project's reading. Read something else, or "
