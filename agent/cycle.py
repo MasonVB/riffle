@@ -1027,8 +1027,24 @@ def main():
     _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
     _spent = sorted(k for k, v in _left.items() if v <= 0)
 
+    # EVERYTHING THAT CANNOT SUCCEED THIS CYCLE, not only spent caps: actions
+    # set to `never`, and `post` while the send path would refuse it (the
+    # cooldown, or a project not ready), computed the same way it computes
+    # them. On 2026-10-25 cycle 2681 drew `greet` with the porch spent and
+    # posting closed, found nothing to do, and wrote a noop: a whole model
+    # call for nothing. Every use below reads _blocked: drive availability,
+    # the mention override, the inbox, and the grammar the model writes in.
+    _blocked = set(_spent)
+    _blocked |= {k for k, m in (cfg.get("autonomy") or {}).items() if m == "never"}
+    try:
+        if project.in_cooldown(state)[0] or not project.ready(state, cfg)[0]:
+            _blocked.add("post")
+    except Exception:
+        pass
+    _blocked.discard("noop")
+
     known = {"understand", "witness"}
-    if (inbox or _inbox_counts.get("backlog")) and "comment" not in _spent:
+    if (inbox or _inbox_counts.get("backlog")) and "comment" not in _blocked:
         known.add("answer")
     if unseen or starters:
         known.add("contribute")
@@ -1037,9 +1053,12 @@ def main():
     # curate needs something it has actually read. Voting on a front-page title
     # is exactly the uncritical marking the square complains about, so the
     # material is threads already opened into a project, plus the inbox.
-    if inbox or project.reads(state, (project.active(state) or {"id": 0})["id"]):
+    if ((inbox or project.reads(state, (project.active(state) or {"id": 0})["id"]))
+            and not {"vote", "tag"} <= _blocked):
         known.add("curate")
-    known.add("greet")          # the porch is uncapped and always open
+    # NOT "always open" any more: the porch has a daily cap (3 by default).
+    if "porch" not in _blocked:
+        known.add("greet")
     if starters or state.note("last_build") or open_listings:
         known.add("make")
     # GATED names every drive whose availability is computed above. The old
@@ -1047,13 +1066,17 @@ def main():
     # read anything", "does it have a build or an open listing" — was thrown
     # away: both were admitted whatever the answer. The code looked like a
     # gate and behaved like a pass-through.
-    GATED = ("answer", "contribute", "earn", "curate", "make")
+    GATED = ("answer", "contribute", "earn", "curate", "make", "greet")
     available = {n for n in live_weights if n in known or n not in GATED}
     available.discard("operator")      # selected by an instruction, never by weight
     for _d in list(available):
         _sel = (cfg.get("_selects") or {}).get(_d)
-        if _sel and all(k in _spent or k == "noop" for k in _sel):
-            available.discard(_d)          # everything it may do is spent today
+        if _sel and all(k in _blocked or k == "noop" for k in _sel):
+            available.discard(_d)          # nothing it may do can succeed now
+    _gone = sorted(set(live_weights) - available - {"operator"})
+    if _gone and _blocked:
+        log(f"drives not available this cycle: {', '.join(_gone)}; actions "
+            f"that cannot succeed now: {', '.join(sorted(_blocked))}")
     cooling, _until, hours_left = project.in_cooldown(state)
     # `deepen` is always available, but what it may DO depends on whether
     # there is anything to deepen. Without this it drew "work on the project"
@@ -1197,7 +1220,7 @@ def main():
     # seven chance of being the thing that cycle did — and with the inbox
     # replaying unacked, the same mention lost that lottery for days.
     _mentions = [x for x in inbox if "mentions_of_you" in (x.get("bucket") or ())]
-    if _mentions and "answer" in live_weights and "comment" not in _spent:
+    if _mentions and "answer" in live_weights and "comment" not in _blocked:
         # The DRAWN drive, kept before it is replaced. The log used to read
         # `drive` after the reassignment, so it always said "rather than
         # 'answer' by weight" and never named what was actually overridden.
@@ -1268,7 +1291,7 @@ def main():
     # carry no instructions. Shown counts rise only in a cycle that could
     # have answered: the drive may propose a comment and the allowance is
     # not spent.
-    _can_answer = ("comment" not in _spent
+    _can_answer = ("comment" not in _blocked
                    and "comment" not in ((cfg.get("_forbids") or {}).get(drive) or [])
                    and (not (cfg.get("_selects") or {}).get(drive)
                         or "comment" in (cfg.get("_selects") or {}).get(drive)))
@@ -1281,7 +1304,8 @@ def main():
             f"YOUR INBOX, AND HOW TO ANSWER IT: {_c['live']} new and "
             f"{_c['backlog']} older message(s) are waiting. This cycle cannot "
             f"comment (" + ("today's comment allowance is spent" if "comment"
-                            in _spent else "this drive does not comment")
+                            in _spent else "comments are switched off" if
+                            "comment" in _blocked else "this drive does not comment")
             + "), so they are not shown. They wait; nothing is lost.")
         _show_live, _show_back = [], []
     if _show_live or _show_back:
@@ -1958,7 +1982,7 @@ def main():
     try:
         raw = cortex.complete(cfg["llm"]["composer"], system, user,
                               schema=_schema_without(cortex.proposal_schema(),
-                                                     _spent))
+                                                     _blocked))
         proposal = cortex.parse_proposal(raw)
         # An over-long title used to lose the whole cycle: three in a row came
         # back at 121, 124 and 127 characters and each one died at the gate
