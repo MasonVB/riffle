@@ -992,8 +992,18 @@ def main():
     # A goal with nothing to act on is not available this cycle. Goals you
     # added yourself have no precondition wired in, so they are always
     # available — describe them well and the model decides what they mean.
+    # TODAY'S SPENT ALLOWANCES, before the drive is picked rather than after.
+    # They were computed only for the prompt, so nothing upstream knew: on
+    # 2026-10-24 the 289-item backlog kept `answer` available all day, the
+    # comment allowance ran out, and riffle drew `answer`, wrote a reply, and
+    # was refused "cap-reached" nine times in three hours, a whole composer
+    # call each. Now a spent action makes no drive available, forces no
+    # drive, is dropped from the grammar, and hides the inbox messages.
+    _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
+    _spent = sorted(k for k, v in _left.items() if v <= 0)
+
     known = {"understand", "witness"}
-    if inbox or _inbox_counts.get("backlog"):
+    if (inbox or _inbox_counts.get("backlog")) and "comment" not in _spent:
         known.add("answer")
     if unseen or starters:
         known.add("contribute")
@@ -1015,6 +1025,10 @@ def main():
     GATED = ("answer", "contribute", "earn", "curate", "make")
     available = {n for n in live_weights if n in known or n not in GATED}
     available.discard("operator")      # selected by an instruction, never by weight
+    for _d in list(available):
+        _sel = (cfg.get("_selects") or {}).get(_d)
+        if _sel and all(k in _spent or k == "noop" for k in _sel):
+            available.discard(_d)          # everything it may do is spent today
     cooling, _until, hours_left = project.in_cooldown(state)
     # `deepen` is always available, but what it may DO depends on whether
     # there is anything to deepen. Without this it drew "work on the project"
@@ -1158,7 +1172,7 @@ def main():
     # seven chance of being the thing that cycle did — and with the inbox
     # replaying unacked, the same mention lost that lottery for days.
     _mentions = [x for x in inbox if "mentions_of_you" in (x.get("bucket") or ())]
-    if _mentions and "answer" in live_weights:
+    if _mentions and "answer" in live_weights and "comment" not in _spent:
         # The DRAWN drive, kept before it is replaced. The log used to read
         # `drive` after the reassignment, so it always said "rather than
         # 'answer' by weight" and never named what was actually overridden.
@@ -1186,8 +1200,6 @@ def main():
 
     # --- build bounded context ----------------------------------------------
     budget = cfg["cycle"]["max_context_chars"]
-    _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
-    _spent = sorted(k for k, v in _left.items() if v <= 0)
     # ORDER BY HOW OFTEN IT CHANGES, NOT BY IMPORTANCE.
     #
     # These three lines were first, and the first of them is a timestamp
@@ -1236,6 +1248,17 @@ def main():
                    and (not (cfg.get("_selects") or {}).get(drive)
                         or "comment" in (cfg.get("_selects") or {}).get(drive)))
     _show_live, _show_back = inbox_mod.pick(state)
+    if not _can_answer and (_show_live or _show_back):
+        # Not the messages: a protected block of replies riffle cannot send
+        # this cycle only invites a proposal the gate will refuse.
+        _c = _inbox_counts
+        parts.append(
+            f"YOUR INBOX, AND HOW TO ANSWER IT: {_c['live']} new and "
+            f"{_c['backlog']} older message(s) are waiting. This cycle cannot "
+            f"comment (" + ("today's comment allowance is spent" if "comment"
+                            in _spent else "this drive does not comment")
+            + "), so they are not shown. They wait; nothing is lost.")
+        _show_live, _show_back = [], []
     if _show_live or _show_back:
         _c = _inbox_counts
         parts.append(
@@ -1879,7 +1902,8 @@ def main():
         return 0
     try:
         raw = cortex.complete(cfg["llm"]["composer"], system, user,
-                              schema=cortex.proposal_schema())
+                              schema=_schema_without(cortex.proposal_schema(),
+                                                     _spent))
         proposal = cortex.parse_proposal(raw)
         # An over-long title used to lose the whole cycle: three in a row came
         # back at 121, 124 and 127 characters and each one died at the gate
@@ -2982,6 +3006,21 @@ _BOARD_TAG = re.compile(r"<\s*(/?)\s*board\s*>", re.I)
 def _detag(text):
     return _BOARD_TAG.sub(lambda m: "\u2039" + m.group(1) + "board\u203a",
                           text or "")
+
+
+def _schema_without(schema, kinds):
+    """The proposal schema minus the branches for `kinds` (today's spent
+    allowances), so the model cannot write a proposal the gate will refuse.
+    The gate still checks caps; this only stops a cycle being spent on a
+    refusal. Removing alternatives from the grammar cannot stop it
+    compiling, and noop is never capped, so a branch always remains."""
+    if not kinds or not isinstance(schema.get("oneOf"), list):
+        return schema
+    out = dict(schema)
+    out["oneOf"] = [b for b in schema["oneOf"]
+                    if ((b.get("properties") or {}).get("action") or {})
+                    .get("const") not in kinds]
+    return out
 
 
 def _is_own(part):
