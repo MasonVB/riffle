@@ -662,15 +662,40 @@ def next_step(state, cfg):
     return f"THE ONE THING TO DO NEXT ON THIS PROJECT: {nxt}." if nxt else ""
 
 
+def resurface(state, read_id):
+    """Show this stored read, in full, as next cycle's thread. One-shot."""
+    state.note("resurface_read", str(int(read_id)))
+
+
 def recent_thread(state, cfg, budget=5000):
     """The newest thread read in full, for the <board> side of the prompt.
 
     The same text as_context() includes by default, at the same size (the
     0.55 share of `budget`), or "" when there is no project or no read.
+
+    UNLESS A READ WAS RESURFACED. A re-read inside the refresh window with
+    nothing new is refused, and on 2026-10-26 riffle asked to re-read #9823
+    and #9747 eight times in sixteen hours because the refusal showed it
+    nothing: it wanted the text and could not have it. Now the refusal
+    resurfaces the stored read, and this shows it once, next cycle.
     """
     proj = active(state)
     if not proj:
         return ""
+    _rid = state.note("resurface_read")
+    if _rid:
+        state.note("resurface_read", "")
+        try:
+            r = state.db.execute(
+                "SELECT * FROM thread_reads WHERE id=? AND project_id=?",
+                (int(_rid), proj["id"])).fetchone()
+        except (ValueError, TypeError):
+            r = None
+        if r:
+            return (f"THE THREAD YOU ASKED TO READ AGAIN, #{r['post_id']} \u2014 "
+                    f"as you read it at {str(r['ts'])[:16]}; it has no new "
+                    f"comments since:\n"
+                    + render_read(r, int(budget * 0.55)) + _unread_hint(state, r))
     rs = reads(state, proj["id"])
     if not rs:
         return ""

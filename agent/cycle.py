@@ -149,6 +149,39 @@ def top_level_today(state, post_id, exclude_id=None):
     return None
 
 
+def _replied_ids(state):
+    """Every comment id riffle has replied to (sent, or waiting on you)."""
+    out = set()
+    try:
+        for (_p,) in state.db.execute(
+                "SELECT CAST(json_extract(payload,'$.parent_id') AS INTEGER)"
+                " FROM actions WHERE kind='comment' AND status IN"
+                " ('sent','executed','approved','queued','unknown')"):
+            if _p:
+                out.add(_p)
+    except Exception:
+        pass
+    return out
+
+
+def _mark_replied(text, done):
+    """Mark, in a thread's text, the comments riffle has already answered.
+
+    The full thread shows every comment, answered or not. On 2026-10-26 six
+    cycles were refused as second replies to comments riffle had answered and
+    could not see that it had: the list of comments to answer hid them, the
+    thread text did not mark them."""
+    if not done or not text:
+        return text
+    out = []
+    for _ln in text.split("\n"):
+        _m = re.match(r"(\s*\[c?(\d+)\])", _ln)
+        if _m and int(_m.group(2)) in done:
+            _ln = _m.group(1) + " (you have already replied to this)" + _ln[_m.end(1):]
+        out.append(_ln)
+    return "\n".join(out)
+
+
 def replied_to(state, parent_id):
     """Riffle's own reply to this comment, if it has made one (sent, or
     waiting on the operator), else None.
@@ -1296,6 +1329,12 @@ def main():
                    and (not (cfg.get("_selects") or {}).get(drive)
                         or "comment" in (cfg.get("_selects") or {}).get(drive)))
     _show_live, _show_back = inbox_mod.pick(state)
+    # THE BACKLOG ONLY IN `answer` CYCLES. Shown in every cycle that could
+    # comment, it was mostly seen in cycles about something else and set
+    # aside after three of them: on 2026-10-26, 45 backlog messages passed
+    # and none was answered. Live messages stay in every cycle.
+    if drive != "answer":
+        _show_back = []
     if not _can_answer and (_show_live or _show_back):
         # Not the messages: a protected block of replies riffle cannot send
         # this cycle only invites a proposal the gate will refuse.
@@ -1314,7 +1353,8 @@ def main():
             f"YOUR INBOX, AND HOW TO ANSWER IT: {_c['live']} new message(s) "
             f"waiting, and {_c['backlog']} older one(s) from before your inbox "
             f"worked \u2014 it was broken until 2026-10-23, so none of those "
-            f"reached you when they were sent. The messages themselves are "
+            f"reached you when they were sent; the older ones are shown in "
+            f"`answer` cycles. The messages themselves are "
             f"in the board section below, under INBOX. To answer one, "
             f"`comment` on its "
             f"post_id with parent_id set to its comment_id; a mention in a "
@@ -1701,16 +1741,7 @@ def main():
         # Without the comments riffle has already replied to. The digest is
         # highest-voted first, so the same top comment was offered every
         # cycle and answered again and again (see replied_to).
-        _done = set()
-        try:
-            for (_p,) in state.db.execute(
-                    "SELECT CAST(json_extract(payload,'$.parent_id') AS INTEGER)"
-                    " FROM actions WHERE kind='comment' AND status IN"
-                    " ('sent','executed','approved','queued','unknown')"):
-                if _p:
-                    _done.add(_p)
-        except Exception:
-            pass
+        _done = _replied_ids(state)
 
         def _open_only(text):
             keep = []
@@ -1839,7 +1870,7 @@ def main():
                                     include_thread=False, include_next=False))
     _thread = project.recent_thread(state, cfg, budget=int(budget * 0.40))
     if _thread:
-        parts.append(_thread)
+        parts.append(_mark_replied(_thread, _replied_ids(state)))
     # Only riffle's own and the operator's memories are trusted. The rest
     # (incidental notes, legacy `board` rows) can paraphrase strangers, so
     # they go board-side under a header with no trusted prefix.
@@ -2662,11 +2693,20 @@ def main():
                 except Exception as e:
                     log(f"could not check parent {_par}: {e}",
                         level="warn", drive=drive)
+            # A REPLY GOES WHERE ITS PARENT IS. When the parent is real but
+            # on another post, the post id was the mistake, not the reply:
+            # the body answers that comment. It used to be refused (three
+            # times on 2026-10-26, each a whole cycle); now it is sent to the
+            # parent's post, and the report says so.
             if (_why is None and _where is not None
                     and int(_where) != int(payload["post_id"])):
-                _why = (f"comment {_par} is on post {_where}, not post "
-                        f"{payload['post_id']}. A reply goes on the post its "
-                        f"parent is on.")
+                log(f"reply to comment {_par} moved from post "
+                    f"{payload['post_id']} to post {_where}, where that "
+                    f"comment is", level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 comment {_par} is on "
+                          f"post {_where}, not {payload['post_id']}; I sent my "
+                          f"reply there.", {"drive": drive})
+                payload["post_id"] = int(_where)
             if _why:
                 state.propose(cid, kind, drive, payload, rationale, "blocked")
                 log(f"parent {_par}: {_why}", level="warn", drive=drive)
@@ -4014,10 +4054,19 @@ def apply_read_thread(state, cfg, cid, p, drive):
     proj = project.active(state)
     if proj:
         if project.already_read(state, proj["id"], pid, total_now=total):
-            state.log(f"#{pid} was already read on this project", drive=drive)
-            state.say("report", f"Cycle {cid} · #{pid} is already in this "
-                                f"project's reading. Read something else, or "
-                                f"write a note about what it said.",
+            # Not a bare refusal: the stored read comes back next cycle
+            # (project.recent_thread). Nothing has changed in it, and
+            # fetching it again would only file the same text twice.
+            _prev = state.db.execute(
+                "SELECT id, ts FROM thread_reads WHERE project_id=? AND post_id=?"
+                " ORDER BY id DESC LIMIT 1", (proj["id"], pid)).fetchone()
+            if _prev:
+                project.resurface(state, _prev["id"])
+            state.log(f"#{pid} was already read on this project; shown again "
+                      f"next cycle", drive=drive)
+            state.say("report", f"Cycle {cid} · #{pid} has no new comments "
+                                f"since I read it, so I did not file it twice. "
+                                f"It is shown again in full next cycle.",
                       {"drive": drive})
             state.end_cycle(cid, "already-read")
             return 0
