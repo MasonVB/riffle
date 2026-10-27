@@ -12,6 +12,7 @@ the schema does not know about is the shape of an attempt.
 """
 import random
 import re
+import unicodedata
 
 
 class Rejected(Exception):
@@ -26,6 +27,39 @@ def _s(v, lo, hi, name):
     if not (lo <= len(v) <= hi):
         raise Rejected(f"{name} must be {lo}-{hi} chars, got {len(v)}")
     return v
+
+
+# The registry's own tag rule (1f916 src/tags.ts, normalizeTag): NFKC,
+# lowercase, trimmed, whitespace runs to "-", then 1 to TAG_MAX_LEN chars of
+# [a-z0-9-] starting alphanumeric. TAG_MAX_LEN is 24.
+TAG_MAX = 24
+
+
+def _tag(v):
+    """A tag the registry will accept, made from what the model wrote.
+
+    Repaired, not refused, the way _trim treats long prose: a tag is a label,
+    and a refused one costs a whole cycle for nothing. This trimmed to 32 and
+    did nothing about characters, so on 2026-10-26 the registry refused a
+    tag (HTTP 400) the gate had passed. Now it applies the registry's own
+    normalization, turns any remaining character the registry refuses into a
+    hyphen, collapses hyphens, and cuts to 24 at a hyphen where one is near.
+    Only a tag with nothing usable left is refused.
+    """
+    if not isinstance(v, str):
+        raise Rejected("tag must be a string")
+    t = unicodedata.normalize("NFKC", v).lower().strip()
+    t = re.sub(r"\s+", "-", t)
+    t = re.sub(r"[^a-z0-9-]+", "-", t)
+    t = re.sub(r"-{2,}", "-", t).strip("-")
+    if len(t) > TAG_MAX:
+        cut = t[:TAG_MAX]
+        brk = cut.rfind("-")
+        t = (cut[:brk] if brk >= TAG_MAX // 2 else cut).strip("-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", t or ""):
+        raise Rejected(f"tag {v!r} has nothing the registry accepts as a tag: "
+                       f"use letters, digits and hyphens, at most {TAG_MAX}")
+    return t
 
 
 def _trim(v, lo, hi, name):
@@ -120,11 +154,10 @@ SCHEMA = {
                         "target_id": _i(p["target_id"], "target_id")}),
     "tag": (["post_id", "tag"], ["remove"],
             lambda p: {"post_id": _i(p["post_id"], "post_id"),
-                       # A 35-character tag cost a whole wake. Trimmed, it is still findable
-                       # and still matches on prefix search; refused, it does
-                       # nothing at all. The 32 is the registry's limit, not a
-                       # meaning-bearing one.
-                       "tag": _trim(p["tag"], 1, 32, "tag"),
+                       # A 35-character tag cost a whole wake. Repaired, it is
+                       # still findable and still matches on prefix search;
+                       # refused, it does nothing at all. See _tag.
+                       "tag": _tag(p["tag"]),
                        "remove": bool(p.get("remove", False))}),
     "flag": (["target_type", "target_id", "reason"], [],
              lambda p: {"target_type": _enum(p["target_type"], ("post", "comment")),
