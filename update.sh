@@ -539,7 +539,7 @@ then
   exit 1
 fi
 
-# --- gate 7: no function whose only call is to itself ---------------------
+# --- gate 7: no unconditional self-recursion ------------------------------
 #
 # A patch meant to collapse a duplicated dispatch matched inside the new
 # dispatcher instead of at the call site, so apply_local() became a function
@@ -548,8 +548,9 @@ fi
 # added up. It raised RecursionError the first time anyone approved a queued
 # action.
 #
-# Direct self-recursion with no other call and no obvious base case is never
-# intentional here. This finds it in the AST.
+# A `return <self>(...)` that runs before anything that could stop it is
+# never intentional here, and that is what this finds in the AST. Recursion
+# with a base case passes.
 if ! python3 - <<'PYREC'
 import ast
 import sys
@@ -565,11 +566,12 @@ for path in ("agent/cycle.py", "agent/dash.py", "agent/project.py",
     for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
         # UNCONDITIONAL SELF-CALL AHEAD OF THE BODY.
         #
-        # The len(names)==1 test below only catches a function whose ONLY
-        # call is itself. A self-call inserted ahead of a real body —
-        # `def f(x): return f(x)` followed by the genuine code — passed,
-        # and is just as infinitely recursive. Catch that shape directly:
-        # a bare `return <self>(...)` with nothing guarding it.
+        # An earlier rule here caught only a function whose ONLY call was
+        # itself (it is gone; see the note further down). A self-call
+        # inserted ahead of a real body — `def f(x): return f(x)` followed
+        # by the genuine code — passed it, and is just as infinitely
+        # recursive. Catch that shape directly: a bare `return <self>(...)`
+        # with nothing guarding it.
         #
         # PAST THE DOCSTRING, AND PAST ANYTHING THAT CANNOT END THE CALL.
         # This stopped at the first statement that was not a return, and
@@ -606,7 +608,7 @@ for b in bad:
 sys.exit(1 if bad else 0)
 PYREC
 then
-  echo "!! a function calls only itself; rolling back to $BEFORE"
+  echo "!! a function recurses unconditionally; rolling back to $BEFORE"
   git reset --hard "$BEFORE"
   exit 1
 fi
