@@ -17,8 +17,10 @@ yourself over ssh, and the service account cannot write them.
 import argparse
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
+import socket
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +38,48 @@ from agent.pages import (ACT_PAGE, GOALS_PAGE, HISTORY_EXTRA,  # noqa: E402
 
 
 
+def host_allowed(host_header, cfg, hostname=None):
+    """Whether a request's Host header names this dashboard.
+
+    DNS REBINDING (Q1, audit 2026-10-27). A page your browser opens can point
+    a name it controls at this box and then talk to the dashboard as if it
+    were the same site; the JSON content-type check does not stop that. Such
+    a request always carries the attacker's NAME in its Host header. So:
+      - an IP literal is allowed: rebinding never arrives as one, and it is
+        how the box is reached by LAN or Tailscale address;
+      - an empty Host is allowed: every browser sends one, so an attack has one;
+      - otherwise only this box's own names: its hostname, hostname.local,
+        localhost, notify.dash_host, hostname.<tailnet>.ts.net (names
+        Tailscale controls), and any listed in dash.allowed_hosts.
+    The LAN and tailnet are trusted by design; this only stops a web page
+    reaching in through a browser.
+    """
+    h = (host_header or "").strip().lower()
+    if not h:
+        return True
+    if h.startswith("["):
+        name = h[1:h.index("]")] if "]" in h else h[1:]
+    elif h.count(":") == 1:
+        name = h.split(":", 1)[0]
+    else:
+        name = h                       # bare name, or a bare IPv6 address
+    name = name.rstrip(".")
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    me = (hostname or socket.gethostname()).lower().split(".")[0]
+    ok = {"localhost", me, f"{me}.local",
+          str((cfg.get("notify") or {}).get("dash_host") or "").lower()}
+    ok |= {str(x).lower().rstrip(".") for x in
+           ((cfg.get("dash") or {}).get("allowed_hosts") or [])}
+    if name in ok:
+        return True
+    parts = name.split(".")
+    return len(parts) == 4 and parts[0] == me and parts[-2:] == ["ts", "net"]
+
+
 class Handler(BaseHTTPRequestHandler):
     cfg = state = worker = None
 
@@ -50,7 +94,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    def _host_refused(self):
+        """Refuse, with a 403 that says what to change, if the Host is not
+        this dashboard's (see host_allowed). True if it refused."""
+        host = self.headers.get("Host", "")
+        if host_allowed(host, self.cfg or {}):
+            return False
+        b = (f"This dashboard does not answer to the name {host!r}. If that "
+             f"is how you reach it, add it to dash.allowed_hosts in "
+             f"config.yaml and restart riffle-dash.\n").encode()
+        self.send_response(403)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+        return True
+
     def do_GET(self):
+        if self._host_refused():
+            return
         if _goals_routes(self):
             return
         u = urllib.parse.urlparse(self.path)
@@ -118,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if self._host_refused():
+            return
         # --- cross-site write protection, before anything else -------------
         #
         # The dashboard binds 0.0.0.0:80 with no login, on the grounds that
