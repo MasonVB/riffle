@@ -203,6 +203,10 @@ constraints:
 dash:
   bind: 0.0.0.0
   port: 80
+  # Names the dashboard answers to, beyond its hostname, hostname.local,
+  # hostname.<tailnet>.ts.net, localhost, notify.dash_host and any IP
+  # address. Anything else is refused (DNS-rebinding protection).
+  allowed_hosts: []
 
 # --- notifications --------------------------------------------------------
 # Get both keys from pushover.net: user_key from your dashboard, api_token by
