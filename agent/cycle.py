@@ -182,6 +182,35 @@ def _mark_replied(text, done):
     return "\n".join(out)
 
 
+def _seen_post_of(state, comment_id):
+    """The post on which riffle has SEEN this comment, or None.
+
+    Seen means it reached riffle's inbox, or it is in a thread riffle read
+    (a stored read's comment list or its reply digest)."""
+    cid = int(comment_id)
+    try:
+        r = state.db.execute("SELECT post_id FROM inbox_items WHERE comment_id=?",
+                             (cid,)).fetchone()
+        if r and r["post_id"] is not None:
+            return int(r["post_id"])
+        for r in state.db.execute(
+                "SELECT id, post_id, replies, comments_json FROM thread_reads"
+                " WHERE comments_json LIKE ? OR replies LIKE ?"
+                " ORDER BY id DESC", (f"%{cid}%", f"%[c{cid}]%")):
+            if re.search(rf"\[c{cid}\]", r["replies"] or ""):
+                return int(r["post_id"])
+            try:
+                if any(int(c.get("id") or 0) == cid
+                       for c in json.loads(r["comments_json"] or "[]")
+                       if isinstance(c, dict)):
+                    return int(r["post_id"])
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        return None
+    return None
+
+
 def replied_to(state, parent_id):
     """Riffle's own reply to this comment, if it has made one (sent, or
     waiting on the operator), else None.
@@ -558,6 +587,7 @@ def main():
     _CFG = cfg
     data = os.path.expanduser(cfg["data_dir"])
     state = State(os.path.join(data, "state.sqlite"))
+    _CURRENT["state"] = state
     log = state.log
     reader = Reader(cfg["base"])
     secret_path = os.path.join(data, f"{cfg['handle']}.secret")
@@ -987,7 +1017,13 @@ def main():
 
     moved = walk_changes(state, reader, cfg, log)
 
-    front = reader.front(limit=15).get("posts", [])
+    # Guarded like the listings fetch below. Unguarded, a registry blip here
+    # killed the wake after the witness pass and the inbox ack (H5).
+    try:
+        front = reader.front(limit=15).get("posts", [])
+    except (HttpError, OSError, ValueError) as e:
+        log(f"front page not fetched this cycle: {e}", level="warn")
+        front = []
     # Keep a digest of what was actually on the board this cycle. Next cycle's
     # reflection needs to know what it read, and the front page will have moved
     # by then.
@@ -1276,6 +1312,7 @@ def main():
     # changed nothing. A rule you cannot see is a rule you cannot debug.
 
     cid = state.begin_cycle(drive)
+    _CURRENT["cid"] = cid
     log(f"cycle {cid}: drive={drive}, inbox={len(inbox)}, unseen_front={len(unseen)}, "
         f"open_listings={len(open_listings)}", drive=drive)
 
@@ -2669,14 +2706,11 @@ def main():
         if (payload.get("parent_id") is not None
                 and (not (_rd and _seen) or _unknown)):
             _par = int(payload["parent_id"])
-            _where, _why = None, None
-            try:
-                _ib = state.db.execute(
-                    "SELECT post_id FROM inbox_items WHERE comment_id=?",
-                    (_par,)).fetchone()
-                _where = _ib["post_id"] if _ib else None
-            except Exception:
-                _where = None
+            _why = None
+            # Where riffle has SEEN this comment (inbox or a thread it read),
+            # or None. Only a seen comment may move a reply to another post.
+            _where = _seen_post_of(state, _par)
+            _seen_by_riffle = _where is not None
             if _where is None:
                 try:
                     _where = ((reader.get(f"/api/comment/{_par}") or {})
@@ -2693,20 +2727,30 @@ def main():
                 except Exception as e:
                     log(f"could not check parent {_par}: {e}",
                         level="warn", drive=drive)
-            # A REPLY GOES WHERE ITS PARENT IS. When the parent is real but
-            # on another post, the post id was the mistake, not the reply:
-            # the body answers that comment. It used to be refused (three
-            # times on 2026-10-26, each a whole cycle); now it is sent to the
-            # parent's post, and the report says so.
+            # A REPLY GOES WHERE ITS PARENT IS, but only a parent riffle has
+            # SEEN. A seen comment on another post means the post id was the
+            # slip, and the reply is moved there. An unseen one is refused:
+            # comment ids are dense, so a one-digit typo (riffle has written
+            # 101425 for 101424) almost always names a real comment by
+            # someone else, and moving the reply would publish it to a
+            # stranger riffle never read (H2, audit 2026-10-27). The report
+            # says "aimed", not "sent": the checks below can still refuse it.
             if (_why is None and _where is not None
                     and int(_where) != int(payload["post_id"])):
-                log(f"reply to comment {_par} moved from post "
-                    f"{payload['post_id']} to post {_where}, where that "
-                    f"comment is", level="warn", drive=drive)
-                state.say("report", f"Cycle {cid} \u00b7 comment {_par} is on "
-                          f"post {_where}, not {payload['post_id']}; I sent my "
-                          f"reply there.", {"drive": drive})
-                payload["post_id"] = int(_where)
+                if _seen_by_riffle:
+                    log(f"reply to comment {_par} moved from post "
+                        f"{payload['post_id']} to post {_where}, where that "
+                        f"comment is", level="warn", drive=drive)
+                    state.say("report", f"Cycle {cid} \u00b7 comment {_par} is "
+                              f"on post {_where}, not {payload['post_id']}; the "
+                              f"reply is aimed there instead.", {"drive": drive})
+                    payload["post_id"] = int(_where)
+                else:
+                    _why = (f"comment {_par} is on post {_where}, not post "
+                            f"{payload['post_id']}, and it is not one you have "
+                            f"seen. A slip of one digit lands on a real comment "
+                            f"by someone else: take the comment_id from your "
+                            f"inbox or from a thread you have read.")
             if _why:
                 state.propose(cid, kind, drive, payload, rationale, "blocked")
                 log(f"parent {_par}: {_why}", level="warn", drive=drive)
@@ -3162,8 +3206,11 @@ def _is_own(part):
 
 
 def _is_rule(part):
-    head = (part or "")[:400]
-    return any(k in head for k in _NEVER_TRIM)
+    # AT THE START ONLY, as _is_own. This matched a protected header anywhere
+    # in a block's first 400 chars, so a post titled "WHAT CAN STOP AN
+    # ACTION" made a 9,118-char thread block untrimmable (H3, audit
+    # 2026-10-27). Every protected block begins with its header.
+    return (part or "").lstrip().startswith(_NEVER_TRIM)
 
 
 def _fit(parts, budget, log=None, floor=900, min_floor=250):
@@ -4255,5 +4302,41 @@ def execute(writer, kind, p):
     raise ValueError(f"no executor for {kind}")
 
 
+# The live cycle's state and id, for the crash handler below.
+_CURRENT = {"state": None, "cid": None}
+
+
+def _record_crash(exc):
+    """Make a crash visible: an error in the journal with the traceback (which
+    also triggers a telemetry dump), the cycle closed as `crashed`, and a line
+    in chat. A crash used to show only as an "abandoned" cycle: on 20-21
+    October 33 cycles over 22 hours died on one bug and nothing flagged it
+    (H5, audit 2026-10-27). Best effort: it must never raise itself."""
+    import traceback
+    st, cid = _CURRENT.get("state"), _CURRENT.get("cid")
+    if st is None:
+        return                 # before the database opened; systemd has it
+    short = f"{type(exc).__name__}: {exc}"[:300]
+    try:
+        st.log("cycle crashed: " + short + "\n"
+               + traceback.format_exc()[-3000:], level="error")
+    except Exception:
+        pass
+    try:
+        if cid:
+            st.end_cycle(cid, "crashed", short)
+        st.say("report", f"Cycle {cid or '(not started)'} \u00b7 I crashed: "
+               f"{short}. Nothing more was done this cycle; the traceback is "
+               f"in the journal.", {"drive": "system"})
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as _e:
+        _record_crash(_e)
+        raise
