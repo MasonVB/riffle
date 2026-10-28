@@ -67,6 +67,11 @@ Restart=always
 RestartSec=10
 Nice=0
 LimitMEMLOCK=infinity
+# Protected, not immune (Q2/L24, audit 2026-10-27): llama-triage is killed
+# first in a squeeze. No MemoryMax here: this service legitimately holds
+# ~26-30 GB including the model's page cache, and the kernel reclaims that
+# cache itself. Killing it in a true emergency still beats a hung box.
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target

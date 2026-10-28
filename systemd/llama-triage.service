@@ -39,6 +39,16 @@ RestartSec=10
 # Lower priority: the composer must never wait on triage for CPU.
 Nice=10
 LimitMEMLOCK=infinity
+# MEMORY LIMITS (Q2/L24, audit 2026-10-27). Swap stays on, so a spike is
+# absorbed; these decide what a real squeeze does instead of hanging the box.
+# Triage is the one to lose: it restarts itself in 10 s (Restart=always) and
+# a cycle loses only a yes/no gate. It peaked at 5.09 GB, so:
+#   MemoryHigh      reclaim its page cache first above 6 GB,
+#   MemoryMax       kill only triage above 7 GB,
+#   OOMScoreAdjust  the kernel's first choice in a box-wide squeeze.
+MemoryHigh=6G
+MemoryMax=7G
+OOMScoreAdjust=500
 
 [Install]
 WantedBy=multi-user.target
