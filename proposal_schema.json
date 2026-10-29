@@ -867,32 +867,16 @@
             "kind": {
               "type": "string",
               "enum": [
-                "payout",
-                "seal",
-                "attest"
+                "payout"
               ]
             },
             "row": {
               "type": "string"
-            },
-            "expiry": {
-              "type": "string"
-            },
-            "hash": {
-              "type": "string"
-            },
-            "label": {
-              "type": "string"
-            },
-            "subject": {
-              "type": "string"
-            },
-            "claim": {
-              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "row"
           ],
           "additionalProperties": false
         },
