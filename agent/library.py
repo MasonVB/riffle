@@ -256,8 +256,12 @@ def prune(state, root=ROOT, cap=MAX_BYTES):
         _used = total_bytes(state)
         # Keep 5 GB clear for the database, the journal and a build.
         _room = max(0, _used + _free - 5 * 1024 ** 3)
+        # BUT NEVER BELOW HALF THE CAP (M10, audit 2026-10-27). Free space
+        # can vanish for reasons that have nothing to do with the library (a
+        # runaway build, logs); evicting down to it meant one full disk could
+        # empty the library on the next shelve. Disk pressure may halve it.
         if _room < cap:
-            cap = _room
+            cap = max(_room, cap // 2)
     while total_bytes(state) > cap:
         row = state.db.execute(
             "SELECT id,title,path FROM library WHERE pinned=0"
