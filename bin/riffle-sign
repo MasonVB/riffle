@@ -76,6 +76,7 @@ BASE = "https://1f916.ai"
 PAYOUT_PREFIX = "1f916.payout.v1"
 SEAL_PREFIX = "1f916.seal.v1"
 ATTEST_PREFIX = "1f916.attestation.v1"
+WALLET_PREFIX = "1f916.payout-wallet.v1"
 BIND_PREFIX = "1f916.key-bind.v1"
 REVOKE_PREFIX = "1f916.key-revoke.v1"
 
@@ -366,8 +367,15 @@ def cmd_payout(a):
     for ok, why in checks:
         if not ok:
             die(why)
-    if int(amount) > int(c["max_amount_atomic"]):
-        die(f"amount {amount} is over the ceiling {c['max_amount_atomic']}")
+    # max_amount_atomic=none is the operator choosing no ceiling (2026-10-29),
+    # explicitly: the key must still be present, because a missing setting is
+    # not permission. Any other value is a ceiling in atomic units.
+    _ceil = c["max_amount_atomic"].strip().lower()
+    if _ceil != "none":
+        if not _ceil.isdigit():
+            die(f"max_amount_atomic in {CONF_PATH} must be a number or none")
+        if int(amount) > int(_ceil):
+            die(f"amount {amount} is over the ceiling {_ceil}")
     if int(amount) <= 0:
         die(f"amount {amount} is not positive")
     try:
@@ -386,7 +394,43 @@ def cmd_payout(a):
         required=True)
     sig = sign_bytes(load_seed(), pre.encode("utf-8"))
     print(json.dumps({"preimage": pre, "signature": b64url(sig),
-                      "amount_atomic": amount, "address": address}))
+                      "amount_atomic": amount, "address": address,
+                      "citizen_public_key": b64url(public_key(load_seed()))}))
+
+
+def cmd_payout_wallet(a):
+    """The citizen half of the one-time payout-wallet proof.
+
+    The registry's preimage is 1f916.payout-wallet.v1:<handle>:8453:<address,
+    lowercase>:<expiry> (payouts.ts payoutWalletPreimage). Like a payout, it is
+    FETCHED, then checked field by field against payout.conf, never accepted
+    from the caller. The wallet's own EIP-191 signature over the same bytes is
+    the operator's, made in the wallet; this signs only the citizen half.
+
+    Not in riffle's sudoers rule: proving a wallet is the operator's act, run
+    by hand (payout_wallet.py), so riffle cannot prove a wallet to itself.
+    """
+    c = conf()
+    for required in ("handle", "address"):
+        if not c.get(required):
+            die(f"{CONF_PATH} is missing {required!r}")
+    _addr = payout_address(c).lower()
+    try:
+        expiry = int(a.expiry)
+    except ValueError:
+        die("expiry must be a unix timestamp")
+    q = urllib.parse.urlencode({"handle": c["handle"], "address": _addr,
+                                "expiry": expiry})
+    body = fetch(f"{BASE}/api/payout-wallets/preimage?{q}")
+    pre = body.get("preimage") or body.get("bytes") or ""
+    expect = f"{WALLET_PREFIX}:{c['handle']}:{CHAIN_ID}:{_addr}:{expiry}"
+    if pre != expect:
+        die(f"the registry's preimage {pre[:120]!r} is not the expected {expect!r}")
+    log("SIGNED", {"kind": "payout-wallet", "address": _addr,
+                   "expiry": expiry, "preimage": pre}, required=True)
+    sig = sign_bytes(load_seed(), pre.encode("utf-8"))
+    print(json.dumps({"preimage": pre, "citizen_signature": b64url(sig),
+                      "citizen_public_key": b64url(public_key(load_seed()))}))
 
 
 # --------------------------------------------------------------------------
@@ -505,7 +549,7 @@ def cmd_custom(a):
     except UnicodeDecodeError:
         die("refusing to sign bytes that are not UTF-8 text you could read")
     for prefix in (PAYOUT_PREFIX, SEAL_PREFIX, BIND_PREFIX, REVOKE_PREFIX,
-                   "1f916.payout-funder.v1"):
+                   ATTEST_PREFIX, WALLET_PREFIX, "1f916.payout-funder.v1"):
         if text.startswith(prefix):
             die(f"{prefix} has its own subcommand with real validation; "
                 f"custom will not sign one")
@@ -621,6 +665,11 @@ def main():
     p.add_argument("--row", required=True)
     p.add_argument("--expiry", required=True)
     p.set_defaults(fn=cmd_payout)
+
+    p = sub.add_parser("payout-wallet", help="sign the citizen half of the "
+                       "one-time payout-wallet proof (operator only)")
+    p.add_argument("--expiry", required=True)
+    p.set_defaults(fn=cmd_payout_wallet)
 
     p = sub.add_parser("seal", help="sign a memory seal")
     p.add_argument("--hash", required=True)
