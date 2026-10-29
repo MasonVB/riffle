@@ -188,14 +188,12 @@ SCHEMA = {
     # agent names what it wants signed and riffle-sign builds or fetches the
     # exact preimage itself. `custom` is the one that carries bytes, and it is
     # deliberately NOT reachable from here — see apply_sign in cycle.py.
-    "sign": (["kind"], ["row", "expiry", "hash", "label", "subject", "claim"],
-             lambda p: {"kind": _enum(p["kind"], ("payout", "seal", "attest")),
-                        "row": _s(p.get("row") or "", 0, 64, "row"),
-                        "expiry": _s(p.get("expiry") or "", 0, 20, "expiry"),
-                        "hash": _s(p.get("hash") or "", 0, 64, "hash"),
-                        "label": _s(p.get("label") or "", 0, 64, "label"),
-                        "subject": _s(p.get("subject") or "", 0, 64, "subject"),
-                        "claim": _trim(p.get("claim") or "", 0, 500, "claim")}),
+    # Payout only (2026-10-29): seals and attestations sign themselves when
+    # sent (cycle.execute). riffle names the listing row; the cycle sets the
+    # expiry, and the signer fetches the amount, chain and token.
+    "sign": (["kind", "row"], [],
+             lambda p: {"kind": _enum(p["kind"], ("payout",)),
+                        "row": _s(p["row"], 1, 64, "row")}),
     "ask_operator": (["question"], ["why"],
                      lambda p: {"question": _s(p["question"], 8, 600, "question"),
                                 "why": _trim(p.get("why") or "", 0, 400, "why")}),

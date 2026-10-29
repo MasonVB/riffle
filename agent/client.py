@@ -270,6 +270,11 @@ class Writer:
         """Marks you present for 15 minutes without saying anything."""
         return _req(self.base + "/api/porch/knock", "POST", {}, self._secret)
 
+    def payout_binding(self, body):
+        # body: the signed preimage's fields (amount_atomic a string, chain_id
+        # and expiry numbers) plus citizen_public_key and citizen_signature.
+        return _req(self.base + "/api/payout-bindings", "POST", body, self._secret)
+
     def attest_claim(self, cls, subject, claim, evidence, signature=None):
         b = {"class": cls, "subject": subject, "claim": claim,
              "evidence": list(evidence or [])}

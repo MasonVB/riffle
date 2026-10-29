@@ -72,7 +72,7 @@ _LOCAL_OK = frozenset({
     "cycle-requested", "desk-cleared", "desk-empty-slot", "desk-placed",
     "desk-updated", "fetched", "library-read", "library-searched",
     "library-shelved", "note-added", "page-read", "project-closed",
-    "project-opened", "project-queued", "queued", "remembered", "signed",
+    "project-opened", "project-queued", "queued", "remembered", "payout-bound",
     "thread-exhausted", "thread-read",
 })
 _LOCAL_FAIL = frozenset({
@@ -80,7 +80,7 @@ _LOCAL_FAIL = frozenset({
     "desk-refused", "extra-capped", "fetch-failed", "goal-refused",
     "library-missing", "library-refused", "no-project", "not-read",
     "page-failed", "page-refused", "project-refused", "read-failed",
-    "read-no-project", "sign-failed", "sign-refused",
+    "read-no-project", "sign-failed", "sign-refused", "payout-refused",
 })
 
 
@@ -1483,8 +1483,8 @@ def main():
                  "before deciding nothing needs building.",
         "build": "write Python and run it. No network, standard library, two "
                  "minutes. A failed build costs nothing.",
-        "sign": "ask for a signature. You never see the key and never choose "
-                "the bytes.",
+        "sign": "claim a listing's payout for your operator's wallet. Name the "
+                "row; the rest is fetched, checked and signed for you.",
         "listing_submission": "submit work against a docket row. The artifact "
                               "may be a post id.",
         "add_goal": "if what you keep wanting to do has no drive for it, "
@@ -3841,61 +3841,87 @@ def apply_build(state, cfg, cid, p, drive, log):
 
 
 def apply_sign(state, cfg, cid, p, drive, log):
-    """Ask riffle-sign for a signature. The key is not reachable from here.
+    """Bind a payout for a listing: riffle-sign signs it, then post the binding.
 
-    Only the three template-checked subcommands are exposed. `custom` — bytes
-    the agent composed — is deliberately absent: it is approved by you at a
-    root terminal, not by an action this process can execute. A flag would not
-    be a boundary, because the dashboard runs an approved action as the same
-    user that proposed it.
+    PAYOUT ONLY, AND NOW ACTUALLY USED (2026-10-29). This used to sign a
+    payout, a seal or an attestation and keep the signature in a note that
+    nothing read. Seals and attestations now sign themselves when they are
+    sent (execute). A payout is a claim on a listing's price, paid to the
+    address in /etc/riffle/payout.conf, and it needs two steps: the citizen
+    signature (riffle-sign fetches the registry's exact preimage and checks
+    it against payout.conf before signing) and POST /api/payout-bindings.
+
+    The registry accepts the citizen signature alone only after the
+    operator's one-time wallet proof (payout_wallet.py); until then it
+    refuses the binding and says so, and that refusal is reported here.
+
+    riffle names the row. The expiry is set here, 29 days out (the registry
+    allows 30), because a model writing a unix timestamp is a refusal waiting
+    to happen. The body is built from the SIGNED preimage's fields, never
+    from the proposal, so what is posted is what was signed.
+
+    `custom` (bytes the agent composed) stays absent: the operator approves
+    those at a root terminal, not through an action this process runs.
     """
-    # --opt=value, not --opt value.
-    #
-    # Passed as separate argv items, argparse reads some values beginning
-    # with "-" as the next OPTION. Tested on python 3.12: "-7% divergence"
-    # and "-1.5" are accepted either way, but a single flag-shaped token —
-    # "-x", "--claim", "--" — is refused with an ArgumentError naming the
-    # option rather than the value, which reads like a bug in the signer.
-    # Narrower than it first looks, and still a real refusal of a legitimate
-    # seal label or attestation claim.
-    #
-    # The = form binds the value to the option no matter what it starts
-    # with. There is no shell here (subprocess with a list), so this is
-    # about argparse only, not quoting.
-    kind = p["kind"]
-    argv = ["sudo", "-n", "-u", "riffle-signer", "/usr/local/bin/riffle-sign"]
-    if kind == "payout":
-        argv += ["payout", f"--row={p['row']}", f"--expiry={p['expiry']}"]
-    elif kind == "seal":
-        argv += ["seal", f"--hash={p['hash']}", f"--label={p['label']}"]
-    else:
-        argv += ["attest", f"--subject={p['subject']}", f"--claim={p['claim']}"]
-
+    if p.get("kind") != "payout":
+        why = (f"sign now binds payouts only; seals and attestations are "
+               f"signed when they are sent (kind {p.get('kind')!r})")
+        log(f"sign refused: {why}", level="warn", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 {why}.", {"drive": drive})
+        state.end_cycle(cid, "sign-refused", why)
+        return 0
+    row = str(p.get("row") or "")
+    expiry = int(time.time()) + 29 * 86400
+    # --opt=value: a value starting with "-" is never read as an option.
+    argv = _SIGNER + ["payout", f"--row={row}", f"--expiry={expiry}"]
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
     except (subprocess.TimeoutExpired, OSError) as e:
-        log(f"sign {kind} could not run: {e}", level="error", drive=drive)
+        log(f"payout signing could not run: {e}", level="error", drive=drive)
         state.end_cycle(cid, "sign-failed", str(e)[:300])
         return 0
     if r.returncode != 0:
         why = (r.stderr or "").strip()[:300]
-        log(f"sign {kind} refused: {why}", level="warn", drive=drive)
+        log(f"payout signing refused: {why}", level="warn", drive=drive)
         state.say("error", f"Cycle {cid} \u00b7 the signer refused: {why}")
         state.end_cycle(cid, "sign-refused", why)
         return 0
     try:
         out = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        state.end_cycle(cid, "sign-failed", "signer returned non-JSON")
+        parts = str(out["preimage"]).split(":")
+        version, handle, prow, amount, chain, token, address, pexp = parts
+        body = {"version": version, "handle": handle, "row": prow,
+                "amount_atomic": amount, "chain_id": int(chain),
+                "token": token, "address": address, "expiry": int(pexp),
+                "citizen_public_key": out["citizen_public_key"],
+                "citizen_signature": out["signature"]}
+    except (ValueError, KeyError, TypeError) as e:
+        state.end_cycle(cid, "sign-failed", f"unexpected signer output: {e}"[:300])
         return 0
-    state.note("last_signature", json.dumps({"at": utcnow(), "kind": kind, **out}))
-    log(f"signed {kind}", drive=drive)
-    state.say("report", f"Cycle {cid} \u00b7 signed a {kind}. The preimage and "
-                        f"signature are kept for the action that needs them.",
-              {"drive": drive})
-    state.end_cycle(cid, "signed", kind)
+    _secret = os.path.join(os.path.expanduser(cfg["data_dir"]),
+                           f"{cfg.get('handle', 'riffle')}.secret")
+    try:
+        resp = Writer(cfg["base"], open(_secret).read().strip()).payout_binding(body)
+    except HttpError as e:
+        why = str(e)[:300]
+        log(f"payout binding refused for {prow}: {why}", level="warn", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 the registry refused the payout "
+                            f"binding for {prow}: {why}", {"drive": drive})
+        state.end_cycle(cid, "payout-refused", why)
+        return 0
+    except (OSError, ValueError) as e:
+        state.end_cycle(cid, "sign-failed", str(e)[:300])
+        return 0
+    state.note("last_payout_binding", json.dumps(
+        {"at": utcnow(), "row": prow, "amount_atomic": amount,
+         "address": address, "expiry": int(pexp), "response": resp}))
+    log(f"payout bound: {prow}, {amount} atomic to {address}", drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 bound a payout for {prow}: "
+                        f"{int(amount) / 1e6:.2f} USDC to {address}, valid for 29 "
+                        f"days. It is a claim, not a payment: the listing's "
+                        f"funder decides whether to pay.", {"drive": drive})
+    state.end_cycle(cid, "payout-bound", prow)
     return 0
-
 
 def apply_fetch(state, cfg, reader, writer, cid, p, drive, log):
     """Read one of the square's public surfaces and keep what came back.
