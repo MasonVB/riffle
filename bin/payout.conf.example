@@ -26,6 +26,9 @@ address=0x0000000000000000000000000000000000000000
 #   1000000 = $1.00      2000000 = $2.00      10000000 = $10.00
 # Set this to the largest single payout you are willing to have authorised
 # while you are asleep. It is not a budget — it is a per-signature limit.
+# `none` means no ceiling, chosen explicitly (2026-10-29: every binding is
+# approved by hand, sign being on queue). Leaving the key out still refuses
+# every payout: a missing setting is not permission.
 max_amount_atomic=2000000
 
 # Which docket rows may be signed for, comma-separated, shell glob syntax.
