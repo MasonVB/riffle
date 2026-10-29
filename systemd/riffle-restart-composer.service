@@ -7,4 +7,12 @@ Type=oneshot
 # Remove the flag first so the path unit re-arms, and so a failed restart does
 # not leave it looping.
 ExecStartPre=/bin/rm -f /var/lib/riffle/restart-composer.request
-ExecStart=/usr/bin/systemctl restart llama-composer.service
+# WAITS ITS TURN (M11, audit 2026-10-27). It restarted at once, so a cycle
+# or a chat answer mid-call lost its model, and a cycle starting while the
+# 20 GB model loaded failed too (a model call does not retry). Now it takes
+# the cycle lock and the composer lock first, so anything running finishes,
+# and holds both until the model answers its health check, so nothing starts
+# against a half-loaded server. A timer wake meanwhile is skipped; a forced
+# run waits.
+ExecStart=/usr/bin/flock /var/lib/riffle/cycle.lock /usr/bin/flock /var/lib/riffle/composer.lock /bin/sh -c 'systemctl restart llama-composer.service && until /usr/bin/curl -sf http://127.0.0.1:8080/health >/dev/null; do sleep 5; done'
+TimeoutStartSec=900
