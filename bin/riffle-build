@@ -71,6 +71,10 @@ MAX_FILES = 12
 MAX_BYTES = 200_000          # per file
 MAX_OUTPUT = 20_000          # returned to the agent, per stream
 TIMEOUT = 120
+# Bytes read from a build's output, both streams together. Past this the
+# build is stopped (H1, audit 2026-10-27): it is far more than MAX_OUTPUT can
+# use, and reading more only costs memory and time.
+OUTPUT_BUDGET = 16 * 1024 * 1024
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}\.(py|txt|json|csv|md)\Z")
 
@@ -225,8 +229,12 @@ def main():
     # Without --scope, systemd-run starts a transient service that systemd
     # itself forks, so the full sandboxing set applies. --pipe hands back the
     # child's stdout and stderr; --wait blocks and propagates its exit status.
+    # Named, so a build that prints too much can be stopped by name: killing
+    # the systemd-run client in front of it would not stop the unit itself.
+    unit = f"riffle-build-{run_id}-{os.getpid()}"
     cmd = [
         "systemd-run", "--pipe", "--wait", "--quiet", "--collect",
+        f"--unit={unit}",
         f"--uid={RUN_USER}", f"--gid={RUN_USER}",
         f"--property=RuntimeMaxSec={TIMEOUT}",
         "--property=MemoryMax=1G",
@@ -257,20 +265,28 @@ def main():
         "/usr/bin/python3", "-E", "-s", "-B", entry,
     ]
 
-    timed_out = False
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=TIMEOUT + 15, cwd=work)
-        rc, out, err = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        timed_out, rc, out, err = True, -1, "", "killed after the wall clock ran out"
+    def stop_unit():
+        subprocess.run(["systemctl", "stop", unit], capture_output=True,
+                       timeout=30)
+
+    rc, out_b, err_b, timed_out, over = run_bounded(
+        cmd, work, TIMEOUT + 15, MAX_OUTPUT * 4, OUTPUT_BUDGET, stop_unit)
+    out = out_b.decode("utf-8", "replace")
+    err = err_b.decode("utf-8", "replace")
+    if timed_out:
+        rc, err = -1, (err + "\n" if err else "") + "killed after the wall clock ran out"
+    if over:
+        err = ((err + "\n") if err else "") + (
+            f"[stopped: the build wrote more than {OUTPUT_BUDGET // (1024 * 1024)} "
+            f"MiB of output]")
 
     def clip(s):
         s = s or ""
         return s if len(s) <= MAX_OUTPUT else s[:MAX_OUTPUT] + "\n[...truncated]"
 
     result = {
-        "ok": (rc == 0 and not timed_out),
+        "ok": (rc == 0 and not timed_out and not over),
+        "stopped_for_output": over,
         "run_id": run_id,
         "entry": entry,
         "exit_code": rc,
@@ -288,6 +304,63 @@ def main():
         # artifact has been read out.
         pass
     sys.exit(0 if result["ok"] else 1)
+
+
+def run_bounded(cmd, cwd, timeout, keep_bytes, budget, stop):
+    """Run cmd; keep at most keep_bytes of each stream; read at most budget.
+
+    THIS HELD EVERY BYTE (H1, audit 2026-10-27). It used subprocess.run with
+    capture_output, so all of a build's output sat in this root process's
+    memory before being cut to MAX_OUTPUT. This process runs in the cycle's
+    cgroup, not the build's: a program printing 400 MiB took it to 1.2 GiB,
+    and inside the 120-second limit that could reach tens of gigabytes, into
+    swap. Now both pipes are read in chunks as they fill; only the first
+    keep_bytes of each are kept, and past `budget` bytes in all, or at the
+    deadline, `stop` ends the build itself.
+
+    Returns (exit code, out bytes, err bytes, timed_out, over_budget).
+    """
+    import selectors
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         cwd=cwd)
+    sel = selectors.DefaultSelector()
+    sel.register(p.stdout, selectors.EVENT_READ, "out")
+    sel.register(p.stderr, selectors.EVENT_READ, "err")
+    kept = {"out": bytearray(), "err": bytearray()}
+    total, timed_out, over = 0, False, False
+    deadline = time.monotonic() + timeout
+    while sel.get_map() and not over:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            timed_out = True
+            break
+        for key, _ in sel.select(timeout=min(left, 1.0)):
+            chunk = os.read(key.fileobj.fileno(), 65536)
+            if not chunk:
+                sel.unregister(key.fileobj)
+                continue
+            total += len(chunk)
+            buf = kept[key.data]
+            if len(buf) < keep_bytes:
+                buf += chunk[:keep_bytes - len(buf)]
+            if total > budget:
+                over = True
+                break
+    if timed_out or over:
+        try:
+            stop()
+        except Exception:
+            pass
+        p.kill()
+    sel.close()
+    p.stdout.close()
+    p.stderr.close()
+    try:
+        rc = p.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        rc = p.wait()
+    return rc, bytes(kept["out"]), bytes(kept["err"]), timed_out, over
 
 
 if __name__ == "__main__":
