@@ -297,15 +297,43 @@ def run(state, cfg, log, say=None):
     if len(plan.get("promote") or []) > cap:
         refused.append(f"{len(plan['promote'])} promotions proposed, cap is {cap}")
 
+    # WRITES OBEY THE SAME RULES AS PROMOTIONS (H7c/d, audit 2026-10-27).
+    # A long-term write went straight up, past the daily cap and the action-
+    # log filter. And remember() returns an EXISTING id for a duplicate, which
+    # this then re-tiered: a long-term memory worded like the new note was set
+    # to short term with a 7-day expiry, and the report listed text that was
+    # never stored. Now only a row remember() actually created is tiered, and
+    # a long-term write must pass _EVENT and fit the cap, or goes to short term.
+    _long_written = 0
     for item in (plan.get("write") or [])[:cap]:
         tier = item.get("tier", "short")
-        mid = memory.remember(state, item["text"], kind="self",
-                              source="consolidation")
-        if mid:
-            exp = None if tier == "long" else _expiry(ttl)
-            state.db.execute("UPDATE memories SET tier=?, expires_at=? WHERE id=?",
-                             (tier, exp, mid))
-            written.append((mid, tier, item["text"][:120]))
+        text = item.get("text") or ""
+        if tier == "long":
+            if _EVENT.match(text):
+                refused.append(f"not written to long term, a record of what "
+                               f"you did: {' '.join(text.split())[:70]}...; "
+                               f"kept in short term")
+                tier = "short"
+            elif len(promoted) + _long_written >= cap:
+                refused.append(f"long term is full for today (cap {cap}); "
+                               f"kept in short term: "
+                               f"{' '.join(text.split())[:70]}")
+                tier = "short"
+        _newest = state.db.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM memories").fetchone()["m"]
+        mid = memory.remember(state, text, kind="self", source="consolidation")
+        if not mid:
+            continue
+        if mid <= _newest:
+            refused.append(f"already memory {mid}, left as it was: "
+                           f"{' '.join(text.split())[:70]}")
+            continue
+        exp = None if tier == "long" else _expiry(ttl)
+        state.db.execute("UPDATE memories SET tier=?, expires_at=? WHERE id=?",
+                         (tier, exp, mid))
+        if tier == "long":
+            _long_written += 1
+        written.append((mid, tier, text[:120]))
 
     for item in (plan.get("drop") or []):
         mid = item.get("id")
@@ -334,7 +362,7 @@ def run(state, cfg, log, say=None):
     # Randomness is the point of this path, so it keeps it. It just cannot
     # outrank the rules the chosen promotions obey.
     lucky = []
-    _room = max(0, cap - len(promoted))
+    _room = max(0, cap - len(promoted) - _long_written)
     _eligible = [m for m in passed if not _EVENT.match(
         (state.db.execute("SELECT text FROM memories WHERE id=?",
                           (m,)).fetchone() or {"text": ""})["text"] or "")]

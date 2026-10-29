@@ -43,6 +43,20 @@ def _ensure_fts(state):
     return state._local.fts_ok
 
 
+# Words that turn a statement into its opposite. The near-duplicate key keeps
+# only words over three letters, so "no", "not" and "don't" were invisible to
+# it: "riffle may not sign payouts" matched "riffle may sign payouts" and the
+# correction was dropped as a duplicate (H7a, audit 2026-10-27).
+_NEGATION = re.compile(
+    r"\b(?:no|not|never|none|nobody|nothing|nowhere|neither|nor|cannot|"
+    r"cant|dont|doesnt|didnt|isnt|arent|wasnt|werent|wont|shouldnt|"
+    r"couldnt|wouldnt|mustnt|neednt|hasnt|havent|hadnt|without|\w+n't)\b")
+
+
+def _negated(text):
+    return bool(_NEGATION.search((text or "").lower().replace("\u2019", "'")))
+
+
 def remember(state, text, kind="operator", source=None, pinned=0,
              supersedes=None, ttl_days=7):
     text = re.sub(r"\s+", " ", (text or "")).strip()
@@ -50,8 +64,16 @@ def remember(state, text, kind="operator", source=None, pinned=0,
         return None
     if len(text) > 600:
         text = text[:597] + "…"
+    # A duplicate is a LIVE memory of the SAME KIND (H7a/b, audit 2026-10-27).
+    # Live as everywhere else (line ~213): not superseded and not expired.
+    # Matching expired rows meant a fact that had lapsed could not be learned
+    # again until the row was purged, 30 days later: restating it returned the
+    # dead row. And the same words from the operator and from a citizen are
+    # not the same memory.
+    live = "superseded_by IS NULL AND COALESCE(expired,0)=0"
     dupe = state.db.execute(
-        "SELECT id FROM memories WHERE text=? AND superseded_by IS NULL", (text,)).fetchone()
+        f"SELECT id FROM memories WHERE text=? AND kind=? AND {live}",
+        (text, kind)).fetchone()
     if dupe:
         return dupe["id"]
 
@@ -80,10 +102,13 @@ def remember(state, text, kind="operator", source=None, pinned=0,
         return frozenset(w for w in re.findall(r"[a-z0-9#]+", t.lower())
                          if len(w) > 3)
     incoming = _key(text)
+    neg = _negated(text)
     if len(incoming) >= 4:
         for row in state.db.execute(
-                "SELECT id, text FROM memories WHERE superseded_by IS NULL"
-                " ORDER BY id DESC LIMIT 60"):
+                f"SELECT id, text FROM memories WHERE {live} AND kind=?"
+                " ORDER BY id DESC LIMIT 60", (kind,)):
+            if _negated(row["text"]) != neg:
+                continue                  # a statement and its opposite
             other = _key(row["text"])
             if not other:
                 continue
