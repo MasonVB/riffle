@@ -165,6 +165,14 @@ def on_posted(state, cfg, action_id, log=None):
     A project that produced a post is finished, and it should not matter which
     button sent it.
     """
+    # The reference count (agent/reference.py) moves on every post SENT, by
+    # either path. First, so no early return below can skip it.
+    try:
+        from agent import reference
+        reference.after_post(state, cfg, action_id, log)
+    except Exception as _e:
+        if log:
+            log(f"could not update the post reference count: {_e}")
     until = start_cooldown(state, int((cfg.get("projects") or {})
                                       .get("cooldown_hours", 24)))
     # The project the POST came from, not whichever is active now.

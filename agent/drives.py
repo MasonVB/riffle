@@ -62,6 +62,21 @@ def _tag(v):
     return t
 
 
+def _site(v):
+    """A bare host from whatever riffle wrote: a host, or a URL on it."""
+    if not isinstance(v, str) or not v.strip():
+        raise Rejected("site must be a host such as en.wikipedia.org")
+    h = v.strip().lower()
+    if "://" in h:
+        h = h.split("://", 1)[1]
+    h = h.split("/", 1)[0].split(":", 1)[0]
+    if h.startswith("www.") and h.count(".") > 2:
+        h = h[4:]
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", h):
+        raise Rejected(f"site {v!r} is not a host such as en.wikipedia.org")
+    return h
+
+
 def _trim(v, lo, hi, name):
     """Like _s, but trims prose that runs long instead of refusing it.
 
@@ -197,6 +212,11 @@ SCHEMA = {
     "ask_operator": (["question"], ["why"],
                      lambda p: {"question": _s(p["question"], 8, 600, "question"),
                                 "why": _trim(p.get("why") or "", 0, 400, "why")}),
+    # One site from the reading allowlist and the terms to look for; the
+    # allowlist itself is checked when it runs (cycle.apply_search_web).
+    "search_web": (["site", "query"], [],
+                   lambda p: {"site": _site(p["site"]),
+                              "query": _s(p["query"], 2, 200, "query")}),
     "read_page": (["url"], ["why"],
                   lambda p: {"url": _s(p["url"], 12, 500, "url"),
                              "why": _trim(p.get("why") or "", 0, 300, "why")}),

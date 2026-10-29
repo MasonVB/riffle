@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent import (chat, consolidate, cortex, desk, drives, goals,
                    library, memory,
-                   notify, policy, project)  # noqa: E402  # noqa: E402
+                   notify, policy, project, reference, web)  # noqa: E402
 from agent.client import HttpError, Reader, Writer  # noqa: E402
 from agent import inbox as inbox_mod  # noqa: E402
 from agent.state import State, utcnow  # noqa: E402
@@ -52,7 +52,7 @@ LOCAL_KINDS = ("read_more", "request_cycle", "read_thread", "build", "sign",
                "adjust_drive", "add_goal", "remember",
                "desk_put", "desk_clear",
                "library_put", "library_find", "library_read", "read_page",
-               "ask_operator")
+               "search_web", "ask_operator")
 
 
 # WHAT EACH LOCAL OUTCOME MEANS, said explicitly.
@@ -71,7 +71,7 @@ _LOCAL_OK = frozenset({
     "adjusted", "already-read", "asked", "batch-read", "built",
     "cycle-requested", "desk-cleared", "desk-empty-slot", "desk-placed",
     "desk-updated", "fetched", "library-read", "library-searched",
-    "library-shelved", "note-added", "page-read", "project-closed",
+    "library-shelved", "note-added", "page-read", "project-closed", "searched",
     "project-opened", "project-queued", "queued", "remembered", "payout-bound",
     "thread-exhausted", "thread-read",
 })
@@ -80,6 +80,7 @@ _LOCAL_FAIL = frozenset({
     "desk-refused", "extra-capped", "fetch-failed", "goal-refused",
     "library-missing", "library-refused", "no-project", "not-read",
     "page-failed", "page-refused", "project-refused", "read-failed",
+    "search-failed", "search-refused",
     "read-no-project", "sign-failed", "sign-refused", "payout-refused",
 })
 
@@ -259,6 +260,8 @@ def apply_local(state, cfg, cid, kind, payload, drive, log, rationale=""):
         return apply_library(state, cfg, cid, kind, payload, drive, log)
     if kind == "read_page":
         return apply_read_page(state, cfg, cid, payload, drive, log)
+    if kind == "search_web":
+        return apply_search_web(state, cfg, cid, payload, drive, log)
     if kind == "ask_operator":
         return apply_ask(state, cid, payload, drive, log)
     if kind == "build":
@@ -1133,6 +1136,8 @@ def main():
     # the mention override, the inbox, and the grammar the model writes in.
     _blocked = set(_spent)
     _blocked |= {k for k, m in (cfg.get("autonomy") or {}).items() if m == "never"}
+    if not (cfg.get("web") or {}).get("enabled"):
+        _blocked.add("search_web")          # nothing to search with
     try:
         if project.in_cooldown(state)[0] or not project.ready(state, cfg)[0]:
             _blocked.add("post")
@@ -1502,7 +1507,7 @@ def main():
                 "before you had it.",
         "flag": "if something on the board is wrong in a way that matters, say "
                 "so formally rather than only in a comment.",
-        "porch": "one line, no ranking, no cap. Thank someone, congratulate a "
+        "porch": "one line, no ranking, three a day. Thank someone, congratulate a "
                  "result, or disagree in ordinary words.",
         "knock": "mark yourself present without saying anything.",
         "attestation": "sign a claim about another citizen's work. You have a "
@@ -1520,6 +1525,11 @@ def main():
         "adjust_drive": "if the weights no longer match what is worth doing, "
                         "move one and say why.",
         "close_project": "end a question you have stopped being able to move.",
+        "read_page": "read one page from a reference site. A post that "
+                     "quotes a page you read, with its URL, carries weight a "
+                     "claim from memory does not.",
+        "search_web": "search one reference site for a page worth reading: "
+                      "{\"site\": \"en.wikipedia.org\", \"query\": \"...\"}.",
         "request_cycle": "ask to wake again sooner if something is in flight.",
     }
     if _never:
@@ -1867,6 +1877,47 @@ def main():
                   "is not a contribution.")
         except Exception:
             pass
+
+    # WHAT THE LAST SEARCH FOUND, board side (titles and snippets are other
+    # people's words), for six hours, so riffle can read_page one.
+    _ls = state.note("last_search")
+    if _ls:
+        try:
+            import datetime as _dts      # its own: _dt exists only on some paths
+            _ls = json.loads(_ls)
+            _age = (_dts.datetime.now(_dts.timezone.utc) - _dts.datetime.fromisoformat(
+                _ls["at"].replace("Z", "+00:00"))).total_seconds()
+            if _age < 6 * 3600:
+                parts.append(
+                    f"WHAT YOUR SEARCH FOUND \u2014 {_ls['site']}, "
+                    f"\"{_ls['query']}\" ({len(_ls['results'])} result(s)); "
+                    f"read_page a URL to read it and quote it:\n"
+                    + "\n".join(f"  {r.get('url')} \u2014 {(r.get('title') or '')[:90]}: "
+                                f"{(r.get('snippet') or '')[:200]}"
+                                for r in _ls["results"]))
+        except Exception:
+            pass
+    # THE REFERENCE COUNT FOR POSTS, riffle's own section; protected (via
+    # _NEVER_TRIM) on the post where a reference is required.
+    if "post" not in _blocked:
+        _streak, _ = reference.status(state)
+        if reference.must_reference(state):
+            parts.append(
+                "A POST NOW NEEDS A REFERENCE. Your last "
+                f"{reference.FREE_POSTS} posts quoted no outside source, so the "
+                "next one must: quote the passage you rely on from a page you "
+                "read with read_page, and give that page's URL, e.g. as shown on "
+                "Wikipedia, \"...the page's own words...\" (URL: https://...). "
+                "Find one with search_web, then read_page a result. If what you "
+                "meant to say has no source you can quote, write the post "
+                "around a source you did find.")
+        else:
+            parts.append(
+                "REFERENCES IN POSTS: try to quote an outside source in each "
+                "post, a page you read with read_page, its passage in quotation "
+                "marks and its URL. One post in four must. "
+                f"{reference.FREE_POSTS - _streak} more post(s) may go without "
+                "one before it is required.")
 
     _lf = state.note("last_fetch")
     if _lf:
@@ -2390,6 +2441,11 @@ def main():
                      "produce: write it as 37.5% [[3/8*100]] with the operands "
                      "you actually used, or give the two raw counts instead."
                      if _amb else "")
+            # A source for it (operator's rule, 2026-10-29): the moment a
+            # figure cannot be backed is the moment a reference page helps.
+            _hint += (" If the figure comes from outside the board, back it: "
+                      "search_web a reference site, read_page the result, "
+                      "and quote the line it is on with the page's URL.")
             log(f"numcheck blocked a {kind}: {len(bad)} figure(s) without "
                 f"provenance — " + detail, level="warn", drive=drive)
             state.say("error",
@@ -2881,6 +2937,32 @@ def main():
             state.end_cycle(cid, "already-commented", str(payload.get("post_id")))
             return 0
 
+    # A REFERENCE IN AT LEAST ONE POST IN FOUR (operator's rule, 2026-10-29;
+    # see agent/reference.py). Last of the pre-send checks, so a post refused
+    # for any other reason is not counted against it. Checked here at
+    # proposal; the count itself moves only when a post is SENT (on_posted).
+    if kind == "post" and reference.must_reference(state):
+        _ok_ref, _why_ref = reference.check(
+            state, cfg, "\n".join(str(payload.get(k) or "")
+                                  for k in ("title", "body", "url")))
+        if not _ok_ref:
+            reference.note_refused(state)
+            why = (f"this post needs an external reference and {_why_ref}. "
+                   f"Your last {reference.FREE_POSTS} posts had none. Quote "
+                   f"the passage you rely on from a page you read with "
+                   f"read_page, with its URL, e.g. as shown on Wikipedia, "
+                   f"\"...the words on the page...\" (URL: https://...). To "
+                   f"find one: search_web a reference site, then read_page a "
+                   f"result. If what you meant to say has no source you can "
+                   f"quote, rework the post around a source you did find.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log("post refused: no external reference, and one is due",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "post-needs-reference", _why_ref[:200])
+            return 0
+
     # One reply per comment; see replied_to.
     if kind == "comment" and payload.get("parent_id") is not None:
         _prev = replied_to(state, payload["parent_id"])
@@ -3135,6 +3217,7 @@ def walk_changes(state, reader, cfg, log):
 # Data can be cut: the board digest is a sample of a larger thing and losing
 # some of it costs detail. A rule that is half present is not a rule.
 _NEVER_TRIM = (
+    "A POST NOW NEEDS A REFERENCE",
     # "HOW YOU TAKE PART HERE" is gone from this list: the conduct guide is in
     # the system prompt now, which _fit never touches.
     "YOUR ACTUAL SITUATION",
@@ -3186,6 +3269,8 @@ _NEVER_TRIM = (
 # it; anything that carries other citizens' text stays off this list.
 # Gate 8 refuses an entry here that no string literal starts with.
 _OWN_HEADS = (
+    "A POST NOW NEEDS A REFERENCE",
+    "REFERENCES IN POSTS",
     "YOU MAY NOT PROPOSE THESE TODAY",
     "AN ACTION YOU HAVE NEVER ONCE PROPOSED",
     "WAITING ON YOUR OPERATOR RIGHT NOW",
@@ -3668,6 +3753,74 @@ def source_label(url):
                 "This is an unreviewed preprint: treat it as its authors' claim "
                 "and check a figure from it against a reviewed source.")
     return ("", "")
+
+
+def _reader_domains():
+    """The reading allowlist, from the installed riffle-reader. Empty if absent."""
+    try:
+        out = subprocess.run(["/usr/local/bin/riffle-reader", "--list-domains"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return {str(d).lower() for d in (json.loads(out).get("domains") or [])}
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError,
+            AttributeError):
+        return set()
+
+
+def apply_search_web(state, cfg, cid, p, drive, log):
+    """Search ONE site on the reading allowlist (operator's rule, 2026-10-29).
+
+    The search is always confined to a single allowlisted site: the query is
+    sent as `site:<host> <terms>`, and because a search engine may ignore the
+    operator, every result whose host is not that site is dropped here as
+    well. The results (titles and snippets are strangers' words) are shown on
+    the board side for the next few cycles, so riffle can read_page one and
+    quote it. Backed by web.search: SearXNG on this box; with the `wikipedia`
+    provider only en.wikipedia.org can be searched.
+    """
+    site = p["site"]
+    query = p["query"]
+    allowed = _reader_domains()
+    if not allowed:
+        why = "the reading allowlist is unavailable (riffle-reader did not answer)"
+    elif site not in allowed:
+        why = (f"{site} is not on the reading list; search one of its sites, "
+               f"such as en.wikipedia.org, plato.stanford.edu, docs.python.org "
+               f"or physics.nist.gov")
+    else:
+        why = None
+    w = cfg.get("web") or {}
+    prov = w.get("provider", "wikipedia")
+    if why is None and prov == "wikipedia" and site != "en.wikipedia.org":
+        why = ("only en.wikipedia.org can be searched with the current search "
+               "setting; search Wikipedia, or read_page a URL you know")
+    if why:
+        log(f"search_web refused: {why}", level="warn", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 search refused: {why}",
+                  {"drive": drive})
+        state.end_cycle(cid, "search-refused", why[:200])
+        return 0
+    q = query if prov == "wikipedia" else f"site:{site} {query}"
+    results, note = web.search(cfg, q, n=10)
+
+    def _host(u):
+        return urllib.parse.urlparse(u or "").netloc.lower()
+    keep = [r for r in (results or [])
+            if _host(r.get("url")) == site or _host(r.get("url")).endswith("." + site)]
+    if not results and note:
+        log(f"search_web failed: {note}", level="warn", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 the search did not run: {note}",
+                  {"drive": drive})
+        state.end_cycle(cid, "search-failed", str(note)[:200])
+        return 0
+    state.note("last_search", json.dumps(
+        {"at": utcnow(), "site": site, "query": query, "results": keep[:6]}))
+    log(f"searched {site} for {query[:80]!r}: {len(keep)} result(s) on that site"
+        + (f" ({len(results) - len(keep)} elsewhere dropped)"
+           if len(results) > len(keep) else ""), drive=drive)
+    state.say("report", f"Cycle {cid} \u00b7 searched {site} for \"{query}\": "
+                        f"{len(keep)} result(s)", {"drive": drive})
+    state.end_cycle(cid, "searched", f"{site}: {len(keep)}")
+    return 0
 
 
 def apply_library(state, cfg, cid, kind, p, drive, log):
