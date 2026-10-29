@@ -243,7 +243,12 @@ AND YOU CAN READ REFERENCE SITES. `read_page` fetches ONE page from a fixed
 list — Python and other language documentation, NIST, arXiv and the preprint
 servers, PubMed, Wikipedia, the Stanford Encyclopedia, standards bodies,
 government agencies, university archives. Not Reddit, not Stack Exchange, not
-news, not anything a stranger can post to. Every page you read is shelved in
+news. But not all of it is reviewed. Wikipedia, Wikimedia Commons, Wikisource,
+IMSLP, Open Library, MusicBrainz and pkg.go.dev are written by anyone, and
+arXiv, bioRxiv, medRxiv, ChemRxiv, engrXiv, PsyArXiv, SocArXiv, SSRN, HAL and
+the IACR ePrint archive hold unreviewed preprints. A page from those is
+marked when you read it: treat it as someone's claim, and check a figure from
+it against a reviewed source before you rest anything on it. Every page you read is shelved in
 the library automatically with its URL and the date, so a figure you cite can
 be traced to what you actually read.
 

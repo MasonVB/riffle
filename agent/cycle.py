@@ -3607,11 +3607,15 @@ def apply_read_page(state, cfg, cid, p, drive, log):
 
     text = out.get("text") or ""
     lcfg = cfg.get("library") or {}
-    title = f"{urllib.parse.urlparse(out['url']).netloc}: {url.rsplit('/', 1)[-1][:80] or 'page'}"
+    _tag, _warn = source_label(out["url"])
+    title = (f"{urllib.parse.urlparse(out['url']).netloc}: "
+             f"{url.rsplit('/', 1)[-1][:80] or 'page'}"
+             + (f" [{_tag}]" if _tag else ""))
     try:
         did, _ = library.put(
             state, title, text, kind="page",
-            tags=urllib.parse.urlparse(out["url"]).netloc,
+            tags=urllib.parse.urlparse(out["url"]).netloc
+                 + (f" {_tag.replace(' ', '-')}" if _tag else ""),
             summary=(p.get("why") or "")[:600], source=out["url"],
             root=lcfg.get("root", library.ROOT),
             cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
@@ -3621,16 +3625,49 @@ def apply_read_page(state, cfg, cid, p, drive, log):
 
     state.note("last_library_read",
                f"{out['url']}  (fetched {utcnow()}, {out['chars']} chars"
-               + (f", shelved as #{did}" if did else "") + ")\n\n"
+               + (f", shelved as #{did}" if did else "") + ")\n"
+               + (f"{_warn}\n" if _warn else "") + "\n"
                + text[:9000])
     log(f"read {out['url'][:90]} ({out['chars']} chars"
         + (f", shelved #{did}" if did else "") + ")", drive=drive)
     state.say("report", f"Cycle {cid} \u00b7 read {out['url']}"
+                        + (f" ({_tag})" if _tag else "")
                         + (f"\n{p['why']}" if p.get("why") else "")
                         + (f"\nShelved as library #{did}." if did else ""),
               {"drive": drive})
     state.end_cycle(cid, "page-read", out["url"][:120])
     return 0
+
+
+# HOSTS ON riffle-reader's ALLOWLIST THAT ARE NOT REVIEWED (M12, audit
+# 2026-10-27). The system prompt said the list held nothing a stranger could
+# post to while naming Wikipedia and arXiv on it. Removing these would cost
+# most of riffle's general reference, so they stay, labelled: in the system
+# prompt, in what riffle is shown when it reads one, and in the library entry,
+# so the label is there whenever the page is found again. Each must also be on
+# the reader's ALLOWED list; one that is not is dead weight here.
+OPEN_EDIT_HOSTS = {
+    "en.wikipedia.org", "commons.wikimedia.org", "en.wikisource.org",
+    "imslp.org", "openlibrary.org", "musicbrainz.org", "pkg.go.dev"}
+PREPRINT_HOSTS = {
+    "arxiv.org", "www.biorxiv.org", "www.medrxiv.org", "chemrxiv.org",
+    "engrxiv.org", "psyarxiv.com", "socarxiv.org", "www.ssrn.com",
+    "hal.science", "eprint.iacr.org"}
+
+
+def source_label(url):
+    """("short tag", "sentence for riffle"), or ("", "") for a reviewed host."""
+    host = urllib.parse.urlparse(url or "").netloc.lower()
+    if host in OPEN_EDIT_HOSTS:
+        return ("written by anyone",
+                "This page is written by anyone (an open wiki or open upload): "
+                "treat it as someone's claim and check a figure from it against "
+                "a reviewed source.")
+    if host in PREPRINT_HOSTS:
+        return ("unreviewed preprint",
+                "This is an unreviewed preprint: treat it as its authors' claim "
+                "and check a figure from it against a reviewed source.")
+    return ("", "")
 
 
 def apply_library(state, cfg, cid, kind, p, drive, log):
