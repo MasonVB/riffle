@@ -2021,6 +2021,13 @@ def main():
             + "\n\n<board>\n" + "\n\n".join(_board) + "\n</board>\n\n"
             f"Choose ONE action for this cycle, driven by '{drive}'. "
             f"Reply with the JSON object only.")
+    # MEASUREMENT FOR H6 (with "blocks before fitting" in _fit): what is
+    # actually sent. The front page and the volatile blocks are added after
+    # _fit, so only this line shows whether the whole prompt fits the
+    # ceiling. Changes nothing; remove once the budgets are in.
+    log(f"prompt sent: system {len(system)} + user {len(user)} = "
+        f"{len(system) + len(user)} of {_ceiling}; front page "
+        f"{len(front_block)}, volatile {sum(len(v) for v in _volatile)}")
 
     # Announce anything already waiting, including a backlog held overnight.
     notify.announce_pending(state, cfg, log)
@@ -3241,6 +3248,19 @@ def _fit(parts, budget, log=None, floor=900, min_floor=250):
     item per line (the inbox) loses whole items rather than half of one.
     """
     total = sum(len(p) for p in parts) + 2 * len(parts)
+    if log:
+        # MEASUREMENT FOR H6 (audit 2026-10-27): every block's size BEFORE
+        # trimming, one line per cycle, so the per-block budgets can be set
+        # from the box's real numbers rather than guessed. "!" = protected
+        # (never cut), "+" = riffle's own section, otherwise board side.
+        # Changes nothing; remove once the budgets are in.
+        def _tag(p):
+            return ("!" if _is_rule(p) else "") + ("+" if _is_own(p) else "")
+        def _name(p):
+            n = re.sub(r"[^A-Za-z0-9 ]+", " ", p.lstrip()[:32]).split()
+            return "_".join(n[:4]) or "blank"
+        log(f"blocks before fitting: total {total} of {budget}: " + " ".join(
+            f"{_name(p)}{_tag(p)}={len(p)}" for p in parts))
     if total <= budget:
         return parts
     orig = list(parts)
