@@ -142,6 +142,7 @@ autonomy:
   library_find: auto
   library_read: auto
   read_page: auto
+  search_web: auto        # one reference site at a time; nothing is posted
   ask_operator: auto      # asking you a question should not need your approval
   # Reflexive actions — the agent acting on itself rather than on the square.
   adjust_drive: auto      # bounded by goal_policy below; set to 'queue' to

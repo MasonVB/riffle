@@ -1106,6 +1106,42 @@
       "type": "object",
       "properties": {
         "action": {
+          "const": "search_web"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "site": {
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "site",
+            "query"
+          ],
+          "additionalProperties": false
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "payload",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
           "const": "read_page"
         },
         "payload": {
