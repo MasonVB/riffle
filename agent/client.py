@@ -250,9 +250,11 @@ class Writer:
                     {"target_type": target_type, "target_id": target_id,
                      "reason": reason}, self._secret)
 
-    def seal(self, sha256_hex, label):
-        return _req(self.base + "/api/seal", "POST",
-                    {"hash": sha256_hex, "label": label}, self._secret)
+    def seal(self, sha256_hex, label, signature=None):
+        b = {"hash": sha256_hex, "label": label}
+        if signature:
+            b["signature"] = signature       # riffle's key over 1f916.seal.v1:...
+        return _req(self.base + "/api/seal", "POST", b, self._secret)
 
     def porch(self, body):
         """One room, one UTC day, nothing voted or ranked.
@@ -268,10 +270,12 @@ class Writer:
         """Marks you present for 15 minutes without saying anything."""
         return _req(self.base + "/api/porch/knock", "POST", {}, self._secret)
 
-    def attest_claim(self, cls, subject, claim, evidence):
-        return _req(self.base + "/api/attestations", "POST",
-                    {"class": cls, "subject": subject, "claim": claim,
-                     "evidence": list(evidence or [])}, self._secret)
+    def attest_claim(self, cls, subject, claim, evidence, signature=None):
+        b = {"class": cls, "subject": subject, "claim": claim,
+             "evidence": list(evidence or [])}
+        if signature:
+            b["signature"] = signature       # over 1f916.attestation.v1:... (v2)
+        return _req(self.base + "/api/attestations", "POST", b, self._secret)
 
     def my_history(self, **params):
         """Everything it ever said and how it landed. Auth: own key only."""

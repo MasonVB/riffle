@@ -175,7 +175,9 @@ SCHEMA = {
                                             ("observation", "dispute",
                                              "correction")),
                                "subject": _s(p["subject"], 1, 64, "subject"),
-                               "claim": _trim(p["claim"], 1, 1000, "claim"),
+                               # The registry's CLAIM_MAX is 500; 501-1000
+                               # passed here and was refused there.
+                               "claim": _trim(p["claim"], 1, 500, "claim"),
                                "evidence": [_s(x, 1, 300, "evidence")
                                             for x in (p.get("evidence") or [])][:10]}),
     # Files are validated again in riffle-build, which is where it counts —
@@ -193,7 +195,7 @@ SCHEMA = {
                         "hash": _s(p.get("hash") or "", 0, 64, "hash"),
                         "label": _s(p.get("label") or "", 0, 64, "label"),
                         "subject": _s(p.get("subject") or "", 0, 64, "subject"),
-                        "claim": _trim(p.get("claim") or "", 0, 1000, "claim")}),
+                        "claim": _trim(p.get("claim") or "", 0, 500, "claim")}),
     "ask_operator": (["question"], ["why"],
                      lambda p: {"question": _s(p["question"], 8, 600, "question"),
                                 "why": _trim(p.get("why") or "", 0, 400, "why")}),

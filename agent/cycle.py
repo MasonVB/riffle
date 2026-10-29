@@ -4289,7 +4289,9 @@ def execute(writer, kind, p):
     if kind == "flag":
         return writer.flag(p["target_type"], p["target_id"], p["reason"])
     if kind == "seal":
-        return writer.seal(p["hash"], p["label"])
+        return _send_signed(
+            lambda sig: writer.seal(p["hash"], p["label"], signature=sig),
+            "seal", [f"--hash={p['hash']}", f"--label={p['label']}"])
     if kind == "listing_submission":
         return writer.submit_work(p["listing_id"], p["artifact"], p["note"])
     if kind == "porch":
@@ -4297,9 +4299,61 @@ def execute(writer, kind, p):
     if kind == "knock":
         return writer.knock()
     if kind == "attestation":
-        return writer.attest_claim(p["cls"], p["subject"], p["claim"],
-                                   p.get("evidence") or [])
+        ev = p.get("evidence") or []
+        return _send_signed(
+            lambda sig: writer.attest_claim(p["cls"], p["subject"], p["claim"],
+                                            ev, signature=sig),
+            "attest", [f"--subject={p['subject']}", f"--claim={p['claim']}",
+                       f"--cls={p['cls']}", f"--evidence={json.dumps(ev)}"])
     raise ValueError(f"no executor for {kind}")
+
+
+# SIGNING SEALS AND ATTESTATIONS (Q4, audit 2026-10-27). The registry accepts
+# an optional Ed25519 signature on both, checked against riffle's bound key
+# and recorded as `signed: true`; without one it records "unsigned
+# (bearer-authenticated)". Nothing ever sent one: `sign` put its signature in
+# a note nothing read. Now execute() asks riffle-sign for the signature and
+# sends it with the action. riffle-sign rebuilds the exact preimage the
+# registry verifies from the same fields, so it is never handed bytes.
+#
+# SIGNING IS NEVER WHY AN ACTION FAILS. If the signer cannot run (from the
+# dashboard it cannot: its unit sets NoNewPrivileges, which blocks sudo) or
+# refuses, the action goes unsigned, as before, and its response records
+# why. If the registry refuses the signature itself, the action is sent once
+# more, unsigned. Any other failure is raised as it always was.
+_SIGNER = ["sudo", "-n", "-u", "riffle-signer", "/usr/local/bin/riffle-sign"]
+
+
+def _signature(kind, args):
+    """(signature, None) from riffle-sign, or (None, why not)."""
+    try:
+        r = subprocess.run(_SIGNER + [kind] + args, capture_output=True,
+                           text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return None, f"the signer could not run: {e}"
+    if r.returncode != 0:
+        return None, f"the signer refused: {(r.stderr or '').strip()[:200]}"
+    try:
+        sig = json.loads(r.stdout).get("signature")
+    except (ValueError, AttributeError):
+        return None, "the signer returned non-JSON"
+    return (sig, None) if sig else (None, "the signer returned no signature")
+
+
+def _send_signed(send, kind, args):
+    """send(signature), signed when riffle-sign can sign, unsigned otherwise."""
+    sig, why = _signature(kind, args)
+    if sig:
+        try:
+            return send(sig)
+        except HttpError as e:
+            if e.status != 400 or "signature" not in str(e.body).lower():
+                raise
+            why = f"the registry refused the signature: {str(e.body)[:200]}"
+    resp = send(None)
+    if isinstance(resp, dict):
+        resp = dict(resp, unsigned_because=why)
+    return resp
 
 
 # The live cycle's state and id, for the crash handler below.
