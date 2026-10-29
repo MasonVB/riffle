@@ -443,6 +443,11 @@ class Handler(BaseHTTPRequestHandler):
         cls._tel_started = True
         from agent import telemetry
         telemetry.install(cls.state, cls.cfg)
+        try:
+            telemetry.keep_last_boot(cls.state, cls.state.log)
+        except Exception as e:
+            cls.state.log(f"could not keep the last boot's telemetry: {e}",
+                          level="warn")
 
         def loop():
             import time as _t

@@ -37,6 +37,9 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS telemetry (
   id INTEGER PRIMARY KEY, ts TEXT, kind TEXT, label TEXT, payload TEXT);
 CREATE INDEX IF NOT EXISTS ix_tel_ts ON telemetry(ts);
+CREATE TABLE IF NOT EXISTS telemetry_kept (
+  id INTEGER PRIMARY KEY, boot TEXT, ts TEXT, kind TEXT, label TEXT, payload TEXT);
+CREATE INDEX IF NOT EXISTS ix_telkept_boot ON telemetry_kept(boot);
 """
 
 UNITS = ("llama-composer", "llama-triage", "riffle-dash", "riffle-cycle.timer",
@@ -375,6 +378,56 @@ def _ago(hours=24):
                 "+00:00", "Z")
 
 
+def boot_id():
+    """This boot's id from the kernel; it changes on every boot. "" if unreadable."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def keep_last_boot(state, log=None, hours=1):
+    """On a new boot, keep the previous boot's last hour of telemetry.
+
+    M6, audit 2026-10-27. Everything, dumps included, was pruned after 24
+    hours, so the minutes before a reset were gone a day later: the query for
+    the 23 October resets came back empty. Called when the dashboard starts.
+    If the boot id differs from the one recorded last time, the rows tagged
+    with the previous boot (every row carries its boot id) are found, and
+    those in the last `hours` of that boot's own timestamps are copied to
+    telemetry_kept. Selecting by boot id, not by clock, matters here: this
+    box's BIOS logs RTC power loss, so the clock can be wrong after a reset.
+    Returns how many rows were kept.
+    """
+    ensure(state)
+    cur = boot_id()
+    prev = state.note("telemetry_boot") or ""
+    if not cur or cur == prev:
+        return 0
+    state.note("telemetry_boot", cur)
+    if not prev:
+        return 0                  # the first boot this has seen: nothing to compare
+    rows = state.db.execute(
+        "SELECT ts, kind, label, payload FROM telemetry"
+        " WHERE json_extract(payload, '$.boot') = ? ORDER BY ts", (prev,)).fetchall()
+    if not rows:
+        return 0
+    last = dt.datetime.fromisoformat(rows[-1]["ts"].replace("Z", "+00:00"))
+    lo = (last - dt.timedelta(hours=hours)).isoformat(
+        timespec="seconds").replace("+00:00", "Z")
+    kept = [r for r in rows if r["ts"] >= lo]
+    state.db.executemany(
+        "INSERT INTO telemetry_kept (boot, ts, kind, label, payload) VALUES (?,?,?,?,?)",
+        [(prev, r["ts"], r["kind"], r["label"], r["payload"]) for r in kept])
+    state.db.commit()
+    if log:
+        log(f"new boot: kept the previous boot's last {hours}h of telemetry, "
+            f"{len(kept)} row(s) ending {rows[-1]['ts']}, in telemetry_kept "
+            f"(boot {prev[:8]})")
+    return len(kept)
+
+
 def _now():
     return dt.datetime.now(dt.timezone.utc).isoformat(
         timespec="seconds").replace("+00:00", "Z")
@@ -383,7 +436,7 @@ def _now():
 # -------------------------------------------------------------------- writing
 def sample(state, cfg, label="tick"):
     ensure(state)
-    payload = {"mem": memory(), "cpu": cpu(), "temps": temps(),
+    payload = {"boot": boot_id(), "mem": memory(), "cpu": cpu(), "temps": temps(),
                "fans": fans(), "cores": cores(label),
                "procs": processes(), "diskio": diskio(label),
                "net": network(),
@@ -399,7 +452,7 @@ def sample(state, cfg, label="tick"):
 def dump(state, cfg, label, note=""):
     """Everything, because something went wrong and the cost no longer matters."""
     ensure(state)
-    payload = {"note": note[:2000],
+    payload = {"boot": boot_id(), "note": note[:2000],
                "mem": memory(), "cpu": cpu(), "temps": temps(),
                "fans": fans(), "cores": cores(label),
                "procs": processes(), "diskio": diskio(label),
@@ -459,11 +512,29 @@ def _journal_tail(unit, n):
         return [f"({type(e).__name__}: {e})"[:120]]
 
 
-def prune(state, hours=24):
+def prune(state, hours=24, dump_days=21, max_dumps=500, kept_days=90):
+    """Samples after `hours`; dumps after `dump_days`, at most `max_dumps`
+    of them past that first day; the per-boot copies after `kept_days`.
+
+    Dumps used to go after 24 hours with everything else (M6). They are kept
+    longer now, but capped by count too: every error in the journal takes
+    one, with no rate limit, and errors have come in runs.
+    """
     ensure(state)
-    cur = state.db.execute("DELETE FROM telemetry WHERE ts < ?", (_ago(hours),))
+    cur = state.db.execute(
+        "DELETE FROM telemetry WHERE ts < ? AND kind != 'dump'", (_ago(hours),))
+    n = cur.rowcount
+    n += state.db.execute(
+        "DELETE FROM telemetry WHERE kind = 'dump' AND ts < ?",
+        (_ago(dump_days * 24),)).rowcount
+    n += state.db.execute(
+        "DELETE FROM telemetry WHERE kind = 'dump' AND ts < ? AND id NOT IN"
+        " (SELECT id FROM telemetry WHERE kind = 'dump' ORDER BY id DESC LIMIT ?)",
+        (_ago(hours), max_dumps)).rowcount
+    n += state.db.execute(
+        "DELETE FROM telemetry_kept WHERE ts < ?", (_ago(kept_days * 24),)).rowcount
     state.db.commit()
-    return cur.rowcount
+    return n
 
 
 def recent(state, limit=400, kind=None):
