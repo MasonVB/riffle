@@ -75,6 +75,20 @@ TIMEOUT = 120
 # build is stopped (H1, audit 2026-10-27): it is far more than MAX_OUTPUT can
 # use, and reading more only costs memory and time.
 OUTPUT_BUDGET = 16 * 1024 * 1024
+# DISK (M10, audit 2026-10-27). The work directory is on the main disk with
+# no size limit, so 120 seconds of writes could fill it. A build is stopped
+# if free space falls more than DISK_BUDGET below where it started, or below
+# DISK_FLOOR; LimitFSIZE caps any single file as a second line.
+DISK_BUDGET = 2 * 1024 ** 3
+DISK_FLOOR = 1024 ** 3
+KEEP_FAILED = 20          # failed builds' directories kept, newest first
+# HIDDEN, NOT JUST READ-ONLY (M9). ProtectSystem=strict makes the filesystem
+# read-only, but anything world-readable could still be READ: config.yaml with
+# the notification keys, and whatever else is readable under riffle's state
+# and library. A build's output reaches the prompt and can be posted. "-"
+# means a path that does not exist is skipped rather than failing the unit.
+HIDDEN = ("/opt/riffle", "/etc/riffle", "/var/lib/riffle",
+          "/var/lib/riffle-library", "/var/lib/riffle-signer")
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}\.(py|txt|json|csv|md)\Z")
 
@@ -253,6 +267,8 @@ def main():
         "--property=LockPersonality=yes",
         "--property=NoNewPrivileges=yes",
         f"--property=ReadWritePaths={work}",
+        "--property=LimitFSIZE=512M",
+        "--property=InaccessiblePaths=" + " ".join(f"-{p}" for p in HIDDEN),
         f"--property=WorkingDirectory={work}",
         "--",
         # -E -s, deliberately NOT -I. Since 3.11 -I implies -P, which drops
@@ -269,13 +285,28 @@ def main():
         subprocess.run(["systemctl", "stop", unit], capture_output=True,
                        timeout=30)
 
+    disk_reason = []
+    start_free = shutil.disk_usage(BUILD_ROOT).free
+
+    def disk_check():
+        free = shutil.disk_usage(BUILD_ROOT).free
+        if free < DISK_FLOOR or start_free - free > DISK_BUDGET:
+            disk_reason.append(
+                f"[stopped: the build wrote too much to disk; free space fell "
+                f"from {start_free // 1024 ** 2} MiB to {free // 1024 ** 2} MiB]")
+            return True
+        return False
+
     rc, out_b, err_b, timed_out, over = run_bounded(
-        cmd, work, TIMEOUT + 15, MAX_OUTPUT * 4, OUTPUT_BUDGET, stop_unit)
+        cmd, work, TIMEOUT + 15, MAX_OUTPUT * 4, OUTPUT_BUDGET, stop_unit,
+        check=disk_check)
     out = out_b.decode("utf-8", "replace")
     err = err_b.decode("utf-8", "replace")
     if timed_out:
         rc, err = -1, (err + "\n" if err else "") + "killed after the wall clock ran out"
-    if over:
+    if over and disk_reason:
+        err = ((err + "\n") if err else "") + disk_reason[0]
+    elif over:
         err = ((err + "\n") if err else "") + (
             f"[stopped: the build wrote more than {OUTPUT_BUDGET // (1024 * 1024)} "
             f"MiB of output]")
@@ -286,7 +317,8 @@ def main():
 
     result = {
         "ok": (rc == 0 and not timed_out and not over),
-        "stopped_for_output": over,
+        "stopped_for_output": over and not disk_reason,
+        "stopped_for_disk": bool(disk_reason),
         "run_id": run_id,
         "entry": entry,
         "exit_code": rc,
@@ -298,15 +330,28 @@ def main():
     }
     print(json.dumps(result))
 
-    if not a.keep and not result["ok"]:
-        # A failed run keeps its directory: the point of a failure is to be
-        # looked at. A successful one is cleaned up by the caller once the
-        # artifact has been read out.
-        pass
+    # CLEANED UP HERE (M10). The comment that stood here said the caller
+    # removed a successful run's directory once it had read an artifact out;
+    # nothing does (the cycle reads stdout and stderr only), so every build's
+    # directory stayed for good. A successful one is removed now; failed ones
+    # are kept to be looked at, the newest KEEP_FAILED of them.
+    if not a.keep:
+        # A build stopped for filling the disk is removed too: what it left
+        # is the problem, not evidence, and keeping KEEP_FAILED of them could
+        # hold tens of gigabytes.
+        if result["ok"] or result["stopped_for_disk"]:
+            shutil.rmtree(work, ignore_errors=True)
+        try:
+            olds = sorted((e for e in os.scandir(BUILD_ROOT) if e.is_dir()),
+                          key=lambda e: e.stat().st_mtime, reverse=True)
+            for e in olds[KEEP_FAILED:]:
+                shutil.rmtree(e.path, ignore_errors=True)
+        except OSError:
+            pass
     sys.exit(0 if result["ok"] else 1)
 
 
-def run_bounded(cmd, cwd, timeout, keep_bytes, budget, stop):
+def run_bounded(cmd, cwd, timeout, keep_bytes, budget, stop, check=None):
     """Run cmd; keep at most keep_bytes of each stream; read at most budget.
 
     THIS HELD EVERY BYTE (H1, audit 2026-10-27). It used subprocess.run with
@@ -317,6 +362,9 @@ def run_bounded(cmd, cwd, timeout, keep_bytes, budget, stop):
     swap. Now both pipes are read in chunks as they fill; only the first
     keep_bytes of each are kept, and past `budget` bytes in all, or at the
     deadline, `stop` ends the build itself.
+
+    `check`, if given, is called about once a second; when it returns true
+    the build is stopped the same way (the caller knows why).
 
     Returns (exit code, out bytes, err bytes, timed_out, over_budget).
     """
@@ -329,11 +377,17 @@ def run_bounded(cmd, cwd, timeout, keep_bytes, budget, stop):
     kept = {"out": bytearray(), "err": bytearray()}
     total, timed_out, over = 0, False, False
     deadline = time.monotonic() + timeout
+    next_check = time.monotonic()
     while sel.get_map() and not over:
         left = deadline - time.monotonic()
         if left <= 0:
             timed_out = True
             break
+        if check and time.monotonic() >= next_check:
+            next_check = time.monotonic() + 1.0
+            if check():
+                over = True
+                break
         for key, _ in sel.select(timeout=min(left, 1.0)):
             chunk = os.read(key.fileobj.fileno(), 65536)
             if not chunk:
