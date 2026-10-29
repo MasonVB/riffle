@@ -1908,6 +1908,9 @@ def main():
     _thread = project.recent_thread(state, cfg, budget=int(budget * 0.40))
     if _thread:
         parts.append(_mark_replied(_thread, _replied_ids(state)))
+    _titles = project.read_titles(state)        # board side: strangers' titles
+    if _titles:
+        parts.append(_titles)
     # Only riffle's own and the operator's memories are trusted. The rest
     # (incidental notes, legacy `board` rows) can paraphrase strangers, so
     # they go board-side under a header with no trusted prefix.
@@ -4155,8 +4158,11 @@ def apply_read_thread(state, cfg, cid, p, drive):
         try:
             project.add_note(
                 state, proj["id"], cid, "source",
-                f"Read #{pid} \"{title[:90]}\" by {author}: {len(body)} chars, "
-                f"{total} replies. Full text is in your project block this "
+                # No title (H4): a project note is riffle's own words, and a
+                # title is a stranger's. The handle is the registry's
+                # (letters, digits, . _ -), and the title is on the board side.
+                f"Read #{pid} by {author}: {len(body)} chars, "
+                f"{total} replies. Full text is in the board section this "
                 f"cycle — write down what mattered before it drops to a "
                 f"reference.", source=f"1f916:{pid}")
         except ValueError:

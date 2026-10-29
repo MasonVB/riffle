@@ -552,10 +552,14 @@ def as_context(state, cfg, budget=5000, include_thread=True, include_next=True):
                         + render_read(newest, read_budget)
                         + _unread_hint(state, newest))
         if len(rs) > 1:
+            # IDS ONLY (H4, audit 2026-10-27). This listed each thread by its
+            # title, which is whatever a stranger typed, inside riffle's own
+            # project block. The titles are on the board side now
+            # (read_titles), where strangers' words belong.
             head.append("THREADS YOU HAVE ALREADY READ — do not read them "
-                        "again, what mattered is in your notes:\n"
-                        + "\n".join(f"  #{r['post_id']} {r['title'][:70]}"
-                                    for r in rs[1:]))
+                        "again, what mattered is in your notes: "
+                        + ", ".join(f"#{r['post_id']}" for r in rs[1:])
+                        + " (their titles are in the board section)")
 
     # NEWEST FIRST into the budget, then shown oldest-first.
     #
@@ -660,6 +664,23 @@ def next_step(state, cfg):
     ok, _why = ready(state, cfg)
     nxt = None if cooling and ok else missing_kind(state, cfg, proj["id"])
     return f"THE ONE THING TO DO NEXT ON THIS PROJECT: {nxt}." if nxt else ""
+
+
+def read_titles(state, limit=20):
+    """The titles of the threads read on the active project, for <board>.
+
+    A title is a stranger's words, so it is listed here, on the board side,
+    and riffle's own project block carries only the ids (H4)."""
+    proj = active(state)
+    if not proj:
+        return ""
+    rs = reads(state, proj["id"])
+    if not rs:
+        return ""
+    return ("THREADS YOU HAVE READ ON THIS PROJECT, titled as their authors "
+            "wrote them:\n"
+            + "\n".join(f"  #{r['post_id']} {(r['title'] or '')[:70]} "
+                        f"(by {r['author']})" for r in rs[:limit]))
 
 
 def resurface(state, read_id):

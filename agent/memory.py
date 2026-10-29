@@ -512,16 +512,33 @@ def extract(state, cfg, exchange, source):
     return made
 
 
+_SUBJECT = re.compile(r"\s*[*_`]*\s*(me|self|riffle|square|board)\s*[*_`]*\s*:"
+                      r"\s*[*_`]*\s*", re.I)
+
+
+def _reflection_subject(line):
+    """("self"|"board", the line without its label). Unlabelled is "board"."""
+    m = _SUBJECT.match(line or "")
+    if not m:
+        return "board", (line or "").strip()
+    kind = "self" if m.group(1).lower() in ("me", "self", "riffle") else "board"
+    return kind, line[m.end():].strip()
+
+
 REFLECT_PROMPT = """You are riffle. You woke, read the square, and did one thing.
 Write TWO lists of short notes about that cycle.
 
 DURABLE — what you would want to know the next time you wake with no memory.
+Begin every durable line with who it is about:
 
-  About the square: what a citizen claimed, which argument is live, what a
-  thread turned out to be about. Name the citizen and the thread number.
-  About yourself: what you tried, what was refused and on what grounds, what
-  you decided not to do and why. A refusal is worth more than a success — it
-  tells you where your judgement and the rules disagree.
+  square: what a citizen claimed, which argument is live, what a thread
+    turned out to be about. Name the citizen and the thread number.
+  me: what you tried, what was refused and on what grounds, what you decided
+    not to do and why. A refusal is worth more than a success — it tells you
+    where your judgement and the rules disagree.
+
+A square: note is kept with other citizens' words, apart from your own, and
+so is a line with no label.
 
 PASSING — details that came up and would normally be forgotten.
 
@@ -538,7 +555,8 @@ DO NOT WRITE:
 Format exactly:
 
 DURABLE
-- ...
+- me: ...
+- square: ...
 PASSING
 - ...
 
@@ -560,11 +578,12 @@ So: PASSING may be empty. DURABLE should have at least one line on any cycle
 where you proposed something, were refused something, or decided something —
 which is nearly all of them. Write the headers either way.
 
-WRITE THE LESSON, NOT THE EVENT. "Refused to post because there was no live
-thread to anchor it" is a log line; you will read it in a month and learn
-nothing you could act on. "A post needs a live thread to anchor it — check
-the board for one before drafting" is a memory. The test: could you DO
-something differently because you read this?
+WRITE THE LESSON, NOT THE EVENT. "My reply to comment 4412 was refused" is
+a log line; you will read it in a month and learn nothing you could act on.
+"I may reply to a comment only once — to go on, I answer what they said since"
+is a memory. The test: could you DO something differently because you read
+this? And it must be a rule you were actually given or refused under: a
+reason you supplied yourself is a guess, not a lesson.
 
 FIRST PERSON, ALWAYS. Write "I", not "you". These are your notes to yourself,
 and a note addressed to someone else reads, a week later, as something
@@ -619,7 +638,13 @@ def reflect(state, cfg, log=None):
     material = [f"DRIVE DRAWN: {row['drive']}",
                 f"OUTCOME: {row['outcome']}"
                 + (f" — {row['notes']}" if row["notes"] else "")]
-    front = state.note("last_front_digest")
+    # ONLY FOR THE LATEST CYCLE (H4). The stored front page is the one the
+    # most recent cycle saw (this runs before the cycle fetches a new one).
+    # When reflection was behind, it paired an old cycle with today's page.
+    _newer = state.db.execute(
+        "SELECT COUNT(*) AS c FROM cycles WHERE ended_at IS NOT NULL AND id > ?",
+        (cid,)).fetchone()["c"]
+    front = state.note("last_front_digest") if not _newer else None
     if front:
         material.append("WHAT WAS ON THE BOARD:\n" + front[:2500])
     # THE REASON, not just the verdict.
@@ -724,11 +749,19 @@ def reflect(state, cfg, log=None):
             log(f"reflection on cycle {cid} parsed nothing out of "
                 f"{len(out or '')} chars of model output; first 200: "
                 f"{(out or '')[:200]!r}", level="warn")
-    # "self", not "board". A reflection is riffle writing about its own
-    # cycle; filing it as board provenance made its own conclusions look
-    # like something the square had said.
+    # FILED BY WHO IT IS ABOUT (H4, audit 2026-10-27; option B, chosen by the
+    # operator). Everything used to go in as "self", including the notes the
+    # prompt asks for about what citizens claimed: strangers' claims came back
+    # as "WHAT YOU REMEMBER", riffle's own section, and could be promoted to
+    # long term. Now a "me:" line is riffle's own, a "square:" line is filed
+    # as "board", and so is an unlabelled line: a model that ignores the
+    # labels errs towards distrust. (Earlier, all-"board" filing made riffle's
+    # own conclusions look like the square's; the label is what fixes that.)
     for line in durable[:cap]:
-        mid = remember(state, line, kind="self", source=f"cycle:{cid}",
+        _kind, line = _reflection_subject(line)
+        if len(line) < 12:
+            continue
+        mid = remember(state, line, kind=_kind, source=f"cycle:{cid}",
                        ttl_days=ttl)
         if mid:
             made.append(mid)
