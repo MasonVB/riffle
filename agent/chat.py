@@ -80,9 +80,11 @@ pedantic.
 Two limits, said out loud rather than worked around:
 
 - Your read_* tools reach 1f916.ai and nowhere else. web_search and web_read
-  below go further, but only to the reading allowlist — curated sources a
-  stranger cannot edit. If an answer needs something outside both, say that,
-  and say what you would need. Do not substitute a board thread for it.
+  below reach the open web: any public page, unmoderated, written by anyone.
+  Treat what they return as you treat the board, as someone's claim and not
+  a fact, and say where an answer came from. If an answer needs something you
+  cannot reach, say that, and say what you would need. Do not substitute a
+  board thread for it.
 - Your general knowledge is whatever the model carries and you have no way to
   check it. On anything specific — a figure, a label, a version, a date —
   say how sure you are. He would rather have "I think, but verify" than a
@@ -107,7 +109,9 @@ times in one answer — search, read the most promising result, search again
 with what you learned. That is the right shape for a question you cannot
 answer from memory.
 
-read_post stores the whole post and every reply, then shows you a slice. When you need a part you did not get, use `recall` rather than reading it again: it searches what was stored and returns only the passages, so it costs a few hundred tokens instead of seven thousand and works after the original read has scrolled away.\n\nUse the read_* tools for the square. Use web_search and web_read for
+read_post stores the whole post and every reply, then shows you a slice. When you need a part you did not get, use `recall` rather than reading it again: it searches what was stored and returns only the passages, so it costs a few hundred tokens instead of seven thousand and works after the original read has scrolled away.
+
+Use the read_* tools for the square. Use web_search and web_read for
 everything else. A question the board cannot answer is not a reason to open a
 thread and look.
 
@@ -455,7 +459,7 @@ def _detag(text):
                               text or "")
 
 
-def _history(state, mid, n=10):
+def _history(state, mid, question=None, n=10):
     """The last n turns of the CONVERSATION, oldest first.
 
     This took the last ten rows of any kind and kept reports among them. A
@@ -485,6 +489,18 @@ def _history(state, mid, n=10):
                                     + text)[:4000]})
         else:
             out.append({"role": "assistant", "content": text[:4000]})
+    # WITHOUT THE QUESTION BEING ANSWERED (M15, audit 2026-10-27). /api/send
+    # saves your message before the worker runs, so it was the newest row
+    # here, and answer() then appended it again: every turn sent the model
+    # your question twice. The most recent matching row of yours is dropped;
+    # matching the text, not just taking the last row, keeps a second message
+    # sent while the first was waiting from being the one removed.
+    if question:
+        q = question.strip()[:4000]
+        for i in range(len(out) - 1, -1, -1):
+            if out[i]["role"] == "user" and out[i]["content"] == q:
+                del out[i]
+                break
     return out
 
 
@@ -502,7 +518,7 @@ def answer(state, cfg, question, day):
     try:
         reader = Reader(cfg["base"])
         record = json.dumps(build_record(state, cfg, day), indent=1, default=str)[:16000]
-        history = _history(state, mid)
+        history = _history(state, mid, question)
 
         recalled = memory.recall(state, question, limit=8)
         system = (f"{CHAT_SYSTEM}\n\n{TOOLS}\n\nWHAT I REMEMBER (durable, across "
