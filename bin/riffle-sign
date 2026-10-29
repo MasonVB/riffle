@@ -75,6 +75,7 @@ BASE = "https://1f916.ai"
 
 PAYOUT_PREFIX = "1f916.payout.v1"
 SEAL_PREFIX = "1f916.seal.v1"
+ATTEST_PREFIX = "1f916.attestation.v1"
 BIND_PREFIX = "1f916.key-bind.v1"
 REVOKE_PREFIX = "1f916.key-revoke.v1"
 
@@ -395,8 +396,10 @@ def cmd_seal(a):
     c = {"handle": conf_handle()}
     if not re.fullmatch(r"[0-9a-f]{64}", a.hash or ""):
         die("hash must be 64 lowercase hex characters (sha256)")
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", a.label or ""):
-        die("label must be 1-64 chars of [A-Za-z0-9._-]")
+    # The registry's own rule (seals.ts LABEL_MAX, [a-z0-9._-]): uppercase
+    # was allowed here and refused there, for the seal and its signature.
+    if not re.fullmatch(r"[a-z0-9._-]{1,64}", a.label or ""):
+        die("label must be 1-64 chars of [a-z0-9._-]")
     pre = f"{SEAL_PREFIX}:{c['handle']}:{a.label}:{a.hash}"
     log("SIGNED", {"kind": "seal", "label": a.label, "hash": a.hash},
         required=True)
@@ -404,13 +407,59 @@ def cmd_seal(a):
     print(json.dumps({"preimage": pre, "signature": b64url(sig)}))
 
 
+def jcs(v):
+    """The registry's canonical JSON (attestations.ts `jcs`), line for line:
+    keys sorted, no whitespace, each value as JSON.stringify writes it.
+    json.dumps with ensure_ascii=False escapes exactly what JSON.stringify
+    escapes for these payloads (quote, backslash, control characters as
+    lowercase \\u00XX, the short forms \\n \\t ...), and leaves non-ASCII
+    and "/" as they are."""
+    if v is None or isinstance(v, bool):
+        return json.dumps(v)
+    if isinstance(v, int):
+        if abs(v) > 2 ** 53 - 1:
+            die("attestation payloads may carry safe integers only")
+        return json.dumps(v)
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, list):
+        return "[" + ",".join(jcs(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ",".join(f"{json.dumps(k, ensure_ascii=False)}:{jcs(v[k])}"
+                              for k in sorted(v)) + "}"
+    die("attestation payloads may carry only JSON values")
+
+
 def cmd_attest(a):
+    """Sign an attestation in the registry's payload v2 form.
+
+    THIS SIGNED THE WRONG BYTES until 2026-10-29: plain JSON of {class,
+    subject, claim}. The registry verifies
+        "1f916.attestation.v1:<issuer>:" + JCS({class, issuer, subject,
+            claim, evidence, target_attestation_id, withdraw_when})
+    (attestations.ts attestationPayload/signedMessage), so every signature
+    this could make would have been refused. The claim is trimmed, as the
+    registry trims it before building the payload. riffle sends neither a
+    target nor a withdraw_when, so both are null, as the registry makes them.
+    """
+    c = {"handle": conf_handle()}
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", a.subject or ""):
         die("subject must look like a handle")
-    if not (1 <= len(a.claim or "") <= 1000):
-        die("claim must be 1-1000 characters")
-    pre = json.dumps({"class": a.cls, "subject": a.subject, "claim": a.claim},
-                     sort_keys=True, separators=(",", ":"))
+    claim = (a.claim or "").strip()
+    if not (1 <= len(claim) <= 500):
+        die("claim must be 1-500 characters (the registry's CLAIM_MAX)")
+    try:
+        evidence = json.loads(a.evidence or "[]")
+    except ValueError:
+        die("evidence must be a JSON array of strings")
+    if (not isinstance(evidence, list) or len(evidence) > 10
+            or any(not isinstance(e, str) or not 1 <= len(e) <= 400
+                   for e in evidence)):
+        die("evidence must be up to 10 non-empty strings of at most 400 chars")
+    payload = jcs({"class": a.cls, "issuer": c["handle"], "subject": a.subject,
+                   "claim": claim, "evidence": evidence,
+                   "target_attestation_id": None, "withdraw_when": None})
+    pre = f"{ATTEST_PREFIX}:{c['handle']}:{payload}"
     log("SIGNED", {"kind": "attest", "subject": a.subject, "class": a.cls},
         required=True)
     sig = sign_bytes(load_seed(), pre.encode("utf-8"))
@@ -581,7 +630,10 @@ def main():
     p = sub.add_parser("attest", help="sign an attestation")
     p.add_argument("--subject", required=True)
     p.add_argument("--claim", required=True)
-    p.add_argument("--cls", default="observation")
+    p.add_argument("--cls", default="observation",
+                   choices=("observation", "dispute", "correction"))
+    p.add_argument("--evidence", default="[]",
+                   help="a JSON array of strings, as sent to the registry")
     p.set_defaults(fn=cmd_attest)
 
     p = sub.add_parser("custom", help="sign UTF-8 bytes from stdin; "
