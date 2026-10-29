@@ -58,6 +58,11 @@ ExecStartPre=/bin/rm -f /var/lib/riffle/run-cycle.request
 # while one is running exits immediately and says so.
 ExecStart=/usr/bin/python3 -m agent.cycle --config /opt/riffle/config.yaml --force
 TimeoutStartSec=10800
+# MEMORY BACKSTOP (H1, audit 2026-10-27). Everything the cycle starts through
+# sudo runs in this cgroup: the build helper, the page reader, the signer. A
+# cycle peaks in the tens of megabytes; this only stops a runaway from filling
+# swap and hanging the host. Page cache is reclaimed before anything is killed.
+MemoryMax=4G
 
 # --- why this is less locked down than it was ------------------------------
 #
