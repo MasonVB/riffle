@@ -846,7 +846,7 @@ tracked = [p for p in subprocess.run(
     ["git", "ls-files", "-z"], capture_output=True, check=True
 ).stdout.decode().split("\0") if p.endswith(".py")]
 ROOT_TOOLS = {"ed25519_pure.py", "join.py", "keyutil.py", "numcheck.py",
-              "repo_setup.py", "witness.py"}
+              "payout_wallet.py", "repo_setup.py", "witness.py"}
 agent = {os.path.basename(p) for p in tracked
          if os.path.dirname(p) == "agent"}
 bad = []
