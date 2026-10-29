@@ -723,6 +723,33 @@ def main():
     # Each gets its own cycle row so apply_* writes its outcome against a
     # cycle that belongs to it, rather than against whichever cycle happened
     # to propose it days ago.
+    # INTERRUPTED, NOT RE-RUN (M8, audit 2026-10-27). An approved local
+    # action is marked 'running' before it starts; one still 'running' here
+    # was cut off by a crash or a reset (this runs under the cycle lock, so no
+    # other cycle has it). It used to stay 'approved' and run again on the
+    # next wake: a second payout binding, a second close. Now it is recorded
+    # as unknown and reported, the way the dashboard treats an interrupted send.
+    try:
+        for _row in state.db.execute(
+                "SELECT id, kind FROM actions WHERE status='running' AND kind IN ("
+                + ",".join("?" * len(LOCAL_KINDS)) + ")", LOCAL_KINDS).fetchall():
+            state.set_status(_row["id"], "unknown",
+                             {"interrupted": True,
+                              "note": "cut off mid-run by a crash or reset; "
+                                      "not run again, check what it did"})
+            state.say("error", f"Approved {_row['kind']} #{_row['id']} was cut "
+                               f"off mid-run by a crash or reset. It was not run "
+                               f"again; check what it did before approving it anew.")
+            log(f"approved {_row['kind']} #{_row['id']} was interrupted; "
+                f"marked unknown, not re-run", level="warn")
+            try:
+                from agent.dash import update_card
+                update_card(state, _row["id"], status="unknown",
+                            error="interrupted by a crash or reset; not re-run")
+            except Exception:
+                pass
+    except Exception as _e:
+        log(f"could not check for interrupted local actions: {_e}", level="warn")
     try:
         _approved = state.db.execute(
             "SELECT * FROM actions WHERE status='approved' AND kind IN ("
@@ -733,6 +760,7 @@ def main():
         log(f"could not look for approved local actions: {_e}", level="warn")
     for _row in _approved:
         _acid = state.begin_cycle(_row["drive"] or "operator")
+        state.set_status(_row["id"], "running", {"started_by_cycle": _acid})
         try:
             apply_local(state, cfg, _acid, _row["kind"],
                         json.loads(_row["payload"]), _row["drive"] or "operator",
@@ -2273,6 +2301,10 @@ def main():
         #
         # An operator-initiated cycle is not an operator approving an action.
         if _m == "queue":
+            if kind == "close_project" and project.active(state):
+                # Which project this close is for (M7): an approval later
+                # must not close whatever project is open by then.
+                payload = dict(payload, project_id=project.active(state)["id"])
             aid = state.propose(cid, kind, drive, payload, rationale, "queued")
             log(f"{kind} #{aid} is queued; {kind} is set to 'queue' and needs "
                 f"your approval", drive=drive)
@@ -2437,8 +2469,13 @@ def main():
                 " AND status IN ('sent','executed') AND response IS NOT NULL",
                 ("post" if payload.get("target_type", "post") == "post"
                  else "comment",)):
+            # post_id / comment_id: the registry's create answers carry no
+            # "id" (M2, audit 2026-10-27), so reading "id" meant this check
+            # never matched and each vote on riffle's own work cost a 403.
             try:
-                _rid = (json.loads(_r["response"]) or {}).get("id")
+                _resp = json.loads(_r["response"]) or {}
+                _rid = (_resp.get("post_id") or _resp.get("comment_id")
+                        or _resp.get("id"))
             except Exception:
                 _rid = None
             if _rid:
@@ -2912,7 +2949,9 @@ def main():
         elif kind == "vote" and (payload.get("target_type") or "post") == "post":
             state.mark_seen("post", payload.get("target_id"))
         log(f"executed {kind} #{aid}: {rationale[:200]}", drive=drive)
-        ref = (resp or {}).get("id") or payload.get("target_id") or payload.get("post_id") or ""
+        ref = ((resp or {}).get("comment_id") or (resp or {}).get("post_id")
+               or (resp or {}).get("id") or payload.get("target_id")
+               or payload.get("post_id") or "")
         # A CARD, NOT A ONE-LINE REPORT.
         #
         # The queued path has always rendered a gold-framed card showing the
@@ -4254,6 +4293,15 @@ def apply_project(state, cfg, cid, kind, p, drive, rationale):
             state.end_cycle(cid, "note-added")
             return 0
         if kind == "close_project":
+            # M7, audit 2026-10-27: the payload carried only a reason, so an
+            # approved close closed whichever project was open by then. If a
+            # post was approved while it waited, the project had already
+            # closed as posted, the next one had started, and this abandoned
+            # that one.
+            if p.get("project_id") is not None and int(p["project_id"]) != proj["id"]:
+                raise ValueError(
+                    f"this close was for project #{p['project_id']}, which is "
+                    f"no longer open (#{proj['id']} is); nothing was closed")
             nxt = project.close_project(state, proj["id"], "abandoned")
             state.log(f"closed project {proj['id']}: {p['reason'][:120]}", drive=drive)
             state.say("report", f"Cycle {cid} \u00b7 closed '{proj['title']}'. "

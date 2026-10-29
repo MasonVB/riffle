@@ -38,6 +38,30 @@ from agent.pages import (ACT_PAGE, GOALS_PAGE, HISTORY_EXTRA,  # noqa: E402
 
 
 
+def cycle_running():
+    """Whether a wake cycle is running now: a live `python3 -m agent.cycle`.
+
+    M11, audit 2026-10-27. The dashboard's _cycle_running flag is true only
+    for the instant it writes a cycle request, never while a cycle runs, so
+    "Restart model" could kill a cycle mid-call and the indicator never lit.
+    This reads /proc rather than testing the cycle's lock: a test lock taken
+    on every poll could make a wake starting at that instant skip itself.
+    """
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if b"agent.cycle" in argv and b"-m" in argv:
+            return True
+    return False
+
+
 def host_allowed(host_header, cfg, hostname=None):
     """Whether a request's Host header names this dashboard.
 
@@ -341,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
                 "waiting_ids": _waiting,
                 "alarms_list": alarm_list,
                 "model_restarting": type(self)._restarting,
-                "cycle_running": type(self)._cycle_running,
+                "cycle_running": cycle_running(),
                 "generating": generating,
                 "alarms": alarms, "caps": caps}
 
@@ -386,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
                                 continue
                         except ValueError:
                             pass
-                    if cls._cycle_running or getattr(cls.worker, "busy", False):
+                    if cycle_running() or getattr(cls.worker, "busy", False):
                         continue
                     st.note("cycle_requested_at", "")
                     st.note("extra_cycle_ran_at", now.isoformat())
@@ -492,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
         """Restart llama-composer and report back when it answers again."""
         cls = type(self)
         w = self.worker
-        if getattr(w, "busy", False) or w.depth() > 0 or cls._cycle_running:
+        if getattr(w, "busy", False) or w.depth() > 0 or cycle_running():
             return {"error": "something is generating; wait for it to finish"}
         with cls._restart_lock:
             if cls._restarting:
@@ -808,7 +832,8 @@ class Handler(BaseHTTPRequestHandler):
                 # schedule.
                 _sday = (resp.get("now_utc") or utcnow())[:10]
                 s.cap_bump(_sday, a["kind"])
-                ref = resp.get("id") or resp.get("post_id") or ""
+                ref = (resp.get("comment_id") or resp.get("post_id")
+                       or resp.get("id") or "")
                 self._update_card(aid, status="executed", sent_at=self._local_time(),
                                   ref=(f"#{ref}" if ref else ""))
                 s.log(f"you approved and sent {a['kind']} #{aid}", drive=a["drive"])
