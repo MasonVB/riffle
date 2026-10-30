@@ -148,11 +148,47 @@ def _record(state, name, field, old, new, actor, reason):
 
 
 def _spent_today(state, name):
+    # RIFFLE'S OWN CHANGES ONLY (L11, audit 2026-10-27). This counted every
+    # actor, so a weight you changed used up riffle's daily budget.
     day = utcnow()[:10]
     rows = state.db.execute(
-        "SELECT old,new FROM drive_changes WHERE name=? AND field='weight' AND ts LIKE ?",
-        (name, day + "%")).fetchall()
+        "SELECT old,new FROM drive_changes WHERE name=? AND field='weight' AND ts LIKE ?"
+        " AND actor='agent'", (name, day + "%")).fetchall()
     return sum(abs(float(r["new"]) - float(r["old"])) for r in rows)
+
+
+def policy_problems(state, cfg, kind, p):
+    """What riffle's own limits would object to in this proposed goal change.
+
+    L10, audit 2026-10-27. A change riffle proposes and you approve runs as
+    you, so the bounds below (which apply only to the agent) were never shown:
+    an out-of-bounds weight went through on a card that said nothing. Your
+    approval may override them; this only lists them, for the card.
+    """
+    out, pol = [], policy(cfg)
+    try:
+        w = round(float(p.get("weight")), 4)
+    except (TypeError, ValueError):
+        return ["the weight is not a number"]
+    if not (pol["min_weight"] <= w <= pol["max_weight"]):
+        out.append(f"weight {w} is outside [{pol['min_weight']}, {pol['max_weight']}]")
+    if kind == "adjust_drive":
+        row = state.db.execute("SELECT * FROM drives WHERE name=?",
+                               (p.get("name"),)).fetchone()
+        if not row:
+            return out + [f"there is no goal named {p.get('name')!r}"]
+        if not pol["agent_may_adjust"]:
+            out.append("riffle may not adjust weights itself (config.yaml)")
+        if row["locked"]:
+            out.append(f"'{row['name']}' is locked")
+        step = abs(w - row["weight"])
+        if step > pol["max_delta"] + 1e-9:
+            out.append(f"a step of {step:.4f} is over the {pol['max_delta']} limit")
+        spent = _spent_today(state, row["name"])
+        if spent + step > pol["max_delta_per_day"] + 1e-9:
+            out.append(f"'{row['name']}' has moved {spent:.4f} today; this would pass "
+                       f"the daily budget of {pol['max_delta_per_day']}")
+    return out
 
 
 def set_weight(state, cfg, name, new_weight, actor, reason):

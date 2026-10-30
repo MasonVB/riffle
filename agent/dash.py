@@ -471,9 +471,12 @@ class Handler(BaseHTTPRequestHandler):
                         telemetry.prune(cls.state, 24)
                 except Exception:
                     pass          # never let the watcher break the watched
-                _before = _t.time()
+                # monotonic, not time() (L17, audit 2026-10-27): a clock
+                # correction faked a stall or hid one; this clock still runs
+                # through a real stall.
+                _before = _t.monotonic()
                 _t.sleep(60)
-                late = _t.time() - _before - 60
+                late = _t.monotonic() - _before - 60
 
                 # --- the loop times ITSELF ---------------------------------
                 # This thread is supposed to wake every 60 seconds. When it
@@ -622,40 +625,36 @@ class Handler(BaseHTTPRequestHandler):
         in place rather than answered by a second card beside it."""
         return card_for(self.state, aid)
 
-    def reap_stuck_sends(self, older_than_minutes=20):
-        """Close out actions left mid-send. Returns how many.
-
-        Anything still 'sending' after twenty minutes is not sending: the
-        thread that owned it is gone, and nothing will ever come back to
-        change it. Called on dash start, so a restart clears what a crash
-        left behind.
-        """
-        s = self.state
-        cut = (dt.datetime.now(dt.timezone.utc)
-               - dt.timedelta(minutes=older_than_minutes)).isoformat()
-        rows = s.db.execute(
-            "SELECT id, kind FROM actions WHERE status='sending'"
-            " AND created_at < ?", (cut,)).fetchall()
-        for r in rows:
-            s.set_status(r["id"], "failed",
-                         {"error": "the send thread did not finish; status "
-                                   "was left at 'sending'"})
-            self._update_card(r["id"], status="failed",
-                              error="the send never completed — it was left "
-                                    "mid-flight and has been closed out. "
-                                    "Nothing was published.")
-            s.log(f"closed out {r['kind']} #{r['id']}, stuck sending",
-                  level="warn")
-        return len(rows)
-
     def _update_card(self, aid, **fields):
         update_card(self.state, aid, **fields)
 
     def decide(self, aid, verdict):
+        """Claim the action, then decide it.
+
+        CLAIMED IN ONE STATEMENT (L10, audit 2026-10-27). This read the
+        status and wrote it later, so approving from two devices at once could
+        send twice: both read "queued". Now the first caller turns it from
+        queued to sending in a single UPDATE and the second finds nothing to
+        claim. Every path below sets a final status; if anything unexpected
+        breaks first, the claim is handed back as queued.
+        """
+        s = self.state
+        cur = s.db.execute("UPDATE actions SET status='sending' WHERE id=?"
+                           " AND status='queued'", (aid,))
+        s.db.commit()
+        if cur.rowcount != 1:
+            return {"error": "not queued"}
+        try:
+            return self._decide_claimed(aid, verdict)
+        except BaseException:
+            s.db.execute("UPDATE actions SET status='queued' WHERE id=?"
+                         " AND status='sending'", (aid,))
+            s.db.commit()
+            raise
+
+    def _decide_claimed(self, aid, verdict):
         s = self.state
         a = s.action(aid)
-        if not a or a["status"] != "queued":
-            return {"error": "not queued"}
         payload = json.loads(a["payload"])
 
         if verdict != "approve":
@@ -760,8 +759,14 @@ class Handler(BaseHTTPRequestHandler):
         _today = utcnow()[:10]
         _noted = (self.state.note("server_day") or "")[:10]
         _day = _noted if _noted >= _today else _today
-        _left = self.cfg["caps"].get(a["kind"])
-        if _left is not None and s.cap_used(_day, a["kind"]) >= _left:
+        # The code's cap defaults too (the porch's 3), and sends of this kind
+        # still in flight: the cap was counted only once a send finished, so
+        # two approved at once both passed it (L10).
+        _left = cycle_mod.effective_caps(self.cfg).get(a["kind"])
+        _inflight = s.db.execute(
+            "SELECT COUNT(*) AS c FROM actions WHERE kind=? AND status='sending'"
+            " AND id<>?", (a["kind"], aid)).fetchone()["c"]
+        if _left is not None and s.cap_used(_day, a["kind"]) + _inflight >= _left:
             s.set_status(aid, "rejected",
                          {"by": "cap", "how": "the daily allowance was used up "
                                               "while this waited"})
@@ -1470,8 +1475,15 @@ def _goals_routes(h):
             s.say("report", f"You removed the goal '{b['name']}'.")
             return h._json({"ok": True}) or True
         if u.path == "/api/memory/pin":
-            s.db.execute("UPDATE memories SET pinned=? WHERE id=?",
-                         (1 if b.get("pinned") else 0, int(b["id"])))
+            # Pinning brings an expired memory back (L12, audit 2026-10-27):
+            # it set pinned and left expired, so the memory stayed hidden
+            # from recall and was still purged later. Pinned means permanent.
+            if b.get("pinned"):
+                s.db.execute("UPDATE memories SET pinned=1, expired=0,"
+                             " expires_at=NULL WHERE id=?", (int(b["id"]),))
+            else:
+                s.db.execute("UPDATE memories SET pinned=0 WHERE id=?",
+                             (int(b["id"]),))
             s.db.commit()
             return h._json({"ok": True}) or True
         if u.path == "/api/memory/forget":

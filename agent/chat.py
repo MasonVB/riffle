@@ -161,13 +161,13 @@ class ComposerLock:
         self._fh = open(self.path, "a+")
         flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
         if blocking and timeout:
-            deadline = time.time() + timeout
+            deadline = time.monotonic() + timeout     # L17: not the wall clock
             while True:
                 try:
                     fcntl.flock(self._fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     return True
                 except OSError:
-                    if time.time() > deadline:
+                    if time.monotonic() > deadline:
                         self._fh.close()
                         self._fh = None
                         return False
@@ -507,12 +507,12 @@ def _history(state, mid, question=None, n=10):
 def answer(state, cfg, question, day):
     """Run one chat turn. Writes an assistant message and streams into it."""
     mid = state.say("agent", "", done=False)
-    started = time.time()
+    started = time.monotonic()          # durations only (L17)
     lock = ComposerLock(os.path.join(os.path.expanduser(cfg["data_dir"]), "composer.lock"))
     if not lock.acquire(blocking=True, timeout=1800):
         state.append_delta(mid, "(the wake cycle is using the model and did not finish "
                                 "within 30 minutes — try again shortly)")
-        state.finish(mid, {"elapsed_s": int(time.time() - started)})
+        state.finish(mid, {"elapsed_s": int(time.monotonic() - started)})
         return mid
     _extract_args = None
     try:
@@ -553,7 +553,7 @@ def answer(state, cfg, question, day):
                               if ln.strip().startswith("TOOL ")), None)
             if not tool_line:
                 break
-            spent = time.time() - started
+            spent = time.monotonic() - started
             if len(tools_used) >= max_calls or spent > budget:
                 # Tell it the budget is gone rather than cutting it off with
                 # nothing to show. It has already read something; let it use it.
@@ -582,7 +582,7 @@ def answer(state, cfg, question, day):
                                  f"you need to, otherwise answer."}]
         final = state.db.execute("SELECT content FROM messages WHERE id=?",
                                  (mid,)).fetchone()["content"]
-        state.finish(mid, {"elapsed_s": int(time.time() - started), "tools": tools_used,
+        state.finish(mid, {"elapsed_s": int(time.monotonic() - started), "tools": tools_used,
                            "recalled": len(recalled)})
         # Extraction is deferred to AFTER the lock is released. The comment
         # here used to say it already was — "after the lock is released in
@@ -594,7 +594,7 @@ def answer(state, cfg, question, day):
                          f"chat:{mid}", started, tools_used, len(recalled))
     except Exception as e:
         state.append_delta(mid, f"\n\n(composer error: {e})")
-        state.finish(mid, {"elapsed_s": int(time.time() - started), "error": str(e)[:300]})
+        state.finish(mid, {"elapsed_s": int(time.monotonic() - started), "error": str(e)[:300]})
     finally:
         lock.release()
 
@@ -604,7 +604,7 @@ def answer(state, cfg, question, day):
         try:
             made = memory.extract(state, cfg, _exchange, source=_source)
             if made:
-                state.finish(mid, {"elapsed_s": int(time.time() - _started),
+                state.finish(mid, {"elapsed_s": int(time.monotonic() - _started),
                                    "tools": _tools, "recalled": _recalled,
                                    "remembered": len(made)})
             # No keep= here: memory.PRUNE_KEEP is the one limit. This said

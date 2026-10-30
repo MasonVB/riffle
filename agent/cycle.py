@@ -577,7 +577,7 @@ def main():
     # to a citizen dressed as a greeting, and it wrote itself a memory about
     # using the porch "without consuming a post slot". Once comments drop out
     # of the grammar when spent, an uncapped porch is the obvious substitute.
-    cfg.setdefault("caps", {}).setdefault("porch", 3)
+    cfg["caps"] = effective_caps(cfg)
     global _CFG
     _CFG = cfg
     data = os.path.expanduser(cfg["data_dir"])
@@ -4618,6 +4618,18 @@ def apply_project(state, cfg, cid, kind, p, drive, rationale):
     return 0
 
 
+def _limits_note(state, cfg, kind, p):
+    """For a queued goal change: what riffle's own limits would refuse (L10)."""
+    try:
+        probs = goals.policy_problems(state, cfg, kind, p)
+    except Exception:
+        return ""
+    if not probs:
+        return ""
+    return ("\n\nOUTSIDE RIFFLE'S OWN LIMITS (approving overrides them): "
+            + "; ".join(probs) + ".")
+
+
 def apply_reflexive(state, cfg, cid, kind, p, drive, rationale):
     """Changes the agent makes to ITSELF. These never touch the registry."""
     try:
@@ -4646,7 +4658,7 @@ def apply_reflexive(state, cfg, cid, kind, p, drive, rationale):
             mode = cfg["autonomy"].get("adjust_drive", "queue")
             if mode == "queue":
                 aid = state.propose(cid, kind, drive, p, rationale, "queued")
-                state.say("proposal", rationale,
+                state.say("proposal", rationale + _limits_note(state, cfg, kind, p),
                           {"kind": kind, "drive": drive, "action_id": aid,
                            "status": "queued", "payload": json.dumps(p, indent=2)})
                 state.end_cycle(cid, "queued")
@@ -4663,7 +4675,7 @@ def apply_reflexive(state, cfg, cid, kind, p, drive, rationale):
             # Always a proposal, never an act. A weight is a dial; a new goal
             # is a new thing to want, and that is yours to grant.
             aid = state.propose(cid, kind, drive, p, rationale, "queued")
-            state.say("proposal", f"{p['reason']}",
+            state.say("proposal", f"{p['reason']}" + _limits_note(state, cfg, kind, p),
                       {"kind": kind, "drive": drive, "action_id": aid, "status": "queued",
                        "payload": json.dumps(p, indent=2)})
             state.end_cycle(cid, "queued")
@@ -4758,6 +4770,16 @@ def _send_signed(send, kind, args):
 
 # The live cycle's state and id, for the crash handler below.
 _CURRENT = {"state": None, "cid": None}
+
+
+def effective_caps(cfg):
+    """config.yaml's caps with the code's defaults filled in: the porch at 3
+    a day unless config.yaml says otherwise. One place, so the cycle and the
+    dashboard's approvals apply the same limits (L10: the dashboard did not
+    apply this default, so an approved porch line skipped the cap)."""
+    caps = dict(cfg.get("caps") or {})
+    caps.setdefault("porch", 3)
+    return caps
 
 
 def _record_crash(exc):

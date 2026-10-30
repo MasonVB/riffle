@@ -495,9 +495,13 @@ def sweep(state, cfg, log=None):
     keep = int((cfg.get("memory") or {}).get("purge_expired_after_days", 30))
     cutoff = (dt.datetime.now(dt.timezone.utc)
               - dt.timedelta(days=keep)).isoformat()
-    state.db.execute(
-        "DELETE FROM memories WHERE expired=1 AND pinned=0 AND expires_at < ?",
-        (cutoff,))
+    # Through forget(), not a raw DELETE (L13, audit 2026-10-27): the search
+    # index is contentless and needs a row's text to drop its words, so the
+    # purged memories' words stayed searchable, the bug forget() exists for.
+    for (_mid,) in state.db.execute(
+            "SELECT id FROM memories WHERE expired=1 AND pinned=0 AND expires_at < ?",
+            (cutoff,)).fetchall():
+        memory.forget(state, _mid)
     state.db.commit()
     if n and log:
         log(f"{n} short-term memory(ies) expired")
