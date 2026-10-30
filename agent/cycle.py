@@ -1434,7 +1434,7 @@ def main():
             f"worked \u2014 it was broken until 2026-10-23, so none of those "
             f"reached you when they were sent; the older ones are shown in "
             f"`answer` cycles. The messages themselves are "
-            f"in the board section below, under INBOX. To answer one, "
+            f"in the board section, under INBOX. To answer one, "
             f"`comment` on its "
             f"post_id with parent_id set to its comment_id; a mention in a "
             f"post has no comment_id, so comment on the post itself. You do "
@@ -1754,7 +1754,7 @@ def main():
     parts.append(library.as_context(
         state, int((cfg.get("library") or {}).get("max_bytes", library.MAX_BYTES))))
     _lf2 = state.note("last_library_read")
-    if _lf2:
+    if _lf2 and _cycles_since_note(state, "last_library_read") <= 2:
         parts.append("THE DOCUMENT YOU OPENED LAST CYCLE (it is replaced the "
                      "next time you open one; shelve or note anything you want "
                      "to keep):\n" + _lf2[:9000])
@@ -1932,7 +1932,7 @@ def main():
                 "one before it is required.")
 
     _lf = state.note("last_fetch")
-    if _lf:
+    if _lf and _cycles_since_note(state, "last_fetch") <= 2:
         try:
             _lf = json.loads(_lf)
             parts.append(f"WHAT YOU READ LAST CYCLE \u2014 /{_lf['what']} at "
@@ -2060,65 +2060,66 @@ def main():
     # over regardless — the floor silently defeated the budget it was part
     # of. A system prompt that leaves no room is a problem to report, not
     # one to paper over with a number that cannot be honoured.
-    _room = _ceiling - _sys_chars - int(budget * 0.10)
+    # THE FRONT PAGE IS ONE OF THE BLOCKS NOW (H6, audit 2026-10-27). It was
+    # built after _fit from what was left of a DIFFERENT number
+    # (max_context_chars) with a 1,800-character floor regardless, so every
+    # cycle ran over the ceiling it was fitted to (median 50,143 of 50,000 on
+    # 2026-10-30). Rows are added, most prominent first, while they fit about
+    # 1,800 characters; _fit holds it to its budget like any other block.
+    _rows, _per = [], 200
+    for p in front:
+        body = (p.get("body") or "")
+        row = {"id": p.get("id"), "title": p.get("title"),
+               "author": p.get("author"), "votes": p.get("votes"),
+               "comments": p.get("comments"), "body": body[:_per]}
+        if len(body) > _per:
+            row["body_truncated"] = True
+            row["body_full_chars"] = len(body)
+        if _rows and len(json.dumps(_rows + [row], indent=1)) > 1800:
+            break
+        _rows.append(row)
+    if _rows:
+        parts.append(
+            "FRONT PAGE \u2014 an index, not the posts themselves: the most "
+            f"prominent {len(_rows)} of {len(front)}, bodies cut to {_per} "
+            "characters, no comments. Use `read_thread` on an id to get the "
+            "whole post and its replies; what you read is filed into your "
+            "project.\n" + json.dumps(_rows, indent=1))
+    # THE TAIL (M5, audit 2026-10-27). What changes every cycle (the clock,
+    # the drive, the allowances, the inbox counts, the rotating hint, the
+    # situation check) goes AFTER </board>, at the very end. The composer
+    # reuses only an exactly matching opening, and these sat early in
+    # riffle's own section, so everything after them was processed afresh
+    # every cycle. Riffle's own blocks, and then the board's, are ordered
+    # most stable first for the same reason.
+    _tail = [p for p in parts if p.lstrip().startswith(_TAIL_HEADS)]
+    parts = [p for p in parts if not p.lstrip().startswith(_TAIL_HEADS)]
+    _tail = sorted(_tail, key=lambda p: next(
+        (i for i, h in enumerate(_TAIL_HEADS) if p.lstrip().startswith(h)), 99)) + _volatile
+    _tail_chars = sum(len(t) + 2 for t in _tail)
+    _room = _ceiling - _sys_chars - _tail_chars - _WRAP_CHARS
     if _room < 8000:
         log(f"the system prompt is {_sys_chars} chars of a {_ceiling} "
             f"ceiling, leaving only {_room} for everything else. Raise "
             f"max_prompt_chars or shorten the contract; the prompt cannot "
             f"fit as configured.", level="error")
         _room = max(2000, _room)
-    # (A warning when the system prompt passed 25% of the ceiling stood here.
-    # It had fired on every wake since before 2026-10-23, so it said nothing;
-    # _fit logs the real symptom, data trimmed or left out, when it happens.)
-    # The volatile lines go in LAST, after trimming, so they are always
-    # present and always at the end where they cost the least cache.
-    # _fit never sees them, so they can never be trimmed away either — the
-    # clock and the caps are short and load-bearing.
-    parts = _fit(parts, _room - sum(len(v) + 2 for v in _volatile), log)
-    parts = parts + _volatile
-
-    fixed = "\n\n".join(parts)
-    room = max(1800, budget - len(fixed) - 400)
-
-    # Trim each body to a fixed size and SAY SO, rather than letting one slice
-    # cut the last post mid-sentence. A labelled truncation is something the
-    # agent can act on; an unlabelled one just looks like the board is broken.
-    per = max(220, min(700, room // max(1, len(front))))
-    rows = []
-    for p in front:
-        body = (p.get("body") or "")
-        row = {"id": p.get("id"), "title": p.get("title"),
-               "author": p.get("author"), "votes": p.get("votes"),
-               "comments": p.get("comments"),
-               "body": body[:per]}
-        if len(body) > per:
-            row["body_truncated"] = True
-            row["body_full_chars"] = len(body)
-        rows.append(row)
-    front_block = ("FRONT PAGE — an index, not the posts themselves. Bodies are "
-                   "cut to " + str(per) + " characters and comments are not "
-                   "included at all. Use `read_thread` on an id to get the whole "
-                   "post and its replies; what you read is filed into your "
-                   "project.\n" + json.dumps(rows, indent=1)[:room])
-    parts.append(front_block)
-    # Riffle's own section first, then strangers' words inside <board>. Own
-    # first is also the better order for the KV cache: those blocks change
-    # less than the board does.
-    _own = [_detag(x) for x in parts if _is_own(x)]
-    _board = [_detag(x) for x in parts if not _is_own(x)]
-    material = "\n\n".join(parts)
+    parts = _fit(parts, _room, log,
+                 big_build=(drive == "make" or _cycles_since_note(state, "last_build") <= 2))
+    _own = sorted((_detag(x) for x in parts if _is_own(x)), key=_own_rank)
+    _board = sorted((_detag(x) for x in parts if not _is_own(x)), key=_board_rank)
+    material = "\n\n".join(parts + _tail)
     system = cortex.stable_prefix(cfg, _cont)
     user = (_OWN_HEADER + "\n\n" + "\n\n".join(_own)
             + "\n\n<board>\n" + "\n\n".join(_board) + "\n</board>\n\n"
+            + "\n\n".join(_detag(t) for t in _tail) + "\n\n"
             f"Choose ONE action for this cycle, driven by '{drive}'. "
             f"Reply with the JSON object only.")
-    # MEASUREMENT FOR H6 (with "blocks before fitting" in _fit): what is
-    # actually sent. The front page and the volatile blocks are added after
-    # _fit, so only this line shows whether the whole prompt fits the
-    # ceiling. Changes nothing; remove once the budgets are in.
+    # One line per cycle: what was sent against the ceiling, and how much of
+    # it is the tail that changes every cycle.
     log(f"prompt sent: system {len(system)} + user {len(user)} = "
-        f"{len(system) + len(user)} of {_ceiling}; front page "
-        f"{len(front_block)}, volatile {sum(len(v) for v in _volatile)}")
+        f"{len(system) + len(user)} of {_ceiling}; the end of it, which "
+        f"changes every cycle, {_tail_chars}")
 
     # Announce anything already waiting, including a backlog held overnight.
     notify.announce_pending(state, cfg, log)
@@ -3339,7 +3340,6 @@ _NEVER_TRIM = (
     "THE FIELDS THE API ACTUALLY RETURNS",
     "WAITING ON YOUR OPERATOR",
     "YOU HAVE BEEN STUCK ON THIS PROJECT",
-    "COMMENTS YOU COULD ANSWER",
     # The operator's instruction and the project's next step (R4.1, audit 4).
     # _fit's lower floor kept the operator block's old 253-char preamble and
     # cut every instruction; its third pass could leave the project block out
@@ -3454,111 +3454,191 @@ def _is_rule(part):
     return (part or "").lstrip().startswith(_NEVER_TRIM)
 
 
-def _fit(parts, budget, log=None, floor=900, min_floor=250):
-    """Bring the assembled blocks under a character budget, loudly.
+def _cycles_since_note(state, key):
+    """Real cycles started since the note `key` was written (99 if none).
 
-    Longest data block first, and rules never. A 9,000-character desk dump
-    gives way before a board digest; neither gives way before a rule block.
+    The current cycle counts, so a note written last cycle gives 1."""
+    r = state.db.execute("SELECT updated_at FROM notes WHERE key=?", (key,)).fetchone()
+    if not r or not r["updated_at"]:
+        return 99
+    state._ensure_cycle_approval()
+    return state.db.execute(
+        "SELECT COUNT(*) AS c FROM cycles WHERE started_at > ? AND COALESCE(approval,0)=0",
+        (r["updated_at"],)).fetchone()["c"]
 
-    THREE PASSES, because one could not succeed. This used to cut each data
-    block to a floor of 900 and stop, so what it could save was bounded by
-    the number of blocks: each one it could not shrink further still cost
-    ~1,000 characters. When the prompt grew more blocks (the inbox, the
-    project thread on its own), the floors alone passed the budget, and from
-    2026-10-23 every cycle logged "STILL over budget" and sent a prompt over
-    the ceiling gate 4's guarantee depends on. Now:
-      1. trim longest-first to `floor`, cutting only what is needed;
-      2. if still over, the same down to `min_floor`;
-      3. if still over, leave whole blocks out, longest first, each replaced
-         by one line saying it exists and did not fit.
-    Only the rule blocks can then keep it over, and that is logged as before.
 
-    Each cut is re-made from the block's ORIGINAL text, so a block trimmed in
-    two passes carries one marker, not two, and it is cut at a paragraph
-    break where one is near, else at a line break, so a block written one
-    item per line (the inbox) loses whole items rather than half of one.
+# The end of the prompt, after </board>, in this order: what changes every
+# cycle (M5). The clock, drive and caps lines (_volatile) follow them.
+_TAIL_HEADS = (
+    "YOUR ACTUAL SITUATION",
+    "YOUR INBOX, AND HOW TO ANSWER IT",
+    "YOU MAY NOT PROPOSE THESE TODAY",
+    "AN ACTION YOU HAVE NEVER ONCE PROPOSED",
+)
+# The own-section header, the board tags and the closing instruction.
+_WRAP_CHARS = len(_OWN_HEADER) + 260
+
+# Riffle's own blocks, most stable first (M5): what rarely changes leads, so
+# the composer can reuse the longest opening. Unlisted blocks keep their
+# order, after these.
+_OWN_ORDER = (
+    "WHAT CAN STOP AN ACTION", "THE FIELDS THE API ACTUALLY RETURNS",
+    "YOUR GOALS RIGHT NOW", "YOUR LIBRARY", "YOUR DESK", "QUESTIONS YOU HAVE ASKED",
+    "REFERENCES IN POSTS", "A POST NOW NEEDS A REFERENCE",
+    "YOUR OPERATOR ASKED FOR THIS", "WAITING ON YOUR OPERATOR",
+    "YOUR PROJECT", "POSTING IS CLOSED", "NO PROJECT IS OPEN",
+    "THE ONE THING TO DO NEXT", "YOU HAVE BEEN STUCK",
+    "THINGS YOU NOTED FROM", "YOUR LAST BUILD", "WHAT YOU HAVE ALREADY SAID",
+    "WHAT YOU REMEMBER",
+)
+# The board's blocks, most stable first; the front page and the changes
+# walk, new every cycle, last.
+_BOARD_ORDER = (
+    "THREADS YOU HAVE READ ON THIS PROJECT", "MEMORIES THAT CARRY",
+    "THE THREAD YOU READ MOST RECENTLY", "THE THREAD YOU ASKED TO READ AGAIN",
+    "OPEN LISTINGS", "WORK NOBODY HAS TAKEN", "THE DOCUMENT YOU OPENED",
+    "WHAT YOU READ LAST CYCLE", "WHAT YOUR SEARCH FOUND",
+    "COMMENTS YOU COULD ANSWER", "INBOX \u2014 OLDER", "INBOX \u2014 NEW",
+    "THE NULLS IN WHAT", "WHAT ACTUALLY MOVED", "FRONT PAGE",
+)
+
+
+def _rank_in(order):
+    def rank(p):
+        t = (p or "").lstrip()
+        return next((i for i, h in enumerate(order) if t.startswith(h)), len(order))
+    return rank
+
+
+_own_rank, _board_rank = _rank_in(_OWN_ORDER), _rank_in(_BOARD_ORDER)
+
+# EACH BLOCK'S OWN BUDGET (H6, audit 2026-10-27; priorities agreed with the
+# operator 2026-10-30). (opening, cap, floor), most important first. Every
+# block is held to its cap each cycle; if the total is still over, blocks are
+# cut toward their floor least important first, then left out (as a one-line
+# stub) least important first. Protected blocks (_NEVER_TRIM) never shrink.
+# Measured over 92 cycles: riffle wanted ~47,600 characters against a room of
+# ~18,100, and longest-first trimming cut what mattered.
+_BUDGETS = (
+    # the work at hand
+    ("WHAT YOU HAVE ALREADY SAID", 2000, 1500),
+    ("THE THREAD YOU READ MOST RECENTLY", 3500, 1200),
+    ("THE THREAD YOU ASKED TO READ AGAIN", 3500, 1200),
+    ("YOUR PROJECT", 3000, 1200),
+    ("POSTING IS CLOSED", 3000, 1200),
+    ("NO PROJECT IS OPEN", 3000, 600),
+    ("YOUR LAST BUILD", 2500, 600),       # 600 unless big_build
+    ("COMMENTS YOU COULD ANSWER", 1500, 500),
+    # context
+    ("YOUR GOALS RIGHT NOW", 1500, 400),
+    ("FRONT PAGE", 2000, 600),
+    ("WHAT ACTUALLY MOVED", 1500, 400),
+    ("WHAT YOUR SEARCH FOUND", 1500, 400),
+    ("WHAT YOU READ LAST CYCLE", 2000, 500),
+    ("THE DOCUMENT YOU OPENED", 2000, 500),
+    ("OPEN LISTINGS", 1500, 400),
+    ("WORK NOBODY HAS TAKEN", 1200, 300),
+    ("THINGS YOU NOTED FROM", 900, 300),
+    ("WHAT YOU REMEMBER", 900, 300),
+    ("MEMORIES THAT CARRY", 700, 250),
+    ("QUESTIONS YOU HAVE ASKED", 700, 250),
+    ("THREADS YOU HAVE READ ON THIS PROJECT", 600, 200),
+    ("REFERENCES IN POSTS", 600, 300),
+    ("YOUR DESK", 600, 200),
+    ("YOUR LIBRARY", 400, 150),
+    ("THE NULLS IN WHAT", 350, 150),
+)
+_UNLISTED = (1200, 250)        # ranked after every listed block
+
+
+def _budget_of(part, big_build=False):
+    """(rank, cap, floor) for a block; lower rank is more important."""
+    t = (part or "").lstrip()
+    for i, (head, cap, floor) in enumerate(_BUDGETS):
+        if t.startswith(head):
+            if head == "YOUR LAST BUILD" and not big_build:
+                cap = 600
+            return i, cap, floor
+    return len(_BUDGETS), _UNLISTED[0], _UNLISTED[1]
+
+
+def _fit(parts, budget, log=None, big_build=False):
+    """Bring the blocks under `budget` by importance, loudly; rules never.
+
+    BY IMPORTANCE, NOT LENGTH (H6, audit 2026-10-27). This cut the longest
+    block first, so riffle's own build source and traceback, the project
+    block and the block that stops repeated replies were cut while smaller,
+    less useful ones stood. Now, with each block's budget from _BUDGETS:
+      1. every block is held to its cap, every cycle;
+      2. if still over, blocks are cut toward their floors, least important
+         first, only as far as needed;
+      3. if still over, blocks are left out whole, least important first,
+         each replaced by one line saying it exists and did not fit.
+    Protected blocks (_NEVER_TRIM) are never touched; if they alone are over,
+    that is logged as an error.
+
+    Kept from before: each cut is re-made from the block's ORIGINAL text (one
+    marker, never two), and it ends at a paragraph break where one is near,
+    else at a line break, so a block written one item per line loses whole
+    items rather than half of one.
     """
-    total = sum(len(p) for p in parts) + 2 * len(parts)
-    if log:
-        # MEASUREMENT FOR H6 (audit 2026-10-27): every block's size BEFORE
-        # trimming, one line per cycle, so the per-block budgets can be set
-        # from the box's real numbers rather than guessed. "!" = protected
-        # (never cut), "+" = riffle's own section, otherwise board side.
-        # Changes nothing; remove once the budgets are in.
-        def _tag(p):
-            return ("!" if _is_rule(p) else "") + ("+" if _is_own(p) else "")
-        def _name(p):
-            n = re.sub(r"[^A-Za-z0-9 ]+", " ", p.lstrip()[:32]).split()
-            return "_".join(n[:4]) or "blank"
-        log(f"blocks before fitting: total {total} of {budget}: " + " ".join(
-            f"{_name(p)}{_tag(p)}={len(p)}" for p in parts))
-    if total <= budget:
-        return parts
     orig = list(parts)
-    over0 = total - budget
-    cut, left_out = {}, []
+    parts = list(parts)
+    total = sum(len(x) for x in parts) + 2 * len(parts)
+    want = total
+    specs = {i: _budget_of(parts[i], big_build) for i in range(len(parts))
+             if not _is_rule(parts[i])}
 
-    def _data_longest_first():
-        return [i for i in sorted(range(len(parts)), key=lambda i: -len(parts[i]))
-                if not _is_rule(parts[i])]
-
-    for fl in (floor, min_floor):
-        for i in _data_longest_first():
-            if total <= budget:
-                break
-            keep = max(fl, len(parts[i]) - (total - budget) - 160)
-            if keep >= len(parts[i]) or keep >= len(orig[i]):
-                continue
-            head = orig[i][:keep]
-            brk = head.rfind("\n\n")
-            if brk <= keep * 0.6:
-                brk = head.rfind("\n")
-            if brk > keep * 0.6:
-                head = head[:brk]
-            dropped = len(orig[i]) - len(head)
-            new = (head + f"\n[...{dropped} characters of this section were "
-                   f"cut to fit the context window. It is shortened, not "
-                   f"empty.]")
-            if len(new) >= len(parts[i]):
-                continue
+    def _cut(i, keep):
+        nonlocal total
+        if keep >= len(orig[i]) or keep >= len(parts[i]):
+            return
+        head = orig[i][:keep]
+        brk = head.rfind("\n\n")
+        if brk <= keep * 0.6:
+            brk = head.rfind("\n")
+        if brk > keep * 0.6:
+            head = head[:brk]
+        new = (head + f"\n[...{len(orig[i]) - len(head)} characters of this "
+               f"section were cut to fit the context window. It is shortened, "
+               f"not empty.]")
+        if len(new) < len(parts[i]):
             total += len(new) - len(parts[i])
             parts[i] = new
-            cut[i] = dropped
 
-    if total > budget:
-        for i in _data_longest_first():
-            if total <= budget:
-                break
-            name = orig[i].lstrip().split("\n", 1)[0][:70].rstrip(":")
-            stub = (f"[{name} \u2014 left out this cycle to fit the context "
-                    f"window ({len(orig[i])} characters). It exists; it did "
-                    f"not fit.]")
-            if len(stub) >= len(parts[i]):
-                continue
+    # 1. every block to its cap
+    for i, (_rank, cap, _floor) in specs.items():
+        if len(parts[i]) > cap:
+            _cut(i, cap)
+    least_first = sorted(specs, key=lambda i: -specs[i][0])
+    # 2. toward the floors, least important first, only as far as needed
+    for i in least_first:
+        if total <= budget:
+            break
+        _cut(i, max(specs[i][2], len(parts[i]) - (total - budget) - 160))
+    # 3. left out whole, least important first
+    left_out = []
+    for i in least_first:
+        if total <= budget:
+            break
+        name = orig[i].lstrip().split("\n", 1)[0][:70].rstrip(":")
+        stub = (f"[{name} \u2014 left out this cycle to fit the context window "
+                f"({len(orig[i])} characters). It exists; it did not fit.]")
+        if len(stub) < len(parts[i]):
             total += len(stub) - len(parts[i])
             parts[i] = stub
-            cut.pop(i, None)
             left_out.append(name[:40])
-
-    if log and cut:
-        # The overage and the amount cut, separately. This said "over budget
-        # by" and gave the amount cut, which is not the same number.
-        log(f"prompt was {over0} chars over budget; cut "
-            f"{sum(cut.values())} from " + ", ".join(
-                f"{orig[i][:40].split(chr(10))[0]}(-{d})"
-                for i, d in list(cut.items())[:4]), level="warn")
-    if log and left_out:
-        log(f"prompt still over budget after trimming every data block to "
-            f"{min_floor} chars; left out whole: {', '.join(left_out)}",
-            level="warn")
+    if log and want > budget:
+        log(f"prompt fitted: wanted {want} chars of {budget}, sent {total}"
+            + (f"; left out whole: {', '.join(left_out)}" if left_out else ""),
+            level="warn" if left_out else "info")
     if total > budget and log:
-        rules = sum(len(p) + 2 for p in parts if _is_rule(p))
+        rules = sum(len(x) + 2 for x in parts if _is_rule(x))
         log(f"prompt STILL over budget by {total - budget} chars with every "
             f"data block trimmed or left out; {rules} chars of that is "
             f"protected rules. Lower the data caps or raise max_prompt_chars "
             f"\u2014 the model call is likely to be refused.", level="error")
     return parts
-
 
 def situation(state, cfg, log=None):
     """What riffle actually has. Checked, not asserted.

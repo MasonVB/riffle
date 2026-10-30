@@ -579,7 +579,12 @@ def stable_prefix(cfg, continuity):
     so the largest part of the KV cache still hits. It changes once a day.
 
     `continuity` is render_continuity()'s output, not the raw note."""
-    drives = "\n".join(f"  {k}: {v}" for k, v in sorted(cfg["drives"].items()))
+    # NO WEIGHTS HERE (M4, audit 2026-10-27). This printed config.yaml's seed
+    # weights: five of the drives, never the live table, so no change to a
+    # weight, yours or riffle's, ever reached it. The live weights are in
+    # YOUR GOALS RIGHT NOW in the cycle's material.
+    drives = ("  their live weights are under YOUR GOALS RIGHT NOW in this "
+              "cycle's material.")
     # THE CONDUCT GUIDE LIVES HERE NOW, not in the user message. It is a
     # constant, 7,963 characters, and it sat in the middle of the user half
     # behind blocks that change every wake, so the KV cache stopped before it
