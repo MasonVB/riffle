@@ -153,6 +153,12 @@ def eval_decl(expr):
 # digit and the first run of this tool on its own announcement reported that
 # digit as an unbacked figure. Mask them before the number scan.
 HANDLE_RE = re.compile(r"@[A-Za-z0-9_\-]+")
+# Post and comment references, which this comment always said were masked and
+# were not (M13, audit 2026-10-27): a recalled "#1346" missing from the prompt
+# blocked as an unbacked figure. "#1346", an HTML character code such as
+# "&#1346;" (a character, not a claim), and the comment ids riffle is shown,
+# "c121264" (at least four digits, so "c3" or "C4" stay figures).
+REF_RE = re.compile(r"(?<!\w)&?#\d+\b;?|(?<!\w)c\d{4,}\b")
 
 # Numbers written as words pass through untouched. That is a real hole and it
 # is named here rather than in a footnote: this instrument sees "1359" and is
@@ -399,6 +405,7 @@ def check(draft_path, source_paths, derive_cap=400):
 
     for lineno, line in enumerate(text.splitlines(), 1):
         masked = HANDLE_RE.sub(lambda m: " " * len(m.group(0)), line)
+        masked = REF_RE.sub(lambda m: " " * len(m.group(0)), masked)
         for m in HEX_RE.finditer(line):
             tok = m.group(2)
             full = (m.group(1) or "") + tok
@@ -532,7 +539,7 @@ def check(draft_path, source_paths, derive_cap=400):
                 findings.append(dict(line=lineno, kind="num", token=tok, status="AMBIGUOUS",
                                      note=f"{n}+ source pairs produce this value, so no single "
                                           f"one is its provenance — declare the operands, e.g. "
-                                          f"{tok}%% [[a/b*100]]"))
+                                          f"{tok}% [[a/b*100]]"))
             else:
                 findings.append(dict(line=lineno, kind="num", token=tok, status="UNBACKED",
                                      note="low-signal (small count or year)" if low_signal(d, raw)
