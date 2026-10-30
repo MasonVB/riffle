@@ -2420,6 +2420,81 @@ def main():
                 log(f"could not read library #{_lid} for numcheck: "
                     f"{type(_e3).__name__}: {_e3}", level="warn", drive=drive)
         passed, report = run_numcheck(body, _src, material)
+        # A CRASH IS NOT A BLOCK (M13, audit 2026-10-27). A numcheck crash or
+        # timeout came back as a report with no findings and was announced as
+        # a block "containing 0 figures", with the real error never logged.
+        # Still not sent (an unchecked figure must not go out), but recorded
+        # as what it is: an error, with its message.
+        if not passed and report.get("error") and not report.get("findings"):
+            state.propose(cid, kind, drive, payload, rationale, "blocked", report)
+            log(f"numcheck could not run on a {kind}: {report['error']}",
+                level="error", drive=drive)
+            state.say("error", f"Cycle {cid} \u00b7 the figure check itself failed, "
+                               f"so the {kind} was not sent: {str(report['error'])[:300]}")
+            state.end_cycle(cid, "numcheck-error", str(report["error"])[:200])
+            return 0
+        # ONE MORE TRY, IN THIS CYCLE (M13). 93 of 154 numcheck blocks were a
+        # single figure, and each cost the whole cycle. When one or two block,
+        # the composer is asked once more, in the same prompt (so its cache
+        # holds), naming them. Only the BODY of its answer is used: the action
+        # and every other field stay as in the first draft, so every check
+        # already passed still holds, and the checks that read the body all
+        # come after this one. The new body is gated and checked again; only
+        # if it passes does it replace the first. Anything else blocks as before.
+        if not passed:
+            _bad1 = [f for f in report.get("findings", [])
+                     if f.get("status") in ("UNBACKED", "MALFORMED", "AMBIGUOUS")
+                     and not f.get("low")]
+            if 1 <= len(_bad1) <= 2:
+                _named = "; ".join(f"line {f['line']}: {f['token']} "
+                                   f"({f.get('status', '?').lower()})" for f in _bad1)
+                _ask = (f"\n\nYOUR DRAFT WAS NOT SENT. It contains figure(s) I "
+                        f"could not trace to anything you have read: {_named}. "
+                        f"Write the same {kind} again, changing only its body: "
+                        f"take those figures out, or back each one, as 37.5% "
+                        f"[[3/8*100]] with the operands you used, or by quoting "
+                        f"the line it comes from with the page's URL. Keep "
+                        f"everything else as it was. Reply with the JSON object only.")
+                try:
+                    _raw2 = cortex.complete(
+                        cfg["llm"]["composer"], system, user + _ask,
+                        schema=_schema_without(cortex.proposal_schema(),
+                                               (set(policy.ACTION_KINDS) | {"noop"}) - {kind}))
+                    _p2 = cortex.parse_proposal(_raw2) or {}
+                    _body2 = (((_p2.get("payload") or {}).get("body") or "")
+                              if _p2.get("action") == kind else "")
+                    if _body2:
+                        _k2, _pay2, _r2 = drives.gate(
+                            {"action": kind, "payload": dict(payload, body=_body2),
+                             "rationale": rationale}, drive, cfg)
+                        for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b",
+                                                   _pay2["body"], re.I)):
+                            if f"library_{_lid}" not in _src:
+                                try:
+                                    _row3, _text3 = library.read(
+                                        state, int(_lid), cfg["library"]["root"], count=False)
+                                    if _row3:
+                                        _src[f"library_{_lid}"] = (_text3 or "")[:20000]
+                                except Exception:
+                                    pass
+                        _passed2, _report2 = run_numcheck(_pay2["body"], _src, material)
+                        if _passed2:
+                            log(f"numcheck: {len(_bad1)} figure(s) blocked the first "
+                                f"draft; the rewrite in the same cycle passed", drive=drive)
+                            state.say("report", f"Cycle {cid} \u00b7 my first draft had "
+                                                f"figure(s) I could not trace ({_named}); "
+                                                f"I rewrote it in the same cycle.",
+                                      {"drive": drive})
+                            payload, body, passed, report = _pay2, _pay2["body"], True, _report2
+                        else:
+                            log("numcheck: the rewrite still had untraceable "
+                                "figures; blocking as before", level="warn", drive=drive)
+                    else:
+                        log("numcheck: the rewrite did not come back as the same "
+                            "action; blocking as before", level="warn", drive=drive)
+                except Exception as _e4:
+                    log(f"numcheck: the rewrite did not work ({type(_e4).__name__}: "
+                        f"{_e4}); blocking as before", level="warn", drive=drive)
         if not passed:
             # Match the message to the decision. Spelled numerals do not block
             # in agent mode, but the report listed them anyway, so it named
