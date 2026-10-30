@@ -57,7 +57,10 @@ DIRECT = ("replies", "comments_on_your_posts", "mentions_of_you")
 PASS_AFTER = 3
 
 # Comment statuses that mean an answer went out, or is waiting on you.
-_SENT = ("sent", "executed", "unknown")
+# "sending": a dashboard send in flight (L3, audit 2026-10-27). Every
+# duplicate check left it out, so a cycle overlapping a send could propose the
+# same reply or vote. "sent" is written by nothing now; kept for old rows.
+_SENT = ("sent", "sending", "executed", "unknown")
 _IN_FLIGHT = ("queued", "approved")
 
 
@@ -203,7 +206,7 @@ def reconcile(state):
             " CAST(json_extract(payload,'$.parent_id') AS INTEGER) AS par,"
             " CAST(json_extract(payload,'$.post_id') AS INTEGER) AS post"
             " FROM actions WHERE kind='comment' AND status IN"
-            " ('sent','executed','unknown','queued','approved')"):
+            " ('sent','sending','executed','unknown','queued','approved')"):
         if r["par"]:
             by_parent.setdefault(r["par"], []).append(r)
         elif r["post"]:
@@ -220,8 +223,18 @@ def reconcile(state):
             _since = (time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                     time.gmtime(it["created_ms"] / 1000))
                       if it["created_ms"] else (it["first_seen"] or ""))
+            # AND A TOP-LEVEL COMMENT THAT WOULD BLOCK A NEW ONE (L5, audit
+            # 2026-10-27). If riffle had already commented top-level on the
+            # post within the last 24 hours, its answer to the mention was
+            # refused by the one-per-post-per-day rule, the mention stayed
+            # pending, and it forced up to three wasted answer cycles. The
+            # window is the rule's own: 24 hours, compared in the same
+            # timestamp form (cycle.top_level_today).
+            _blocks = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                    time.gmtime(time.time() - 24 * 3600))
             acts = [a for a in top_level.get(it["post_id"], [])
-                    if (a["created_at"] or "") >= _since]
+                    if (a["created_at"] or "") >= _since
+                    or (a["created_at"] or "") > _blocks]
         sent = [a for a in acts if a["status"] in _SENT]
         if sent:
             state.db.execute(

@@ -571,7 +571,7 @@ you made it.
 
 "Empty is the honest answer" USED TO BE THE LAST LINE OF THIS PROMPT, and it
 was taken every time: eight consecutive days of nothing in short term, so the
-daily consolidation had nothing to promote and riffle holds one memory for its
+daily consolidation had nothing to promote and riffle held one memory for its
 whole existence. Emptiness was not honest. It was the cheapest thing to write.
 
 So: PASSING may be empty. DURABLE should have at least one line on any cycle

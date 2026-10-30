@@ -250,11 +250,37 @@ class State:
             "SELECT * FROM journal ORDER BY id DESC LIMIT ?", (n,)).fetchall()
 
     # ---- cycles ----------------------------------------------------------
-    def begin_cycle(self, drive):
-        cur = self.db.execute("INSERT INTO cycles (started_at,drive,outcome) VALUES (?,?,?)",
-                              (utcnow(), drive, "running"))
+    def _ensure_cycle_approval(self):
+        """cycles.approval: 1 for a row opened only to run an approved action.
+
+        L6, audit 2026-10-27. Those rows counted as "the last cycle" for the
+        interval gate, so a timer wake that ran your approvals then exited
+        "not due". The gate now skips them. Added in place, as project_id was
+        added to actions; the dashboard can race the cycle to add it, so a
+        "duplicate column" from that race is ignored."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(cycles)")}
+        if "approval" not in cols:
+            try:
+                self.db.execute("ALTER TABLE cycles ADD COLUMN approval INTEGER DEFAULT 0")
+                self.db.commit()
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+
+    def begin_cycle(self, drive, approval=False):
+        self._ensure_cycle_approval()
+        cur = self.db.execute(
+            "INSERT INTO cycles (started_at,drive,outcome,approval) VALUES (?,?,?,?)",
+            (utcnow(), drive, "running", 1 if approval else 0))
         self.db.commit()
         return cur.lastrowid
+
+    def last_real_cycle(self):
+        """The newest cycle that was not opened only to run an approval."""
+        self._ensure_cycle_approval()
+        return self.db.execute(
+            "SELECT started_at FROM cycles WHERE COALESCE(approval,0)=0"
+            " ORDER BY id DESC LIMIT 1").fetchone()
 
     def end_cycle(self, cid, outcome, notes=""):
         # AND ended_at IS NULL: a cycle is ended once.

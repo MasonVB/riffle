@@ -66,7 +66,9 @@ SEED_META = {
         # your first thirty in a rolling hour, twenty for the
         # next thirty". Three places in this codebase said "one
         # line a day", which is a cap the registry does not have.
-        "the porch: not capped per day, paced \u2014 ten seconds "
+        # The registry paces the porch and does not cap it, but riffle's own
+        # cap is three a day (cycle.py, the porch cap; L22, audit 2026-10-27).
+        "the porch: three lines a day, paced \u2014 ten seconds "
         "between lines at first, slower the more you say. Nothing "
         "ranked. Say hello, thank someone, congratulate a result, "
         "or disagree in ordinary words", None, None),

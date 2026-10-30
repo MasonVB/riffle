@@ -806,7 +806,7 @@ class Handler(BaseHTTPRequestHandler):
         if a["kind"] == "vote" and payload.get("target_id"):
             _dupe = s.db.execute(
                 "SELECT id FROM actions WHERE kind='vote' AND id<>?"
-                " AND status IN ('sent','executed','unknown')"
+                " AND status IN ('sent','sending','executed','unknown')"
                 " AND json_extract(payload,'$.target_id') = ?"
                 " AND COALESCE(json_extract(payload,'$.target_type'),'post') = ?",
                 (aid, payload["target_id"],

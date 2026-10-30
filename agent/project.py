@@ -430,9 +430,9 @@ def missing_kind(state, cfg, pid):
                       "superseded by a better one, and the project cannot move "
                       "one inch until one exists. 'The draft is incomplete' is "
                       "not a reason to withhold it \u2014 incomplete is what a "
-                      "draft is. You have declined to file this one for over a "
+                      "draft is. You once declined to file a draft for over a "
                       "hundred hours while calling the project blocked; the "
-                      "project is not blocking you, you are.")
+                      "project was not blocking you, you were.")
         return ("write a DRAFT: a paragraph you would actually publish, in your "
                 "own words, saying what the sources add up to. You have the "
                 "reading and the objection; this is the only kind you are "

@@ -102,7 +102,7 @@ def near_duplicate(state, kind, body, exclude_id=None, threshold=0.55):
     best, best_ov = None, 0.0
     for r in state.db.execute(
             "SELECT id, created_at, payload FROM actions WHERE kind=?"
-            " AND status IN ('sent','executed','approved','queued','unknown')"
+            " AND status IN ('sent','sending','executed','approved','queued','unknown')"
             " ORDER BY id DESC LIMIT 15", (kind,)):
         if exclude_id is not None and r["id"] == exclude_id:
             continue
@@ -134,7 +134,7 @@ def top_level_today(state, post_id, exclude_id=None):
     """
     for r in state.db.execute(
             "SELECT id, created_at, payload FROM actions WHERE kind='comment'"
-            " AND status IN ('sent','executed','approved','queued','unknown')"
+            " AND status IN ('sent','sending','executed','approved','queued','unknown')"
             " AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')"
             " ORDER BY id DESC"):
         if exclude_id is not None and r["id"] == exclude_id:
@@ -157,7 +157,7 @@ def _replied_ids(state):
         for (_p,) in state.db.execute(
                 "SELECT CAST(json_extract(payload,'$.parent_id') AS INTEGER)"
                 " FROM actions WHERE kind='comment' AND status IN"
-                " ('sent','executed','approved','queued','unknown')"):
+                " ('sent','sending','executed','approved','queued','unknown')"):
             if _p:
                 out.add(_p)
     except Exception:
@@ -225,7 +225,7 @@ def replied_to(state, parent_id):
     """
     return state.db.execute(
         "SELECT id, created_at FROM actions WHERE kind='comment'"
-        " AND status IN ('sent','executed','approved','queued','unknown')"
+        " AND status IN ('sent','sending','executed','approved','queued','unknown')"
         " AND CAST(json_extract(payload,'$.parent_id') AS INTEGER)=?"
         " ORDER BY id DESC LIMIT 1", (int(parent_id),)).fetchone()
 
@@ -438,35 +438,10 @@ def do_witness(state, reader, log, max_pages=8):
     prior = {"identity": state.last_head("identity"),
              "treasury": state.last_head("treasury")}
     alarms = []
-    if prior["identity"] and prior["treasury"]:
-        try:
-            chk = reader.attest(
-                identity_from=prior["identity"]["through_id"],
-                identity_expect=prior["identity"]["head"],
-                ledger_from=prior["treasury"]["through_id"],
-                ledger_expect=prior["treasury"]["head"])
-            for name, key in (("identity", "identity_log"),
-                              ("treasury", "treasury")):
-                verdict, detail = _verdict(chk.get(key, {}))
-                if verdict == "alarm":
-                    alarms.append(name)
-                    notify.alarm(state, _CFG or {},
-                                 f"{name} chain: {detail}", log)
-                    # The id from THIS chain, not identity's. The treasury
-                    # alarm used to print identity's through_id, which sent
-                    # anyone reading it to the wrong place in the wrong log.
-                    log(f"ALARM on {name}: {detail}. The segment witnessed at "
-                        f"id {prior[name]['through_id']} no longer hashes to "
-                        f"what was saved.", level="alarm", drive="witness")
-                elif verdict in ("inconclusive", "incomplete"):
-                    log(f"{name}: {verdict.upper()} ({detail}) — this call "
-                        f"carries no information about whether the saved mark "
-                        f"still holds", level="warn", drive="witness")
-        except (HttpError, OSError, ValueError) as e:
-            # Unguarded before: a registry error here killed the whole wake,
-            # before the cycle row existed, so it left no trace anywhere.
-            log(f"re-check failed: {type(e).__name__}: {e}",
-                level="warn", drive="witness")
+    # ONE CALL, NOT TWO (L1, audit 2026-10-27). A separate re-check here sent
+    # exactly the request the walk's first page sends (from the saved marks,
+    # expecting their heads), so every wake asked the registry the same thing
+    # twice. The first page's answer is now checked for an alarm below.
 
     # --- walk forward -------------------------------------------------------
     #
@@ -503,6 +478,23 @@ def do_witness(state, reader, log, max_pages=8):
                               ("treasury", "treasury")):
                 b = att.get(key, {})
                 verdict, detail = _verdict(b)
+                # The first page carries the saved marks, so its answer is the
+                # re-check: an alarm means the segment witnessed earlier no
+                # longer hashes to what was saved. (An "incomplete" answer
+                # here means the mark MATCHED: the registry reports a mismatch
+                # ahead of incomplete.)
+                if walked == 1 and prior[name]:
+                    if verdict == "alarm":
+                        alarms.append(name)
+                        notify.alarm(state, _CFG or {}, f"{name} chain: {detail}", log)
+                        # The id from THIS chain, not identity's.
+                        log(f"ALARM on {name}: {detail}. The segment witnessed at "
+                            f"id {prior[name]['through_id']} no longer hashes to "
+                            f"what was saved.", level="alarm", drive="witness")
+                    elif verdict == "inconclusive":
+                        log(f"{name}: INCONCLUSIVE ({detail}) — the registry could "
+                            f"not say whether the saved mark still holds",
+                            level="warn", drive="witness")
                 if verdict == "ok" and b.get("head"):
                     fresh[name] = (b["head"], b["verified_through_id"])
                 elif verdict == "incomplete" and b.get("verified_through_id"):
@@ -762,7 +754,7 @@ def main():
         _approved = []
         log(f"could not look for approved local actions: {_e}", level="warn")
     for _row in _approved:
-        _acid = state.begin_cycle(_row["drive"] or "operator")
+        _acid = state.begin_cycle(_row["drive"] or "operator", approval=True)
         state.set_status(_row["id"], "running", {"started_by_cycle": _acid})
         try:
             apply_local(state, cfg, _acid, _row["kind"],
@@ -832,8 +824,9 @@ def main():
     _iv = int(state.note("cycle_interval_minutes")
               or (cfg.get("cycle") or {}).get("interval_minutes", 60))
     _iv = max(5, min(1440, _iv))
-    _last = state.db.execute(
-        "SELECT started_at FROM cycles ORDER BY id DESC LIMIT 1").fetchone()
+    # The last REAL cycle (L6): a row opened only to run an approval, earlier
+    # in this same wake or another, does not reset the interval.
+    _last = state.last_real_cycle()
     # Whichever is later: the last cycle that actually began, or the last wake
     # that got this far. Without the second, a wake that dies before
     # begin_cycle() is invisible to the gate and repeats every tick.
@@ -915,11 +908,27 @@ def main():
         ("greet", 0.08,
          # Not "one line a day". /api/surface, 2026-10-17: "NOT capped per
          # day — paced, and the pace slows the more you say."
-         "the porch: not capped per day, paced. Nothing ranked. Say hello, "
+         "the porch: three lines a day, paced. Nothing ranked. Say hello, "
          "congratulate, thank, disagree in plain words — the social room, "
          "not the record"),
     ):
         _seed_drive_once(state, _n, _w, _d)
+    # THE STORED GREET DESCRIPTION SAID "NOT CAPPED PER DAY" (L22, audit
+    # 2026-10-27); riffle's porch cap is three a day. A seed is written once,
+    # so the box keeps the old text: it is replaced here, but only while it is
+    # still word for word one of the two old seeds. Edited by hand, it stays.
+    state.db.execute(
+        "UPDATE drives SET description=? WHERE name='greet' AND description IN (?,?)",
+        ("the porch: three lines a day, paced. Nothing ranked. Say hello, "
+         "congratulate, thank, disagree in plain words \u2014 the social room, "
+         "not the record",
+         "the porch: not capped per day, paced. Nothing ranked. Say hello, "
+         "congratulate, thank, disagree in plain words \u2014 the social room, "
+         "not the record",
+         "the porch: not capped per day, paced \u2014 ten seconds between lines "
+         "at first, slower the more you say. Nothing ranked. Say hello, thank "
+         "someone, congratulate a result, or disagree in ordinary words"))
+    state.db.commit()
     _seed_drive_once(
         state, "operator", 0.0,
         "carry out what your operator asked for in the chat box; selected "
@@ -1481,9 +1490,12 @@ def main():
     # them. A list it can read is harder to ignore than an adjective.
     _used = {r["kind"] for r in state.db.execute(
         "SELECT DISTINCT kind FROM actions")}
+    # Not one the grammar removed this cycle (L22): naming an action riffle
+    # cannot write now is a hint it can only fail to follow.
     _never = [k for k in policy.ACTION_KINDS
               if k not in _used
-              and cfg["autonomy"].get(k, "never") != "never"]
+              and cfg["autonomy"].get(k, "never") != "never"
+              and k not in _blocked]
     # ONE action, not a list of sixteen.
     #
     # The list version named everything unused at once, which is the same
@@ -1758,7 +1770,7 @@ def main():
     _said = state.db.execute(
         "SELECT kind, created_at, payload, rationale, status FROM actions"
         " WHERE kind IN ('comment','post','porch') AND status IN"
-        " ('sent','executed','approved','queued','unknown')"
+        " ('sent','sending','executed','approved','queued','unknown')"
         " ORDER BY id DESC LIMIT 8").fetchall()
     if _said:
         _lines = []
@@ -2637,7 +2649,7 @@ def main():
         # vote from that era was invisible to this check.
         _v = state.db.execute(
             "SELECT id, created_at, status FROM actions WHERE kind='vote'"
-            " AND status IN ('sent','executed','approved','queued','unknown')"
+            " AND status IN ('sent','sending','executed','approved','queued','unknown')"
             " AND json_extract(payload,'$.target_id') = ?"
             " AND COALESCE(json_extract(payload,'$.target_type'),'post') = ?"
             " ORDER BY id DESC LIMIT 1",
@@ -3167,6 +3179,21 @@ def main():
     return 0
 
 
+def _one_per_id(rows):
+    """Rows de-duplicated by "id": latest copy wins, first-seen order kept."""
+    out, at = [], {}
+    for r in rows:
+        k = r.get("id") if isinstance(r, dict) else None
+        if k is None:
+            out.append(r)
+        elif k in at:
+            out[at[k]] = r
+        else:
+            at[k] = len(out)
+            out.append(r)
+    return out
+
+
 def walk_changes(state, reader, cfg, log):
     """The only complete read of what moved. Cursor-based, bounded, resumable.
 
@@ -3262,6 +3289,11 @@ def walk_changes(state, reader, cfg, log):
     state.note("changes_since", str(since))
     if etag:
         state.note("changes_etag", etag)
+    # ONE ROW PER ID (L8, audit 2026-10-27). The registry says legacy mode can
+    # re-serve rows across pages, and the walk kept every copy, inflating the
+    # counts riffle is shown. The latest copy of each id is kept, in the order
+    # first seen; a row without an id is kept as it is.
+    posts, comments, nulls = _one_per_id(posts), _one_per_id(comments), _one_per_id(nulls)
     state.note("changes_nulls_since", str(nulls_since or "done"))
 
     if unchanged and not pages:
@@ -3670,9 +3702,12 @@ def situation(state, cfg, log=None):
     # skip and a remembered failure is not. A tally is harder to read past
     # than a suggestion, and it is the thing to check a claim about your own
     # past against.
+    # RAN, NOT SENT (L2, audit 2026-10-27). Local actions are recorded
+    # 'accepted', never 'executed', so this said every build, read and note
+    # had never happened; goals.firing() had the same bug and was fixed.
     _tally = {r["kind"]: (r["n"], r["ok"]) for r in state.db.execute(
         "SELECT kind, COUNT(*) n,"
-        " SUM(status IN ('sent','executed')) ok FROM actions GROUP BY kind")}
+        " SUM(status IN ('sent','executed','accepted')) ok FROM actions GROUP BY kind")}
 
     out = ["YOUR ACTUAL SITUATION, checked this cycle rather than remembered:"]
     out += [f"  - {h}" for h in have]
@@ -3680,7 +3715,7 @@ def situation(state, cfg, log=None):
         out += [f"  - You do NOT have: {l}" for l in lack]
     if _tally:
         out.append("  - YOUR RECORD, from the actions table: "
-                   + ", ".join(f"{k} {v[0]}({v[1] or 0} sent)"
+                   + ", ".join(f"{k} {v[0]}({v[1] or 0} ran)"
                                for k, v in sorted(_tally.items())))
     _never = [k for k in policy.ACTION_KINDS if k not in _tally]
     if _never:
