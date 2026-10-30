@@ -233,24 +233,28 @@ sys.path.insert(0, ".")
 
 CHARS_PER_TOKEN = 3.25   # measured 3.52 (73,864 chars = 20,964 tokens); kept low
 TEMPLATE_TOKENS = 64     # chat-template wrapping around system and user
-FRONT_HDR = 260          # the FRONT PAGE header (228 chars) plus slack
-WRAP = 140               # <board> tags and the closing instruction (99 + drive)
-
+# The end of the prompt, after </board> (cycle._TAIL_HEADS and the clock,
+# drive and caps lines), at its largest: the situation check ~2,930, inbox
+# guidance up to ~690, the two hints ~300 each, the clock lines ~200.
+TAIL_WORST = 4500
+# The protected blocks at their largest together (H6): what can stop an
+# action ~1,760, the API fields ~650, the inbox up to ~4,800, the next step
+# ~350, the reference notice ~600, an operator instruction and the waiting
+# list. They are never cut, so the room must hold them all.
+PROTECTED_WORST = 9500
 # The cycle's budget arithmetic, as code with comments, strings and
 # whitespace removed. If any is gone, this gate's model of the prompt is out
-# of date and its answer means nothing.
-MIRRORED = ("_room=_ceiling-_sys_chars-int(budget*0.10)",
-            "room=max(1800,budget-len(fixed)-400)",
-            "if_room<8000:")
-
-
+# of date and its answer means nothing. Since H6 (2026-10-30) everything,
+# the front page included, is fitted inside one room, so the prompt sent is
+# at most the ceiling unless the protected blocks alone overflow it.
+MIRRORED = ("_room=_ceiling-_sys_chars-_tail_chars-_WRAP_CHARS",
+            "if_room<8000:",
+            "parts=_fit(parts,_room,log,")
 def code_only(path):
     skip = (tokenize.COMMENT, tokenize.STRING, tokenize.NL, tokenize.NEWLINE,
             tokenize.INDENT, tokenize.DEDENT)
     toks = tokenize.generate_tokens(io.StringIO(open(path).read()).readline)
     return "".join(t.string for t in toks if t.type not in skip)
-
-
 def unit_ctx(path):
     """Per-sequence context from a llama-server unit, or None."""
     try:
@@ -263,8 +267,6 @@ def unit_ctx(path):
         return None
     p = re.search(r"(?:--parallel|(?<!\S)-np)[\s=]+(\d+)", text)
     return int(m.group(1)) // max(1, int(p.group(1)) if p else 1)
-
-
 try:
     if not os.path.exists("config.yaml"):
         print("  no config.yaml here, and the cycle cannot run without one")
@@ -272,7 +274,6 @@ try:
     import yaml
     from agent import cortex
     cfg = yaml.safe_load(open("config.yaml"))
-
     code = code_only("agent/cycle.py")
     gone = [m for m in MIRRORED if m not in code]
     if gone:
@@ -280,7 +281,6 @@ try:
             print(f"  cycle.py no longer contains {m!r}")
         print("  the prompt budget changed; update gate 4 to match it")
         sys.exit(1)
-
     ctxs = {p: unit_ctx(p) for p in
             ("/etc/systemd/system/llama-composer.service",
              "systemd/llama-composer.service")}
@@ -289,36 +289,28 @@ try:
         print("  no --ctx-size in either llama-composer.service")
         sys.exit(1)
     ctx = min(found)
-
     comp = (cfg.get("llm") or {}).get("composer") or {}
     want = int(comp.get("max_tokens", 1600))           # cortex's default
     ceiling = int((cfg.get("cycle") or {}).get("max_prompt_chars", 50000))
-    budget = int(cfg["cycle"]["max_context_chars"])     # cycle has no default
     # With the continuity note at its cap: riffle writes it daily, and the
     # day it writes its longest is the day the budget has to hold.
     sysc = len(cortex.stable_prefix(cfg, cortex.render_continuity(
         "x" * cortex.CONTINUITY_MAX, "2026-01-01T00:00:00Z")))
-    # The user message opens with riffle's own section, under this header,
-    # before <board>. Counted with the rest of the wrapper.
-    from agent.cycle import _OWN_HEADER
-    wrap = WRAP + len(_OWN_HEADER) + 4
-
-    data_room = ceiling - sysc - int(budget * 0.10)
-    if data_room < 8000:
+    from agent.cycle import _WRAP_CHARS
+    data_room = ceiling - sysc - TAIL_WORST - _WRAP_CHARS
+    if data_room < max(8000, PROTECTED_WORST):
         print(f"  the system prompt is {sysc} chars of a {ceiling} ceiling, "
-              f"leaving {data_room} for the rest; the cycle logs an error "
-              f"every wake at that size")
+              f"leaving {data_room} for the data; the protected blocks alone "
+              f"can need {PROTECTED_WORST}")
         sys.exit(1)
-
-    capped = ceiling - int(budget * 0.10) + 1800        # front page at its floor
-    uncapped = sysc + budget - 400                       # front page given `budget`
-    worst = max(capped, uncapped) + FRONT_HDR + wrap
+    worst = ceiling
     tokens = math.ceil(worst / CHARS_PER_TOKEN) + TEMPLATE_TOKENS
     left = ctx - tokens
-    print(f"  worst prompt {worst} chars ~ {tokens} tokens of {ctx}; "
-          f"{left} left, max_tokens {want} (system {sysc}, continuity at its cap)")
+    print(f"  worst prompt {worst} chars ~ {tokens} tokens of {ctx}; {left} "
+          f"left, max_tokens {want} (system {sysc} with continuity at its "
+          f"cap; data room {data_room}, protected worst {PROTECTED_WORST})")
     if left < want:
-        print("  TOO TIGHT: lower max_prompt_chars, max_context_chars or max_tokens")
+        print("  TOO TIGHT: lower max_prompt_chars or max_tokens")
         sys.exit(1)
 except SystemExit:
     raise
