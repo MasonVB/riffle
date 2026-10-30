@@ -38,6 +38,9 @@ import ipaddress
 import json
 import re
 import socket
+import ssl
+import functools
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -88,51 +91,86 @@ def _ip_blocked(ip):
                    if net.version == ip.version))
 
 
-def _check_peer(resp, url):
-    """Check the address we ACTUALLY connected to, after connecting.
+def _allowed_ips(host):
+    """Every address `host` resolves to, if NONE is inside your network.
 
-    check_url resolves the hostname to decide whether to allow it, and then
-    urlopen resolves it again to connect. Between those two lookups a DNS
-    server under someone else's control can change the answer — allow a
-    public address for the check, return 127.0.0.1 for the connection. The
-    guard inspects one address and the socket uses another.
-
-    The thorough fix is to connect to the checked IP directly and carry the
-    original Host and SNI, which means replacing urllib's connection
-    handling. This is the cheap one: ask the open socket where it actually
-    went. It closes the window after the fact rather than preventing it, so
-    a request IS made to the internal address — but nothing is read from it
-    and nothing is returned to the caller.
-    """
-    try:
-        peer = resp.fp.raw._sock.getpeername()[0]
-    except (AttributeError, OSError, IndexError, TypeError):
-        return  # can't tell; the pre-check is all we have
-    try:
-        ip = ipaddress.ip_address(peer)
-    except ValueError:
-        return
-    if _ip_blocked(ip):
-        try:
-            resp.close()
-        except Exception:
-            pass
-        raise Refused(f"{url} connected to {peer}, which is inside your own "
-                      f"network. The name resolved differently for the check "
-                      f"and for the connection.")
+    Refused if any is: a name that resolves to both a public and a private
+    address is exactly the shape of a rebinding attempt."""
+    ips = _addresses(host)
+    for ip in ips:
+        if _ip_blocked(ip):
+            raise Refused(f"{host} resolves to {ip}, which is inside your own "
+                          f"network; refusing")
+    if not ips:
+        raise Refused(f"cannot resolve {host!r}")
+    return ips
 
 
-def check_url(url):
-    """Return a normalised URL or raise Refused. Call on EVERY hop."""
+# CONNECT TO THE ADDRESS THAT WAS CHECKED (L19, audit 2026-10-27).
+# check_url resolved the name to decide, and urlopen resolved it again to
+# connect, so a DNS server answering "public" for the check and "127.0.0.1"
+# for the connection steered the request inside. The old after-the-fact peer
+# check let the request out first, allowed it when the socket could not be
+# inspected, and was skipped on an HTTP error. Now the name is resolved once,
+# every address is checked, and the connection goes to a checked address,
+# with the original name kept for the Host header, SNI and the certificate
+# check, so HTTPS verification is unchanged.
+class _PinnedHTTP(http.client.HTTPConnection):
+    def __init__(self, host, *a, pinned_ip=None, **k):
+        super().__init__(host, *a, **k)
+        self._pin = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self._pin, self.port),
+                                             self.timeout, self.source_address)
+
+
+class _PinnedHTTPS(http.client.HTTPSConnection):
+    def __init__(self, host, *a, pinned_ip=None, **k):
+        super().__init__(host, *a, **k)
+        self._pin = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pin, self.port),
+                                        self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _pinned_opener(ip):
+    ip = str(ip)
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+
+    class H(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(functools.partial(_PinnedHTTP, pinned_ip=ip), req)
+
+    class S(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(functools.partial(_PinnedHTTPS, pinned_ip=ip), req,
+                                context=ssl.create_default_context())
+
+    # No proxy: a pinned connection goes to the checked address itself.
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect, H, S)
+
+
+def _checked_ips(url):
+    """The checked addresses for a URL's host, resolving it ONCE, or Refused."""
     p = urllib.parse.urlparse(url)
     if p.scheme not in ("http", "https"):
         raise Refused(f"only http and https are allowed, not {p.scheme!r}")
     if not p.hostname:
         raise Refused("no host in URL")
-    for ip in _addresses(p.hostname):
-        if _ip_blocked(ip):
-            raise Refused(f"{p.hostname} resolves to {ip}, which is inside your "
-                          f"own network; refusing")
+    return _allowed_ips(p.hostname)
+
+
+def check_url(url):
+    """Return the URL or raise Refused. _open does its own check on every hop
+    (one resolution, then connects to what it checked); this is for callers
+    that only want to know."""
+    _checked_ips(url)
     return url
 
 
@@ -140,20 +178,12 @@ def _open(url, timeout=20, depth=0):
     """Fetch with redirects followed by hand, so each hop is re-checked."""
     if depth > 4:
         raise Refused("too many redirects")
-    check_url(url)
-
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
-            return None
-
-    op = urllib.request.build_opener(NoRedirect)
+    op = _pinned_opener(_checked_ips(url)[0])        # one resolution, then pinned
     req = urllib.request.Request(url, headers={
         "User-Agent": UA, "Accept-Encoding": "gzip",
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"})
     try:
-        resp = op.open(req, timeout=timeout)
-        _check_peer(resp, url)
-        return resp
+        return op.open(req, timeout=timeout)
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 303, 307, 308):
             loc = e.headers.get("Location")

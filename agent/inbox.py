@@ -143,7 +143,7 @@ def _page(writer, bucket, token, since=None):
     return rows, stats["next"].get(bucket)
 
 
-def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6):
+def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6, state=None):
     """The rest of a truncated live read, before it is acked.
 
     Each truncated bucket is paged with its own next_before token. A live
@@ -158,9 +158,46 @@ def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6):
             out += rows
             pages += 1
         if tok:
+            # THE PLACE IS KEPT (L18, audit 2026-10-27). A burst past this
+            # cap was acknowledged past and lost. Not acknowledging would
+            # stall instead (each read restarts at the newest page), so the
+            # token is saved and resume() reads on from it next cycle.
+            if state is not None:
+                state.note(f"inbox_resume:{b}", tok)
             log(f"inbox: {b} still had more after {max_pages} extra pages; "
-                f"the ack will skip the rest", level="warn")
+                f"the place is saved and the next cycle reads on from it",
+                level="warn")
     return out
+
+
+def resume(state, writer, log, buckets=LIVE_BUCKETS, max_pages=6):
+    """Read on from a place drain() saved after a burst, and store it.
+
+    With ?since=0 (as import_backlog reads), paging back by token does not
+    depend on the acknowledgement cursor, and store() skips what is already
+    stored, so a page read twice costs nothing. The place is kept until the
+    bucket runs out; an error keeps it for the next cycle. Returns how many
+    new items were stored.
+    """
+    new = 0
+    for b in buckets:
+        tok = state.note(f"inbox_resume:{b}")
+        if not tok:
+            continue
+        pages = 0
+        try:
+            while tok and pages < max_pages:
+                rows, tok = _page(writer, b, tok, since=0)
+                new += store(state, rows, "live")
+                pages += 1
+        except Exception as e:
+            log(f"inbox: reading on in {b} failed ({type(e).__name__}: {e}); "
+                f"the place is kept for the next cycle", level="warn")
+            continue
+        state.note(f"inbox_resume:{b}", tok or "")
+        log(f"inbox: read on {pages} page(s) in {b} after a burst"
+            + ("; there is still more, read on next cycle" if tok else "; caught up"))
+    return new
 
 
 def import_backlog(state, writer, log, buckets=DIRECT, max_pages=40):

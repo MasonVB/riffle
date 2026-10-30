@@ -137,21 +137,32 @@ def announce_pending(state, cfg, log):
     #
     # The one place where board content reaches a push notification you are
     # likely to tap.
-    if len(rows) == 1:
-        r = rows[0]
-        title = f"riffle wants to {r['kind']}"
-        msg = (f"[{html.escape(r['drive'] or '')}] "
-               f"{html.escape(r['rationale'][:600])}\n\n"
-               f'<a href="{review(r["id"])}">Review and decide &#8594;</a>')
-    else:
-        title = f"riffle has {len(rows)} proposals waiting"
-        msg = "\n\n".join(
+    # THE TEXT GIVES WAY, NOT THE LINKS (L15, audit 2026-10-27). send() cuts
+    # the message at Pushover's 1,024, and the links come last, so a long
+    # notification lost the very links it exists to carry; escaping (& to
+    # &amp;) made the text longer than it was sliced. Now each rationale is
+    # shortened BEFORE escaping until the whole message fits under 1,000.
+    def _compose(n):
+        if len(rows) == 1:
+            r = rows[0]
+            return (f"[{html.escape(r['drive'] or '')}] "
+                    f"{html.escape(r['rationale'][:n])}\n\n"
+                    f'<a href="{review(r["id"])}">Review and decide &#8594;</a>')
+        m = "\n\n".join(
             f'{html.escape(r["kind"] or "")} '
             f'({html.escape(r["drive"] or "")}): '
-            f'{html.escape(r["rationale"][:150])}\n'
+            f'{html.escape(r["rationale"][:n])}\n'
             f'<a href="{review(r["id"])}">decide &#8594;</a>' for r in rows[:5])
         if len(rows) > 5:
-            msg += f"\n\n…and {len(rows) - 5} more"
+            m += f"\n\n…and {len(rows) - 5} more"
+        return m
+    title = (f"riffle wants to {rows[0]['kind']}" if len(rows) == 1
+             else f"riffle has {len(rows)} proposals waiting")
+    n = 600 if len(rows) == 1 else 150
+    msg = _compose(n)
+    while len(msg) > 1000 and n > 20:
+        n = max(20, int(n * 0.8))
+        msg = _compose(n)
 
     ok, detail = send(cfg, title, msg, url=dash_url(cfg))
     if ok:

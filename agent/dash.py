@@ -858,6 +858,18 @@ class Handler(BaseHTTPRequestHandler):
                                   log=lambda m: s.log(m, drive=a["drive"]))
                 self.run_cycle()
             except HttpError as e:
+                # NO ANSWER IS NOT A REFUSAL (L7). With status 0 the send may
+                # have landed before the connection failed. Recorded as
+                # failed, it was invisible to every duplicate check, so the
+                # same comment could be proposed and sent again; the cycle's
+                # path already records it as unknown.
+                if getattr(e, "status", None) == 0:
+                    s.set_status(aid, "unknown", {"error": str(e)})
+                    self._update_card(aid, status="unknown", error=str(e)[:200])
+                    s.log(f"{a['kind']} #{aid}: no answer from the registry "
+                          f"({e}); it may or may not have landed",
+                          level="error", drive=a["drive"])
+                    return
                 s.set_status(aid, "failed", {"error": str(e)})
                 self._update_card(aid, status="failed", error=str(e)[:200])
                 s.log(f"the registry refused {a['kind']} #{aid}: {e}",

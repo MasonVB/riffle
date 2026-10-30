@@ -1016,7 +1016,7 @@ def main():
     _inbox_rows, _inbox_stats = inbox_mod.rows_from_me(me)
     try:
         if _inbox_stats["truncated"]:
-            _inbox_rows += inbox_mod.drain(writer, _inbox_stats, log)
+            _inbox_rows += inbox_mod.drain(writer, _inbox_stats, log, state=state)
         _inbox_new = inbox_mod.store(state, _inbox_rows, "live")
         if _inbox_rows and not _inbox_stats["now"]:
             log("inbox stored but not acked: /api/me carried no ms `now`. "
@@ -1027,6 +1027,13 @@ def main():
             log(f"inbox: {len(_inbox_rows)} delivered, {_inbox_new} new, "
                 f"stored, then acked up to {_inbox_stats['now']} "
                 f"(mode {_ack.get('mode')!r})")
+        # A burst the drain could not finish last time (L18): read on from
+        # its saved place. On its own: a failure here keeps the place and
+        # does not touch the read or the ack above.
+        try:
+            inbox_mod.resume(state, writer, log)
+        except Exception as _e5:
+            log(f"inbox: resuming a burst failed: {_e5}", level="warn")
     except Exception as e:
         # Nothing is acked unless the store succeeded, so a failure here
         # costs one cycle's delay, not the items.
@@ -3163,12 +3170,12 @@ def main():
         # the same comment twice because the duplicate check sees the row.
         if getattr(e, "status", None) == 0:
             state.set_status(aid, "unknown", {"error": str(e)})
-            log(f"{kind} #{aid}: never reached the registry ({e}). It may or "
+            log(f"{kind} #{aid}: no answer from the registry ({e}). It may or "
                 f"may not have been applied.", level="error", drive=drive)
             state.say("error",
-                      f"Cycle {cid} \u00b7 my {kind} never reached the registry: "
-                      f"{e}. I do not know whether it landed \u2014 check the "
-                      f"square before I try again.")
+                      f"Cycle {cid} \u00b7 my {kind} got no answer from the "
+                      f"registry: {e}. I do not know whether it landed \u2014 "
+                      f"check the square before I try again.")
             state.end_cycle(cid, "unknown-outcome", str(e)[:500])
         else:
             state.set_status(aid, "failed", {"error": str(e)})

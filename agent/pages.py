@@ -1482,9 +1482,9 @@ async function go(v){
       body.innerHTML = '<div class=done>&#10005; refused: ' +
         esc((a.error || 'no reason given')) + '</div>'; return; }
     if(st === 'unknown'){
-      body.innerHTML = '<div class=done>? it never reached the registry. ' +
-        'It may or may not have landed \u2014 check the square before ' +
-        'retrying.</div>'; return; }
+      body.innerHTML = '<div class=done>? no answer came back from the ' +
+        'registry. It may or may not have landed \u2014 check the square ' +
+        'before retrying.</div>'; return; }
     if(st === 'approved'){
       body.innerHTML = '<div class=done>&#10003; approved. A cycle will ' +
         'run it.</div>'; return; }

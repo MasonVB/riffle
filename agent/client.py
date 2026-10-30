@@ -38,7 +38,15 @@ def _req(url, method="GET", body=None, token=None, timeout=45):
             raw = resp.read().decode()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
-        raw = e.read().decode()
+        # Reading the error body can fail too (a timeout or reset mid-read,
+        # bytes that are not UTF-8). Raised inside this handler, that escaped
+        # as a plain OSError or ValueError past every `except HttpError`
+        # (L7, audit 2026-10-27): the status is known, so it is kept.
+        try:
+            raw = e.read().decode()
+        except (OSError, ValueError) as e2:
+            raise HttpError(e.code, f"(the error body could not be read: "
+                                    f"{type(e2).__name__})")
         try:
             raise HttpError(e.code, json.loads(raw))
         except json.JSONDecodeError:
@@ -53,9 +61,11 @@ def _req(url, method="GET", body=None, token=None, timeout=45):
         # stayed open and the next twelve hours of wakes refused to start
         # beside a process that no longer existed.
         #
-        # Code 0 means "never reached the registry", which is a different
-        # thing from any status it could have returned, and callers can tell
-        # the two apart.
+        # Code 0 means the OUTCOME IS UNKNOWN: no answer came back. A refused
+        # connection or a DNS failure never reached the registry, but a
+        # timeout or a reset mid-read may have come after it acted (L7: this
+        # said "never reached", which is only sometimes true). Callers treat
+        # 0 as unknown and must not assume either way.
         raise HttpError(0, f"{type(e).__name__}: {e}")
 
 
