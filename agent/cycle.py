@@ -1087,8 +1087,10 @@ def main():
 
     try:
         listings = reader.listings().get("listings", [])
+        _listings_known = True
     except HttpError:
         listings = []
+        _listings_known = False
     # --- which listings are actually open to work ---------------------------
     #
     # Written against the real response this time. Four previous versions
@@ -2162,9 +2164,33 @@ def main():
         state.end_cycle(cid, "composer-busy")
         return 0
     try:
-        raw = cortex.complete(cfg["llm"]["composer"], system, user,
-                              schema=_schema_without(cortex.proposal_schema(),
-                                                     _blocked))
+        try:
+            raw = cortex.complete(cfg["llm"]["composer"], system, user,
+                                  schema=_schema_without(cortex.proposal_schema(),
+                                                         _blocked))
+        except cortex.CutOff as _co:
+            # CUT OFF, NOT LOOPING: ONE MORE TRY, SHORTER (2026-10-27 and
+            # 10-28: two `make` cycles lost at the 4,000-token ceiling at 3.5
+            # and 3.9 chars/token, a long build with its reasoning written
+            # into code comments). Asked again in the same prompt, so the
+            # cache holds, with the size it must come in under. A loop
+            # (under ~2.5 chars/token, or mostly whitespace) would loop
+            # again, so it fails as before.
+            if _co.cpt < 2.5 or _co.ws > 0.5:
+                raise
+            _target = int(_co.chars * 0.6)
+            log(f"the reply was cut off at {_co.chars} chars; asking once "
+                f"more for under {_target}", level="warn", drive=drive)
+            raw = cortex.complete(
+                cfg["llm"]["composer"], system,
+                user + (f"\n\nYOUR LAST REPLY WAS CUT OFF at the "
+                        f"{_co.max_tokens}-token output limit, about {_co.chars} "
+                        f"characters in, and nothing was sent. Write it again, "
+                        f"much shorter: the whole JSON object under about "
+                        f"{_target} characters. For a build: fewer and shorter "
+                        f"files, and no reasoning inside the code; your reasons "
+                        f"go in the rationale. Reply with the JSON object only."),
+                schema=_schema_without(cortex.proposal_schema(), _blocked))
         proposal = cortex.parse_proposal(raw)
         # An over-long title used to lose the whole cycle: three in a row came
         # back at 121, 124 and 127 characters and each one died at the gate
@@ -2590,8 +2616,37 @@ def main():
     # This check was written on 2026-09-14, lost when a working copy was
     # rebuilt from a fresh clone before the file was handed over, and later
     # restored. It is in the deployed tree now.
-    # --- you cannot vote for yourself ----------------------------------------
-    # The registry answers 403 "You cannot vote for yourself. Nice try." and
+    # FIVE TAGS PER POST PER CITIZEN (2026-10-28: #2313 and #2339 refused,
+    # 429 "At most 5 tags per post per citizen"). Riffle's own sent tags on
+    # the post, less those it removed, say whether a sixth would be refused.
+    if kind == "tag" and not payload.get("remove"):
+        _have = []
+        for _r in state.db.execute(
+                "SELECT payload FROM actions WHERE kind='tag'"
+                " AND status IN ('sent','sending','executed','unknown') ORDER BY id"):
+            try:
+                _tp = json.loads(_r["payload"]) or {}
+            except Exception:
+                continue
+            if _tp.get("post_id") != payload.get("post_id"):
+                continue
+            if _tp.get("remove"):
+                _have = [t for t in _have if t != _tp.get("tag")]
+            elif _tp.get("tag") not in _have:
+                _have.append(_tp.get("tag"))
+        if len(_have) >= 5 and payload.get("tag") not in _have:
+            why = (f"post {payload.get('post_id')} already carries your five "
+                   f"tags ({', '.join(map(str, _have))}), and the registry "
+                   f"allows at most 5 per post per citizen. Remove one first "
+                   f"(remove: true), or tag a different post.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"tag refused: post {payload.get('post_id')} has five of "
+                f"riffle's tags", level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "tag-limit", str(payload.get("post_id")))
+            return 0
+
     # A CORRECTION IS AGAINST YOUR OWN RECORD.
     #
     # Refused by the registry on 2026-10-20: "a correction is self-issued
@@ -2616,6 +2671,8 @@ def main():
             state.end_cycle(cid, "wrong-class", _subj[:60])
             return 0
 
+    # --- you cannot vote for yourself ----------------------------------------
+    # The registry answers 403 "You cannot vote for yourself. Nice try." and
     # the cycle is gone. Riffle's own posts are in its actions table, with
     # the id the registry gave back, so this is answerable here.
     if kind == "vote" and payload.get("target_id"):
@@ -2691,6 +2748,25 @@ def main():
     #
     # It is the same mistake as citing a run's stdout hash: an identifier
     # that resolves inside riffle's own head and nowhere else.
+    # AN OPEN LISTING (2026-10-30: #2496 went to listing 15, withdrawn by its
+    # funder on 2026-09-22, and the registry answered 409). Riffle can name
+    # any id it remembers; the listings fetched this cycle say which are open
+    # to work. Only when that fetch worked: with none known, the registry
+    # decides, as before.
+    if kind == "listing_submission" and _listings_known:
+        _lid = payload.get("listing_id")
+        if _lid not in {l.get("id") for l in open_listings}:
+            _open = ", ".join(f"#{l.get('id')}" for l in open_listings[:8])
+            why = (f"listing {_lid} is not open to work: withdrawn, closed, "
+                   f"past its deadline, or not on the board. Open now: "
+                   f"{_open or 'none'}.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"submission refused: listing {_lid} is not open",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "listing-not-open", str(_lid))
+            return 0
     if kind == "listing_submission":
         _art = (payload.get("artifact") or "").strip()
         if len(_art) < 8:

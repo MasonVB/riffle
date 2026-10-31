@@ -422,6 +422,17 @@ def _post_json(url, body, timeout=1800):
             f"{len(raw)} bytes on the wire]") from None
 
 
+class CutOff(ValueError):
+    """The model hit its output ceiling mid-reply. Still a ValueError, so
+    every existing handler is unchanged; it carries what the cycle needs to
+    tell a reply that was simply too long (worth asking again, shorter) from
+    a loop (not worth it): characters per token, whitespace share, length."""
+    def __init__(self, msg, chars, chars_per_token, whitespace, max_tokens):
+        super().__init__(msg)
+        self.chars, self.cpt, self.ws, self.max_tokens = (
+            chars, chars_per_token, whitespace, max_tokens)
+
+
 def complete(llm_cfg, system, user, timeout=1800, schema=None):
     """OpenAI-compatible /v1/chat/completions, which llama-server serves.
 
@@ -471,14 +482,15 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
         ws = sum(c.isspace() for c in t) / len(t) if t else 0.0
         usage = out.get("usage") or {}
         ntok = usage.get("completion_tokens") or body.get("max_tokens")
-        raise ValueError(
+        raise CutOff(
             f"the model hit its {body.get('max_tokens')}-token ceiling and "
             f"was cut off mid-output ({len(t)} chars, "
             f"{len(t) / max(1, ntok):.1f} chars/token, {ws:.0%} whitespace; "
             f"ends {t[-120:]!r}). Under ~2 chars/token or mostly whitespace "
             f"means the model looped, not that the body was too long. "
             f"Otherwise raise llm.composer.max_tokens, or the body being "
-            f"written is too long for one call.")
+            f"written is too long for one call.",
+            len(t), len(t) / max(1, ntok), ws, body.get("max_tokens"))
     return text
 
 
