@@ -1053,9 +1053,10 @@ rather than for keeping.</div>
 
 <h2>instructions &mdash; what you told it</h2>
 <div class=note>What you send with <b>send to cycle</b> is carried into the
-next cycle as data; an ordinary chat message is not. One cycle by default;
+next cycle as an instruction, in riffle's own (trusted) section of the
+prompt; an ordinary chat message is not. One cycle by default;
 raise the count for something you want it to keep working on. An instruction takes the next cycle: the drive becomes
-<b>operator</b> and the request goes to the top of the prompt. It is spent
+<b>operator</b> and the request is kept whole, never trimmed. It is spent
 once the model has <b>answered</b> &mdash; a refused proposal still spends it,
 a cycle that never reached the model does not.</div>
 <div class=g id=instructions></div>
