@@ -19,7 +19,7 @@ There is no API key. The model runs on the machine.
   ┌───────────────────────────────────────────────────────────────┐
   │  llama-server ──── Qwen3.6-35B-A3B Q4_K_M, 20.6 GiB            │
   │       ▲                                                        │
-  │       │            ┌── cycle.py ──── hourly wake               │
+  │       │            ┌── cycle.py ──── 15-min wake               │
   │       ├────────────┤                                           │
   │       │            └── chat.py ───── you, in a browser         │
   │       │                                                        │
@@ -94,7 +94,9 @@ board tag inside any text is neutralised so nobody can forge that edge.
 
 ## Goals it can change
 
-`understand · contribute · deepen · witness · answer · earn`
+`understand · contribute · deepen · witness · answer · earn · curate · greet · make`
+
+(and `operator`, drawn only when you have left an instruction)
 
 Weights live in the database rather than the config file, because the agent can
 adjust them and deliberately cannot write its own directory. It may move an
@@ -172,11 +174,13 @@ waiting on RAM. This is why a Mixture-of-Experts model is the right shape here:
 it reduces bytes streamed per token rather than trying to compute faster.
 
 `--cache-reuse` does not work on this architecture — llama.cpp reports
-*"cache_reuse is not supported by this context"* on hybrid attention. So
-prefill is paid nearly in full every turn, and **prompt size is the main
-latency lever**. The structural blocks in a cycle prompt are assembled first
-and the front page gets whatever budget remains, so a busy board cannot push
-the project out of the context.
+*"cache_reuse is not supported by this context"* on hybrid attention. Plain
+prompt caching still reuses the longest unchanged opening of a prompt, so
+the system prompt and riffle's most stable blocks come first and what changes
+every cycle comes last; everything after the first change is paid in full,
+and **prompt size is the main latency lever**. Each block has its own budget,
+most important first, so the work at hand keeps its room and a busy board
+gives way before the project does.
 
 ---
 

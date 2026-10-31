@@ -35,6 +35,7 @@ If you make it public, the scan below is the only thing standing between you
 and a published API key. Run --check first and read the output.
 """
 import argparse
+import base64
 import os
 import re
 import subprocess
@@ -128,14 +129,30 @@ def scan(files):
     """Look for credentials in tracked files. Literal values first."""
     findings = []
     literals = {}
+    # The seed lives with the signer now (T6); the old path is kept for boxes
+    # set up before it moved.
     for name, path in (("citizen secret", f"{DATA}/riffle.secret"),
-                       ("signing seed", f"{DATA}/riffle.ed25519.seed")):
+                       ("signing seed", "/var/lib/riffle-signer/citizen.seed"),
+                       ("signing seed (old path)", f"{DATA}/riffle.ed25519.seed")):
+        # As BYTES (T6): the signer may keep its seed as 32 raw bytes, which
+        # read as text raised UnicodeDecodeError and stopped the whole scan.
+        # Looked for in the forms it would take if it leaked into a text
+        # file: hex and base64 when raw, else the text itself.
         try:
-            v = open(path).read().strip()
-            if len(v) > 12:
-                literals[name] = v
+            raw = open(path, "rb").read()
         except OSError:
+            continue
+        forms = []
+        if len(raw) == 32:
+            forms += [raw.hex(), base64.b64encode(raw).decode()]
+        try:
+            text = raw.decode("ascii").strip()
+            if len(text) > 12:
+                forms.append(text)
+        except UnicodeDecodeError:
             pass
+        for k, v in enumerate(forms):
+            literals[name if k == 0 else f"{name} ({k + 1})"] = v
     # Values out of the live config, which is what actually holds the keys.
     try:
         cfg = open(f"{RIFFLE}/config.yaml").read()
@@ -220,14 +237,22 @@ def main():
         run("git", "rm", "--cached", "-q", "config.yaml")
         print("  untracked config.yaml (the file on disk is untouched)")
 
-    src = open(f"{RIFFLE}/config.yaml").read()
-    blanked = re.sub(r'^(\s*(?:user_key|api_token|api_key):\s*).*$',
-                     r'\1""', src, flags=re.M)
-    open(f"{RIFFLE}/config.example.yaml", "w").write(
-        "# Copy to config.yaml and fill in the blanked values. config.yaml is\n"
-        "# gitignored precisely so those never reach a repository.\n" + blanked)
-    run("git", "add", "config.example.yaml")
-    print("  wrote config.example.yaml with the keys blanked")
+    # NEVER OVERWRITE AN EXISTING ONE (T6, audit 2026-10-27), for the same
+    # reason as update.sh below: the example in the repo is maintained, with
+    # comments and keys your live config may not have yet, and writing over
+    # it from config.yaml would replace all of that with this box's values.
+    ex = f"{RIFFLE}/config.example.yaml"
+    if os.path.exists(ex):
+        print("  config.example.yaml exists; left alone")
+    else:
+        src = open(f"{RIFFLE}/config.yaml").read()
+        blanked = re.sub(r'^(\s*(?:user_key|api_token|api_key):\s*).*$',
+                         r'\1""', src, flags=re.M)
+        open(ex, "w").write(
+            "# Copy to config.yaml and fill in the blanked values. config.yaml is\n"
+            "# gitignored precisely so those never reach a repository.\n" + blanked)
+        run("git", "add", "config.example.yaml")
+        print("  wrote config.example.yaml with the keys blanked")
 
     for f in tracked():
         if ".bak" in f or f.endswith(".pyc") or "__pycache__" in f:
@@ -251,7 +276,7 @@ def main():
     # NEVER OVERWRITE AN EXISTING ONE.
     #
     # UPDATE_SH here is the original three-step template: pull, syntax-check,
-    # restart. The deployed update.sh has grown eight gates — render, prompt
+    # restart. The deployed update.sh has grown thirteen gates — render, prompt
     # fit, grammar compilation, timeout arithmetic, self-recursion, orphaned
     # prompt headers — each added because something got past the two it
     # started with.

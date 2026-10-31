@@ -1152,9 +1152,10 @@ changed=()
 # (riffle-cycle.timer.bak-notify, riffle-dash.service.bak-alarms) were being
 # installed into /etc/systemd/system with the real units.
 # FROM WHAT IS COMMITTED, NOT WHAT IS ON DISK (L9, audit 2026-10-27).
-# These are installed as root, and /opt/riffle is writable by the agent's
-# user, so a unit file edited on the box would have been installed as root
-# on the next deploy. Each unit now comes from `git show HEAD:<file>`.
+# These are installed as root. A unit file changed on the box, by hand or by
+# anything able to write there, is not what was reviewed and committed, so
+# each unit comes from `git show HEAD:<file>` and a differing copy on disk is
+# reported. (riffle itself cannot write /opt/riffle: SETUP.md, section 3.)
 for f in $(git ls-files systemd/); do
   name=$(basename "$f")
   dest="$UNITDIR/$name"
@@ -1204,10 +1205,12 @@ fi
 
 # --- hand-installed copies that have fallen behind -------------------------
 #
-# These run from root-owned copies outside the checkout, on purpose: the
-# agent can write /opt/riffle, so it must not be able to write the code that
-# holds the signing key or runs as another user. So they are NOT installed
-# here: that would hand the checkout's contents to root on every deploy. But
+# These run from root-owned copies outside the checkout, on purpose: code
+# that holds the signing key or runs as another user must not be changeable
+# by whatever can write /opt/riffle (you, the deploying user; not riffle). So
+# they are NOT installed here, which would run the checkout's code as root on
+# every deploy. Unit files are different: they are configuration, installed
+# above from the committed content only. But
 # nothing said when the repo had moved on without them, which is how the
 # riffle-sign fallback (#11) sat unnoticed. Now each deploy says.
 _root="${RIFFLE_INSTALL_ROOT:-}"

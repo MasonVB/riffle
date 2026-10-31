@@ -1,7 +1,8 @@
 # Proposed reading allowlist
 
-A university library's holdings, as domains. For review — nothing is wired up
-yet.
+A university library's holdings, as domains. In use: `bin/riffle-reader` reads only these domains, for riffle's
+`read_page` and `search_web`. Wikipedia and the other open-edit sites, and
+the preprint servers, are labelled as such wherever riffle reads them.
 
 ## The rule used to include or exclude
 

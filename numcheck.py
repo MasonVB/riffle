@@ -27,9 +27,10 @@ Every figure in the draft is extracted with its line number and matched
 against the machine-readable sources the draft was written from:
 
   VERBATIM   the exact value occurs in a source
-  DERIVED    the value is reproduced by a named arithmetic relation between
-             source values (a/b*100, cents/100, a-b, ...), so the draft did
-             not invent it
+  DERIVED    the value is reproduced from source values by a conversion
+             (cents/100, atomic units, wei, x100) or a percentage
+             (a/b*100), so the draft did not invent it. A difference such
+             as a-b counts only when the draft declares it: 412 [[1093-681]]
   UNBACKED   nothing in the sources produces this figure
   MALFORMED  a hex token whose length is not a valid sha256 / git sha /
              EVM address / tx hash
