@@ -20,7 +20,11 @@ ExecStart=/usr/bin/python3 -m agent.cycle --config /opt/riffle/config.yaml
 # to start beside a process that no longer existed.
 #
 # update.sh checks this against the sum of the internal waits.
-TimeoutStartSec=10800
+# 5 HOURS (L21, audit 2026-10-27). Every wait inside a cycle has its own
+# timeout, and the worst path that hits each of them is about 16,000 s (gate 6
+# lists it); this limit is only a backstop for code with no timeout of its
+# own, so it sits above that sum rather than cutting off a cycle that is slow.
+TimeoutStartSec=18000
 # MEMORY BACKSTOP (H1, audit 2026-10-27). Everything the cycle starts through
 # sudo runs in this cgroup: the build helper, the page reader, the signer. A
 # cycle peaks in the tens of megabytes; this only stops a runaway from filling
