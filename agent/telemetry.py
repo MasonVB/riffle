@@ -206,8 +206,9 @@ def processes(names=("llama-server", "python3")):
 
 
 def diskio(label="tick"):
-    """/proc/diskstats deltas. With swap off this should be near zero during
-    generation; if it is not, something is paging and that is the finding."""
+    """/proc/diskstats deltas. Swap is on (Q2, audit 2026-10-27), so some
+    paging is normal; a sustained high write rate during generation is the
+    finding: the box is squeezed for memory."""
     now, out = {}, {}
     try:
         for line in open("/proc/diskstats"):
@@ -236,7 +237,9 @@ def diskio(label="tick"):
     return out
 
 
-def network():
+def network(label="tick"):
+    # Its own baseline per caller (T5, audit 2026-10-27), as diskio and cores
+    # have: one shared baseline made a dump measure from the last tick.
     now, out = {}, {}
     try:
         for line in open("/proc/net/dev").read().splitlines()[2:]:
@@ -248,8 +251,9 @@ def network():
             now[name] = (int(f[0]), int(f[8]), int(f[2]), int(f[10]))
     except (OSError, ValueError, IndexError):
         return out
-    prev = _LAST.get("netdev")
-    _LAST["netdev"] = now
+    _store = _last_for(label)
+    prev = _store.get("netdev")
+    _store["netdev"] = now
     if not prev:
         return {"note": "first sample since restart"}
     for k, (rx, tx, rerr, terr) in now.items():
@@ -439,7 +443,7 @@ def sample(state, cfg, label="tick"):
     payload = {"boot": boot_id(), "mem": memory(), "cpu": cpu(), "temps": temps(),
                "fans": fans(), "cores": cores(label),
                "procs": processes(), "diskio": diskio(label),
-               "net": network(),
+               "net": network(label),
                "disk": disks(), "services": services(),
                "composer": model_health(), "agent": agent_state(state, cfg)}
     state.db.execute(
@@ -456,7 +460,7 @@ def dump(state, cfg, label, note=""):
                "mem": memory(), "cpu": cpu(), "temps": temps(),
                "fans": fans(), "cores": cores(label),
                "procs": processes(), "diskio": diskio(label),
-               "net": network(),
+               "net": network(label),
                "disk": disks(), "services": services(),
                "composer": model_health(), "agent": agent_state(state, cfg)}
     try:

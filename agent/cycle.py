@@ -135,7 +135,10 @@ def top_level_today(state, post_id, exclude_id=None):
     for r in state.db.execute(
             "SELECT id, created_at, payload FROM actions WHERE kind='comment'"
             " AND status IN ('sent','sending','executed','approved','queued','unknown')"
-            " AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')"
+            # When it was SENT, if it was (T13, audit 2026-10-27): a comment
+            # approved a day after it was proposed did not count against the
+            # post it had just landed on.
+            " AND COALESCE(executed_at, created_at) > strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')"
             " ORDER BY id DESC"):
         if exclude_id is not None and r["id"] == exclude_id:
             continue
@@ -666,7 +669,9 @@ def main():
     # A file still here at a timer wake means the path unit did not see it,
     # so the age goes in the log: minutes old says the path unit is down.
     if not getattr(a, "force", False):
-        _req = os.path.join("/var/lib/riffle", "run-cycle.request")
+        # data_dir, not a fixed path (T4). riffle-run-cycle.path watches this
+        # file by its own literal path, so the two must agree.
+        _req = os.path.join(data, "run-cycle.request")
         try:
             _age = time.time() - os.stat(_req).st_mtime
         except OSError:
@@ -2169,7 +2174,7 @@ def main():
         # character 120 is a title the agent did not write.
         _p = (proposal or {}).get("payload") or {}
         _t = str(_p.get("title") or "")
-        if (proposal or {}).get("action") == "post" and len(_t) > cortex.TITLE_LIMIT:
+        if (proposal or {}).get("action") == "post" and cortex.u16len(_t) > cortex.TITLE_LIMIT:
             _new = cortex.shorten_title(cfg["llm"]["composer"], _t,
                                         log=lambda m, **k: log(m, drive=drive, **k))
             if _new:

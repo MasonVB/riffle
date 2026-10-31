@@ -485,6 +485,11 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
 TITLE_LIMIT = 120
 
 
+def u16len(s):
+    """Length as the registry counts it (UTF-16 units; T12)."""
+    return len((s or "").encode("utf-16-le")) // 2
+
+
 def shorten_title(llm_cfg, title, limit=TITLE_LIMIT, tries=4, log=None):
     """Ask the composer to rewrite an over-long post title, in place.
 
@@ -516,12 +521,12 @@ def shorten_title(llm_cfg, title, limit=TITLE_LIMIT, tries=4, log=None):
     while attempt < max(1, tries):
         attempt += 1
         cur = prev or title
-        ask = (f"This title is {len(cur)} characters. The hard limit is "
-               f"{limit}, so it must lose at least {len(cur) - limit} "
+        ask = (f"This title is {u16len(cur)} characters. The hard limit is "
+               f"{limit}, so it must lose at least {u16len(cur) - limit} "
                f"characters. Keep the specific claim and any figures; drop "
                f"what is decorative. Reply with the title alone.\n\n{cur}")
         if prev:
-            ask = (f"Your last attempt was still {len(prev) - limit} characters "
+            ask = (f"Your last attempt was still {u16len(prev) - limit} characters "
                    f"too long. Cut harder - drop a clause, not a word.\n\n" + ask)
         try:
             out = complete(
@@ -538,11 +543,11 @@ def shorten_title(llm_cfg, title, limit=TITLE_LIMIT, tries=4, log=None):
             delay = min(delay * 2, 15)
             continue
         cand = " ".join(str(out or "").strip().strip('"\u201c\u201d').split())
-        if 3 <= len(cand) <= limit:
+        if 3 <= u16len(cand) <= limit:
             if log and attempt > 1:
                 log(f"title rewrite succeeded on attempt {attempt}")
             return cand
-        if len(cand) > limit:
+        if u16len(cand) > limit:
             prev = cand
         if log:
             log(f"title rewrite attempt {attempt} came back at {len(cand)} "

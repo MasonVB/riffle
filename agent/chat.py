@@ -221,6 +221,12 @@ def stream_completion(llm_cfg, messages, on_delta, timeout=2400, meta=None):
                 chunk = json.loads(payload)
             except json.JSONDecodeError:
                 continue
+            # An error mid-answer arrives as a chunk with no choices (T11,
+            # audit 2026-10-27); skipped, it ended the reply as if finished.
+            if chunk.get("error") and not chunk.get("choices"):
+                e = chunk["error"]
+                raise RuntimeError("the model server reported an error mid-answer: "
+                                   + str(e.get("message") if isinstance(e, dict) else e)[:300])
             choice = (chunk.get("choices") or [{}])[0]
             # The last chunk carries why generation stopped. "length" means the
             # window filled, which is the difference between a finished answer

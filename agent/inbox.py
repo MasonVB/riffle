@@ -332,11 +332,13 @@ def counts(state):
     out = {"live": 0, "backlog": 0, "answered": 0, "passed": 0}
     for r in state.db.execute(
             "SELECT source, status, COUNT(*) n FROM inbox_items"
-            " GROUP BY source, status"):
-        if r["status"] == "pending":
-            out[r["source"]] = out.get(r["source"], 0) + r["n"]
-        else:
-            out[r["status"]] = out.get(r["status"], 0) + r["n"]
+            " WHERE status != 'pending' GROUP BY source, status"):
+        out[r["status"]] = out.get(r["status"], 0) + r["n"]
+    # Waiting items counted as pending() shows them (T9, audit 2026-10-27):
+    # without those whose reply already waits on you. Counted raw, `answer`
+    # was drawn for a backlog the cycle then showed none of.
+    for d in pending(state):
+        out[d["source"]] = out.get(d["source"], 0) + 1
     return out
 
 

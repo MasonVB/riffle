@@ -1088,7 +1088,11 @@ def request_cycle_run(state, why=""):
     Returns True if the request was written.
     """
     try:
-        path = os.path.join("/var/lib/riffle", "run-cycle.request")
+        # data_dir, not a fixed path (T4): the state database lives in it.
+        # riffle-run-cycle.path watches this file by its own literal path, so
+        # the two must agree.
+        path = os.path.join(os.path.dirname(os.path.abspath(state.path)),
+                            "run-cycle.request")
         with open(path, "w") as fh:
             fh.write(f"{dt.datetime.now(dt.timezone.utc).isoformat()} {why}\n")
         return True
@@ -1109,15 +1113,18 @@ def card_for(state, aid):
     "sending..." forever, which is the half of C12 that was supposed to fix
     exactly that.
     """
-    for m in state.db.execute(
-            "SELECT id, meta FROM messages WHERE role='proposal'"
-            " ORDER BY id DESC LIMIT 200"):
-        try:
-            if (json.loads(m["meta"]) or {}).get("action_id") == aid:
-                return m["id"], json.loads(m["meta"])
-        except Exception:
-            continue
-    return None, None
+    # By its action_id, however old (T2, audit 2026-10-27): this scanned only
+    # the last 200 cards, so an older one could read "sending..." forever.
+    m = state.db.execute(
+        "SELECT id, meta FROM messages WHERE role='proposal'"
+        " AND json_extract(meta, '$.action_id') = ? ORDER BY id DESC LIMIT 1",
+        (aid,)).fetchone()
+    if not m:
+        return None, None
+    try:
+        return m["id"], json.loads(m["meta"])
+    except Exception:
+        return None, None
 
 
 def update_card(state, aid, **fields):

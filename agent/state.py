@@ -210,7 +210,9 @@ class State:
     """
 
     def __init__(self, path):
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        # A bare filename has no directory to make (T1, audit 2026-10-27).
+        if os.path.dirname(path):
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         self.path = path
         self._local = threading.local()
         with self._connect() as c:
@@ -421,6 +423,12 @@ class State:
         q = "SELECT * FROM messages WHERE id > ?"
         if not include_archived:
             q += " AND archived_at IS NULL"
+        if not after:
+            # A first load gets the NEWEST `limit`, in order (T10, audit
+            # 2026-10-27): it got the oldest, so on a long chat the newest
+            # arrived only a few polls later.
+            rows = self.db.execute(q + " ORDER BY id DESC LIMIT ?", (after, limit)).fetchall()
+            return list(reversed(rows))
         return self.db.execute(q + " ORDER BY id LIMIT ?", (after, limit)).fetchall()
 
     def tail(self, n=40):

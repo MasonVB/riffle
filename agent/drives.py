@@ -20,12 +20,30 @@ class Rejected(Exception):
 
 
 # kind -> (required fields, optional fields, validator)
+def _u16(v):
+    """Length as the registry counts it: UTF-16 units, as JavaScript's
+    .length does. An emoji is one character here and two units there (T12,
+    audit 2026-10-27), so text at the limit with one in it was refused."""
+    return len(v.encode("utf-16-le")) // 2
+
+
+def _prefix_u16(v, n):
+    """The longest start of v that is at most n UTF-16 units, never splitting
+    a character."""
+    total = 0
+    for i, ch in enumerate(v):
+        total += 2 if ord(ch) > 0xFFFF else 1
+        if total > n:
+            return v[:i]
+    return v
+
+
 def _s(v, lo, hi, name):
     if not isinstance(v, str):
         raise Rejected(f"{name} must be a string")
     v = v.strip()
-    if not (lo <= len(v) <= hi):
-        raise Rejected(f"{name} must be {lo}-{hi} chars, got {len(v)}")
+    if not (lo <= _u16(v) <= hi):
+        raise Rejected(f"{name} must be {lo}-{hi} chars, got {_u16(v)}")
     return v
 
 
@@ -92,20 +110,21 @@ def _trim(v, lo, hi, name):
     if not isinstance(v, str):
         raise Rejected(f"{name} must be a string")
     v = v.strip()
-    if len(v) < lo:
-        raise Rejected(f"{name} must be at least {lo} chars, got {len(v)}")
-    if len(v) > hi:
+    if _u16(v) < lo:
+        raise Rejected(f"{name} must be at least {lo} chars, got {_u16(v)}")
+    if _u16(v) > hi:                  # counted as the registry counts (T12)
         ell = " […]"
-        room = hi - len(ell)          # the marker counts toward the limit
-        cut = v[:room]
+        room = hi - _u16(ell)         # the marker counts toward the limit
+        cut = _prefix_u16(v, room)
         sp = cut.rfind(" ")
         # Only honour a word boundary if it is NEAR THE END. Falling back to
         # the last space anywhere turned a 1,233-character note into 86, since
         # a long unbroken run leaves the nearest space back at the start.
-        if sp >= int(room * 0.9):
+        if sp >= int(len(cut) * 0.9):
             cut = cut[:sp]
         cut = cut.rstrip()
-        return cut + ell if len(cut) >= lo else v[:room].rstrip() + ell
+        return (cut + ell if _u16(cut) >= lo
+                else _prefix_u16(v, room).rstrip() + ell)
     return v
 
 

@@ -512,9 +512,21 @@ async function dropCard(e, id, aid){
   e.stopPropagation();
   const m = document.getElementById('cm' + id);
   if(m) m.style.display = 'none';
-  await fetch('/api/dismiss', {method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({id: aid})});
+  // The reply is checked (T3): a refused dismissal used to look done. Errors
+  // come back as {"error": ...} with HTTP 200, so the body is read too.
+  let ok = false;
+  try {
+    const r = await fetch('/api/dismiss', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: aid})});
+    const j = await r.json().catch(() => ({}));
+    ok = r.ok && !j.error;
+  } catch(err) { ok = false; }
+  if(!ok && m){
+    m.style.display = '';
+    m.insertAdjacentHTML('beforeend',
+      '<div class=done>could not dismiss this; try again</div>');
+  }
 }
 /* The raw text of each message, so copy gives you what riffle wrote rather
    than what the browser rendered. */
@@ -737,9 +749,17 @@ async function sendAnswer(qid, btn){
   const text = (box && box.value || '').trim();
   if(!text){ box && box.focus(); return; }
   btn.disabled = true; btn.textContent = 'sending\u2026';
-  await fetch('/api/answer', {method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({qid: qid, answer: text})});
+  // The reply is checked (T3): a failed answer used to say "sending..."
+  // forever. On failure the button comes back, so it can be sent again.
+  let ok = false;
+  try {
+    const r = await fetch('/api/answer', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({qid: qid, answer: text})});
+    const j = await r.json().catch(() => ({}));
+    ok = r.ok && !j.error;
+  } catch(err) { ok = false; }
+  if(!ok){ btn.disabled = false; btn.textContent = 'not sent \u2014 try again'; }
 }
 async function decide(id, verdict, btn){
   // Swap the buttons out immediately. The round trip includes an HTTPS call to
