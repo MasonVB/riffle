@@ -9,7 +9,28 @@ BEFORE=$(git rev-parse HEAD)
 echo "at $BEFORE"
 
 git fetch --quiet origin
-git merge --ff-only origin/"$(git rev-parse --abbrev-ref HEAD)"
+UPSTREAM="origin/$(git rev-parse --abbrev-ref HEAD)"
+if [ "$(git rev-parse "$UPSTREAM")" = "$BEFORE" ]; then
+  echo "already up to date"
+  exit 0
+fi
+
+# NOT UNDER A RUNNING CYCLE (L9, audit 2026-10-27). The merge rewrote files
+# while a cycle could be running, and a module it imports later in main()
+# would then be the new code under the old. The cycle lock is taken first
+# and held until this script ends, through the gates and any rollback: a
+# timer wake meanwhile is skipped, a forced one waits. A cycle already
+# running is waited for, up to 15 minutes.
+LOCK="${RIFFLE_CYCLE_LOCK:-/var/lib/riffle/cycle.lock}"
+if [ -e "$LOCK" ]; then
+  exec 9<"$LOCK"
+  if ! flock -w "${RIFFLE_LOCK_WAIT:-900}" 9; then
+    echo "!! a cycle has been running for over 15 minutes; deploy again when it ends"
+    exit 1
+  fi
+  echo "  holding the cycle lock: no cycle starts until this deploy finishes"
+fi
+git merge --ff-only "$UPSTREAM"
 AFTER=$(git rev-parse HEAD)
 
 if [ "$BEFORE" = "$AFTER" ]; then
@@ -18,6 +39,27 @@ if [ "$BEFORE" = "$AFTER" ]; then
 fi
 echo "-> $AFTER"
 git --no-pager log --oneline "$BEFORE..$AFTER"
+
+# A SECRET SCAN OF WHAT ARRIVED (L16, audit 2026-10-27). repo_setup.py's
+# pre-commit hook lives in this checkout, and uploads made on GitHub's site
+# never pass through it. The same scan runs here on every changed file, as
+# you, not as root (this is code from the repo): it reads config.yaml's keys
+# literally and matches the shapes of the rest. Already public by now, so a
+# finding is a warning to act on, not a rollback, which would hide nothing.
+python3 - "$BEFORE" "$AFTER" <<'PYSCAN' || echo "  (the secret scan could not run)"
+import subprocess, sys
+sys.path.insert(0, "/opt/riffle")
+import repo_setup
+names = subprocess.run(["git", "diff", "--name-only", "--diff-filter=AM",
+                        sys.argv[1], sys.argv[2]],
+                       capture_output=True, text=True).stdout.split()
+found = repo_setup.scan(names)
+for f, what in found:
+    print(f"!! SECRET? {f}: {what}")
+if found:
+    print("!! If any of these is a real credential it is ALREADY PUBLIC on GitHub:")
+    print("!! rotate it first, then remove it from the file. Rolling back would not help.")
+PYSCAN
 
 # Two gates, in order of how much they prove.
 #
@@ -433,6 +475,37 @@ if _conv:
                        f"{type(e).__name__}: {e}")
 else:
     print("  (llama.cpp converter not found; denylist only)")
+# THE SERVER'S OWN CONVERTER (L21, audit 2026-10-27). The Python converter
+# above is a stand-in: llama-server compiles schemas with its C++ one. So the
+# running composer is asked to compile this schema exactly as the cycle sends
+# it (cortex.complete: response_format json_schema, /v1/chat/completions),
+# for a one-token reply. A 400 means the server refused the schema. No answer
+# (server down, or busy with a chat turn) leaves the result above standing.
+# The deploy holds the cycle lock, so no cycle is using the composer now.
+try:
+    import urllib.request, urllib.error, yaml
+    _url = ((yaml.safe_load(open("config.yaml")).get("llm") or {})
+            .get("composer") or {}).get("url", "http://127.0.0.1:8080")
+    _body = json.dumps({
+        "messages": [{"role": "user", "content": "Reply with any valid object."}],
+        "max_tokens": 1, "temperature": 0,
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "proposal", "strict": True, "schema": schema}}}).encode()
+    _req = urllib.request.Request(_url.rstrip("/") + "/v1/chat/completions",
+                                  data=_body, method="POST",
+                                  headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(_req, timeout=30).read()
+        print("  the running composer accepted the schema (its own converter)")
+    except urllib.error.HTTPError as e:
+        _msg = e.read().decode("utf-8", "replace")[:300]
+        if e.code == 400:
+            bad.append(f"/: the running composer refused this schema: {_msg}")
+        else:
+            print(f"  (the composer answered {e.code}; its converter was not checked)")
+except (OSError, ValueError) as e:
+    print(f"  (the composer did not answer: {type(e).__name__}; its converter "
+          f"was not checked, the result above stands)")
 for b in bad:
     print(f"  GRAMMAR RISK {b}")
 sys.exit(1 if bad else 0)
@@ -454,71 +527,74 @@ fi
 # This compares the two numbers and refuses a deploy where the arithmetic
 # does not work.
 if ! python3 - <<'PYWAIT'
-# GATE 6 READ ONE FILE AND THE WRONG UNIT.
+# AN EXPLICIT WORST CASE (L21, audit 2026-10-27). This summed the five
+# largest `timeout=` numbers in five files: one wait written twice counted
+# twice, the forced run's 2,400 s lock wait (not written as timeout=) was
+# missed, and every wait repeated per page, per call or per bucket counted
+# once. It certified 9,000 s for a path that can reach about 16,000.
 #
-# It summed the three longest waits in cycle.py (1200 + 900 + 200 = 2300)
-# and compared that to the unit IN THE REPO. Two problems:
-#
-#   The big waits are elsewhere. cortex.py holds the composer's 1800 s and
-#   memory.py holds reflect's 900 s. A real worst-case path runs the lock
-#   wait, reflect, consolidate and the composer in sequence — about 6,800 s,
-#   which is nearly three times what this gate measured. It passed a
-#   TimeoutStartSec of 3000 against that.
-#
-#   And update.sh never installs units, so the repo copy can say 10800 while
-#   /etc/systemd/system says 2700. The number that matters is the installed
-#   one.
-import glob
+# Now every wait one cycle can sit through in sequence is listed with its
+# count, and each is MIRRORED from the line that sets it, as gate 4 does: if
+# a line changes, this gate fails until it is updated, so the sum cannot go
+# stale. Every wait has its own timeout, so the unit's limit is a backstop
+# for code with none; it must sit above this sum or it can kill a cycle that
+# is only slow.
 import re
 import sys
-
+import yaml
 bad = []
 try:
-    code = ""
-    for path in ("agent/cycle.py", "agent/cortex.py", "agent/memory.py",
-                 "agent/consolidate.py", "agent/chat.py"):
-        try:
-            code += open(path).read()
-        except OSError:
-            pass
-    waits = sorted((int(x) for x in re.findall(r"timeout=([0-9]{3,})", code)),
-                   reverse=True)
-    # Every distinct long wait a single cycle can sit through in sequence:
-    # the composer lock, triage for reflect, triage for consolidate, then
-    # the composer itself. Five is a deliberate over-count — a gate about a
-    # ceiling should assume the bad case.
-    worst = sum(waits[:5])
-
-    # THE REPO COPY, because it is what this deploy installs. This read the
-    # installed unit while update.sh never installed units, so a deploy that
-    # raised TimeoutStartSec alongside a longer wait was refused against the
-    # old unit for good. update.sh now installs changed units after the gates
-    # pass, so the unit that will be running is the one in the repo.
-    unit = None
-    for cand in ("systemd/riffle-cycle.service",
-                 "/etc/systemd/system/riffle-cycle.service"):
-        try:
-            unit = open(cand).read()
-            where = cand
-            break
-        except OSError:
-            continue
-    if unit is None:
-        bad.append("no riffle-cycle.service found, in the repo or installed")
+    src = {p: open(p).read() for p in ("agent/cycle.py", "agent/cortex.py",
+                                         "agent/memory.py", "agent/client.py",
+                                         "agent/inbox.py")}
+    MIRRORED = (
+        ("agent/cycle.py", "if _waited >= 2400:"),
+        ("agent/cycle.py", "lock.acquire(blocking=True, timeout=900)"),
+        ("agent/cycle.py", "lock.acquire(blocking=True, timeout=1200)"),
+        ("agent/cortex.py", "def complete(llm_cfg, system, user, timeout=1800, schema=None):"),
+        ("agent/memory.py", "timeout=900)"),
+        ("agent/client.py", 'def _req(url, method="GET", body=None, token=None, timeout=45):'),
+        ("agent/cycle.py", "def do_witness(state, reader, log, max_pages=8):"),
+        ("agent/inbox.py", "def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6, state=None):"),
+        ("agent/inbox.py", "def resume(state, writer, log, buckets=LIVE_BUCKETS, max_pages=6):"),
+        ("agent/cycle.py", "capture_output=True, text=True, timeout=200)"),
+    )
+    gone = [f"{p}: {line}" for p, line in MIRRORED if line not in src[p]]
+    if gone:
+        for g in gone:
+            bad.append(f"no longer in the code: {g}")
+        bad.append("a wait changed; update gate 6 to match it")
     else:
-        if where.startswith("/etc/"):
-            print("  (no repo copy of the unit; checking the installed one)")
+        cfg = yaml.safe_load(open("config.yaml"))
+        change_pages = int(((cfg.get("changes") or {}).get("max_pages_per_cycle", 4)))
+        buckets = 4                                         # inbox.LIVE_BUCKETS
+        http = 10 + 8 + change_pages + 6 * buckets + 6 * buckets
+        waits = [
+            ("a forced run waiting for the cycle lock", 2400),
+            ("reflection's model call", 900),
+            ("the memory pass: the composer lock", 900),
+            ("the memory pass: two composer calls", 2 * 1800),
+            ("the composer lock before the main call", 1200),
+            ("the main composer call", 1800),
+            ("the number check's same-cycle rewrite", 1800),
+            ("the number check itself, twice", 2 * 120),
+            ("the action's own helper (a build, the longest)", 200),
+            (f"{http} registry requests at 45 s", http * 45),
+        ]
+        worst = sum(w for _, w in waits)
+        unit = open("systemd/riffle-cycle.service").read()
         m = re.search(r"^TimeoutStartSec=([0-9]+)", unit, re.M)
         if not m:
-            bad.append(f"no TimeoutStartSec in {where}")
+            bad.append("no TimeoutStartSec in systemd/riffle-cycle.service")
         else:
             limit = int(m.group(1))
-            print(f"  {where} allows {limit}s; the five longest internal "
-                  f"waits total {worst}s")
+            print(f"  systemd/riffle-cycle.service allows {limit}s; the worst "
+                  f"path one cycle can take is {worst}s")
             if worst > limit:
-                bad.append(f"systemd kills the cycle at {limit}s and the "
-                           f"waits can reach {worst}s. SIGTERM runs no "
-                           f"finally, so this is a cycle lost mid-work.")
+                for name, w in waits:
+                    print(f"    {w:6}s  {name}")
+                bad.append(f"systemd kills the cycle at {limit}s and its waits "
+                           f"can reach {worst}s")
 except BaseException as e:
     bad.append(f"the timeout check could not run: {type(e).__name__}: {e}")
 for b in bad:
@@ -633,11 +709,16 @@ try:
     # test skipped any literal equal to a key after strip(), which would also
     # skip real uses like "caps remaining today: ".
     own_nodes = set()
+    # Tables that NAME headers without emitting them (the prompt's ordering,
+    # budgets and end-of-prompt list, H6/M5) are skipped the same way: their
+    # entries start with the headers, so they satisfied this gate whether or
+    # not any real block did (found when L21 was tested, 2026-10-30).
+    TABLES = {"_TAIL_HEADS", "_OWN_ORDER", "_BOARD_ORDER", "_BUDGETS"}
     ctree = ast.parse(open("agent/cycle.py").read())
     for node in ctree.body:
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id in lists):
+                and node.targets[0].id in set(lists) | TABLES):
             own_nodes |= {id(c) for c in ast.walk(node.value)}
     for path in glob.glob("agent/*.py"):
         try:
@@ -650,7 +731,11 @@ try:
                 continue
             lit = node.value
             for (n, k) in found:
-                if k in lit[:80]:
+                # AT THE START, as the cycle matches it (_is_rule and _is_own
+                # use lstrip().startswith). "Anywhere in the first 80
+                # characters" let a literal that merely mentions a header
+                # satisfy this (L21, audit 2026-10-27).
+                if lit.lstrip().startswith(k):
                     found[(n, k)] = True
     for (n, k), ok in found.items():
         if not ok:
@@ -688,8 +773,10 @@ import yaml
 try:
     cfg = yaml.safe_load(open("config.example.yaml"))
 except Exception as e:
+    # A gate that cannot read its input has checked nothing: fail, do not
+    # pass (L21, audit 2026-10-27).
     print(f"  could not read config.example.yaml: {e}")
-    sys.exit(0)
+    sys.exit(1)
 code = ""
 for path in glob.glob("*.py") + glob.glob("agent/*.py") + glob.glob("bin/*"):
     try:
@@ -1064,21 +1151,31 @@ changed=()
 # TRACKED files only, as gate 11 reads them: untracked leftovers on the box
 # (riffle-cycle.timer.bak-notify, riffle-dash.service.bak-alarms) were being
 # installed into /etc/systemd/system with the real units.
+# FROM WHAT IS COMMITTED, NOT WHAT IS ON DISK (L9, audit 2026-10-27).
+# These are installed as root, and /opt/riffle is writable by the agent's
+# user, so a unit file edited on the box would have been installed as root
+# on the next deploy. Each unit now comes from `git show HEAD:<file>`.
 for f in $(git ls-files systemd/); do
-  [ -f "$f" ] || continue
   name=$(basename "$f")
   dest="$UNITDIR/$name"
-  if [ -L "$dest" ]; then
-    continue
-  elif [ ! -e "$dest" ]; then
+  [ -L "$dest" ] && continue
+  committed=$(mktemp)
+  if ! git show "HEAD:$f" > "$committed" 2>/dev/null; then
+    rm -f "$committed"; continue
+  fi
+  if [ -f "$f" ] && ! cmp -s "$f" "$committed"; then
+    echo "!! $f on disk differs from what is committed; the committed version is used"
+  fi
+  if [ ! -e "$dest" ]; then
     echo "  $name is in the repo but not installed; left alone"
-  elif ! cmp -s "$f" "$dest"; then
-    if sudo install -m 0644 -o root -g root "$f" "$dest"; then
+  elif ! cmp -s "$committed" "$dest"; then
+    if sudo install -m 0644 -o root -g root "$committed" "$dest"; then
       changed+=("$name")
     else
       echo "!! could not install $name; the old copy is still in place"
     fi
   fi
+  rm -f "$committed"
 done
 if [ "${#changed[@]}" -gt 0 ]; then
   echo "installed changed unit files: ${changed[*]}"
