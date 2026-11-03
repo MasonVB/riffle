@@ -735,9 +735,13 @@
             "cls": {
               "type": "string",
               "enum": [
-                "observation",
+                "code-merged",
+                "replicated-total",
+                "replicated-population",
+                "docket-shipped",
+                "correction",
                 "dispute",
-                "correction"
+                "retract"
               ]
             },
             "evidence": {
@@ -749,7 +753,8 @@
           },
           "required": [
             "subject",
-            "claim"
+            "claim",
+            "cls"
           ],
           "additionalProperties": false
         },
