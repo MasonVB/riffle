@@ -973,7 +973,16 @@ def main():
     # path, and an hour's distance on what mattered. Uses the small model on
     # its own server, so it costs no composer lock.
     try:
-        memory.reflect(state, cfg, log)
+        # Up to three while behind, started within six minutes, so a backlog
+        # can be caught up rather than only kept level (audit of the box,
+        # 2026-11-03). One that makes no progress (failed, or nothing left)
+        # ends it.
+        _rt0 = time.monotonic()
+        for _r in range(3):
+            _was = state.note("last_reflected_cycle")
+            memory.reflect(state, cfg, log)
+            if state.note("last_reflected_cycle") == _was or time.monotonic() - _rt0 > 360:
+                break
     except Exception as e:
         log(f"reflection error: {e}", level="warn")
     memory.prune(state)
@@ -1161,6 +1170,13 @@ def main():
     _blocked |= {k for k, m in (cfg.get("autonomy") or {}).items() if m == "never"}
     if not (cfg.get("web") or {}).get("enabled"):
         _blocked.add("search_web")          # nothing to search with
+    # NOT WHILE ONE WAITS FOR YOU (audit of the box, 2026-11-03: eight cycles
+    # in three days wrote a whole new post only to be refused, because one
+    # was already queued). Out of the grammar until you decide that one; it
+    # is listed under WAITING ON YOUR OPERATOR RIGHT NOW.
+    if state.db.execute("SELECT 1 FROM actions WHERE kind='post' AND status='queued'"
+                        " LIMIT 1").fetchone():
+        _blocked.add("post")
     try:
         if project.in_cooldown(state)[0] or not project.ready(state, cfg)[0]:
             _blocked.add("post")
@@ -1813,6 +1829,45 @@ def main():
               "different words. Four restatements of one idea are one "
               "contribution and three pieces of noise.")
 
+    # ALREADY DONE (audit of the box, 2026-11-03). In three days riffle tried
+    # to vote on post 10596 six times, replied again to comments it had
+    # answered, commented top-level twice on one post, and asked for more of
+    # threads it had finished: 28 cycles, each refused by a check it could not
+    # see. The same queries those checks use, shown, so it can.
+    _done = []
+    _v = [f"{r['t']} {r['i']}" for r in state.db.execute(
+        "SELECT COALESCE(json_extract(payload,'$.target_type'),'post') AS t,"
+        " json_extract(payload,'$.target_id') AS i FROM actions WHERE kind='vote'"
+        " AND status IN ('sent','sending','executed','approved','queued','unknown')"
+        " ORDER BY id DESC LIMIT 15")]
+    if _v:
+        _done.append("voted on: " + ", ".join(dict.fromkeys(_v)))
+    _rp = [str(r["p"]) for r in state.db.execute(
+        "SELECT json_extract(payload,'$.parent_id') AS p FROM actions WHERE kind='comment'"
+        " AND status IN ('sent','sending','executed','approved','queued','unknown')"
+        " AND json_extract(payload,'$.parent_id') IS NOT NULL ORDER BY id DESC LIMIT 15")]
+    if _rp:
+        _done.append("replied to comments: " + ", ".join(dict.fromkeys(_rp)))
+    _tl = [str(r["p"]) for r in state.db.execute(
+        "SELECT json_extract(payload,'$.post_id') AS p FROM actions WHERE kind='comment'"
+        " AND status IN ('sent','sending','executed','approved','queued','unknown')"
+        " AND json_extract(payload,'$.parent_id') IS NULL"
+        " AND COALESCE(executed_at, created_at) > strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')"
+        " ORDER BY id DESC LIMIT 15")]
+    if _tl:
+        _done.append("commented top-level in the last 24 hours on posts: "
+                     + ", ".join(dict.fromkeys(_tl)))
+    _ex = [str(r["p"]) for r in state.db.execute(
+        "SELECT json_extract(a.payload,'$.post_id') AS p FROM actions a"
+        " JOIN cycles c ON c.id = a.cycle_id WHERE a.kind='read_more'"
+        " AND c.outcome='thread-exhausted' ORDER BY a.id DESC LIMIT 15")]
+    if _ex:
+        _done.append("threads read to the end (read_more has nothing left): "
+                     + ", ".join(dict.fromkeys(_ex)))
+    if _done:
+        parts.append("ALREADY DONE \u2014 each of these is refused if proposed "
+                     "again, so do not:\n" + "\n".join("  " + x for x in _done))
+
     # --- comments you could answer -------------------------------------------
     # The reply ids have always been in the thread digest, formatted as
     # `[43230] kael (7 votes): ...`, and nothing ever said that the bracketed
@@ -2390,6 +2445,33 @@ def main():
     # matching apply_* through apply_local() below — which the dashboard
     # calls too, so there is one dispatcher rather than two lists that can
     # drift apart.
+    # NO PAYOUT FOR WORK NOT SUBMITTED (audit of the box, 2026-11-03). Here,
+    # before a local action is queued or run: sign is local, and placed with
+    # the send checks below this was never reached. On 2026-11-01 riffle
+    # bound its wallet to listing 13's payout, "leaving the funder's decision
+    # to the registry", having submitted nothing there; it tried again the
+    # next day. A payout binding claims money for work done: a plain
+    # listing-N row needs a submission of riffle's to listing N. Verifier
+    # rows (listing-N-verifier) pay for checking someone else's, and are left
+    # to the registry's own rules.
+    if kind == "sign" and payload.get("kind") == "payout":
+        _mrow = re.fullmatch(r"listing-(\d+)", str(payload.get("row") or ""))
+        if _mrow and not state.db.execute(
+                "SELECT 1 FROM actions WHERE kind='listing_submission'"
+                " AND status IN ('sent','executed','unknown')"
+                " AND CAST(json_extract(payload,'$.listing_id') AS INTEGER)=? LIMIT 1",
+                (int(_mrow.group(1)),)).fetchone():
+            why = (f"you have submitted no work to listing {_mrow.group(1)}. A "
+                   f"payout binding claims that listing's money for work you "
+                   f"did; submit an artifact that meets its condition first.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"sign refused: no submission to listing {_mrow.group(1)}",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not propose that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "payout-without-work", _mrow.group(1))
+            return 0
+
     if kind in LOCAL_KINDS:
         _m = (policy.modes(state) or {}).get(kind, "queue")
         # NO FORCE CLAUSE. --force skips the INTERVAL gate; it was never
@@ -2423,9 +2505,49 @@ def main():
         return apply_local(state, cfg, cid, kind, payload, drive,
                            log, rationale)
 
+    # --- invented hashes, and payouts for no work -----------------------------
+    # NO HASH YOU DO NOT HAVE (audit of the box, 2026-11-03). Seven posts in
+    # three days gave the "hash" of riffle's script as `a1b2c3d4e5f6...`, a
+    # placeholder, once padded to 64 characters. Every real one is in reach:
+    # the library's sha256 column, the last build, this cycle's material (the
+    # threads it read, where others quote commits) and its stated sources. A
+    # run of 12+ hex characters with a letter in it, in anything published,
+    # must be one of those or a prefix of one.
+    if kind in ("post", "comment", "porch", "listing_submission", "attestation"):
+        _texts = [str(payload.get(k) or "") for k in
+                  ("title", "body", "note", "artifact", "claim")]
+        _texts += [str(x) for x in (payload.get("evidence") or [])]
+        # What riffle READ, not what it wrote: its own blocks quote its past
+        # posts, and a hash it once invented must not count as seen.
+        _bad_h = _unknown_hashes(state, _texts, "\n".join(x for x in parts if not _is_own(x)) + "\n"
+                                 + (state.note("last_build") or "") + "\n"
+                                 + json.dumps(proposal.get("sources") or {}))
+        if _bad_h:
+            try:
+                _real = (json.loads(state.note("last_build") or "{}")
+                         .get("library_sha") or "")
+            except Exception:
+                _real = ""
+            why = (f"it gives the hash {_bad_h[0][:24]}, and no build, library "
+                   f"document or thread you read carries it. A hash is a claim "
+                   f"a stranger can check: copy the real one"
+                   + (f" (your last build is shelved as {_real[:16]}...)" if _real
+                      else "") + ", or leave the hash out.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"{kind} refused: unknown hash {_bad_h[0][:24]}", level="warn",
+                drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "hash-unknown", _bad_h[0][:40])
+            return 0
     # --- numcheck --------------------------------------------------------------
     report = None
-    body = payload.get("body")
+    # The text a stranger will read: a post's or comment's body, and also a
+    # submission's note and an attestation's claim (the same audit: a note
+    # gave BTC at $84,120.50, "verified against live endpoint responses",
+    # and was never checked, because this read only `body`).
+    _tf = next((k for k in ("body", "note", "claim") if payload.get(k)), None)
+    body = payload.get(_tf) if _tf else None
     if body and cfg["constraints"].get("numcheck_required", True):
         # YOUR OWN BUILD IS A SOURCE.
         #
@@ -2440,6 +2562,12 @@ def main():
         # stranger at. The last build's output and any library document it
         # cites both qualify, so both are handed to numcheck as sources.
         _src = dict(proposal.get("sources") or {})
+        # Every hash in the library is one riffle can cite (audit of the box,
+        # 2026-11-03): numcheck counts a hash, or a 7+ character prefix of
+        # one, as verbatim only when it is in its sources, and these were not,
+        # so a real library hash read as a malformed figure.
+        _src["library_sha256"] = " ".join(
+            r[0] for r in state.db.execute("SELECT sha256 FROM library") if r[0])
         try:
             _lb2 = json.loads(state.note("last_build") or "{}")
             if _lb2.get("stdout"):
@@ -2501,7 +2629,7 @@ def main():
                                    f"({f.get('status', '?').lower()})" for f in _bad1)
                 _ask = (f"\n\nYOUR DRAFT WAS NOT SENT. It contains figure(s) I "
                         f"could not trace to anything you have read: {_named}. "
-                        f"Write the same {kind} again, changing only its body: "
+                        f"Write the same {kind} again, changing only its {_tf}: "
                         f"take those figures out, or back each one, as 37.5% "
                         f"[[3/8*100]] with the operands you used, or by quoting "
                         f"the line it comes from with the page's URL. Keep "
@@ -2512,14 +2640,14 @@ def main():
                         schema=_schema_without(cortex.proposal_schema(),
                                                (set(policy.ACTION_KINDS) | {"noop"}) - {kind}))
                     _p2 = cortex.parse_proposal(_raw2) or {}
-                    _body2 = (((_p2.get("payload") or {}).get("body") or "")
+                    _body2 = (((_p2.get("payload") or {}).get(_tf) or "")
                               if _p2.get("action") == kind else "")
                     if _body2:
                         _k2, _pay2, _r2 = drives.gate(
-                            {"action": kind, "payload": dict(payload, body=_body2),
+                            {"action": kind, "payload": dict(payload, **{_tf: _body2}),
                              "rationale": rationale}, drive, cfg)
                         for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b",
-                                                   _pay2["body"], re.I)):
+                                                   _pay2[_tf], re.I)):
                             if f"library_{_lid}" not in _src:
                                 try:
                                     _row3, _text3 = library.read(
@@ -2528,7 +2656,7 @@ def main():
                                         _src[f"library_{_lid}"] = (_text3 or "")[:20000]
                                 except Exception:
                                     pass
-                        _passed2, _report2 = run_numcheck(_pay2["body"], _src, material)
+                        _passed2, _report2 = run_numcheck(_pay2[_tf], _src, material)
                         if _passed2:
                             log(f"numcheck: {len(_bad1)} figure(s) blocked the first "
                                 f"draft; the rewrite in the same cycle passed", drive=drive)
@@ -2536,7 +2664,7 @@ def main():
                                                 f"figure(s) I could not trace ({_named}); "
                                                 f"I rewrote it in the same cycle.",
                                       {"drive": drive})
-                            payload, body, passed, report = _pay2, _pay2["body"], True, _report2
+                            payload, body, passed, report = _pay2, _pay2[_tf], True, _report2
                         else:
                             log("numcheck: the rewrite still had untraceable "
                                 "figures; blocking as before", level="warn", drive=drive)
@@ -3464,6 +3592,7 @@ _NEVER_TRIM = (
 # it; anything that carries other citizens' text stays off this list.
 # Gate 8 refuses an entry here that no string literal starts with.
 _OWN_HEADS = (
+    "ALREADY DONE",
     "A POST NOW NEEDS A REFERENCE",
     "REFERENCES IN POSTS",
     "YOU MAY NOT PROPOSE THESE TODAY",
@@ -3542,6 +3671,25 @@ def _is_rule(part):
     return (part or "").lstrip().startswith(_NEVER_TRIM)
 
 
+_HEXRUN = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{12,}(?![0-9A-Za-z])")
+
+
+def _unknown_hashes(state, texts, known_text):
+    """Hex runs of 12+ characters (with a letter: not a long number) in texts
+    that are neither in known_text nor a prefix of a library sha256."""
+    runs = []
+    for t in texts:
+        for m in _HEXRUN.finditer(t or ""):
+            r = m.group(0)
+            if re.search(r"[a-f]", r) and r not in runs:
+                runs.append(r)
+    if not runs:
+        return []
+    shas = [x[0] or "" for x in state.db.execute("SELECT sha256 FROM library")]
+    return [r for r in runs
+            if r not in known_text and not any(h.startswith(r) for h in shas)]
+
+
 def _cycles_since_note(state, key):
     """Real cycles started since the note `key` was written (99 if none).
 
@@ -3577,6 +3725,7 @@ _OWN_ORDER = (
     "YOUR PROJECT", "POSTING IS CLOSED", "NO PROJECT IS OPEN",
     "THE ONE THING TO DO NEXT", "YOU HAVE BEEN STUCK",
     "THINGS YOU NOTED FROM", "YOUR LAST BUILD", "WHAT YOU HAVE ALREADY SAID",
+    "ALREADY DONE",
     "WHAT YOU REMEMBER",
 )
 # The board's blocks, most stable first; the front page and the changes
@@ -3610,6 +3759,7 @@ _own_rank, _board_rank = _rank_in(_OWN_ORDER), _rank_in(_BOARD_ORDER)
 _BUDGETS = (
     # the work at hand
     ("WHAT YOU HAVE ALREADY SAID", 2000, 1500),
+    ("ALREADY DONE", 900, 400),
     ("THE THREAD YOU READ MOST RECENTLY", 3500, 1200),
     ("THE THREAD YOU ASKED TO READ AGAIN", 3500, 1200),
     ("YOUR PROJECT", 3000, 1200),
@@ -3658,8 +3808,9 @@ def _fit(parts, budget, log=None, big_build=False):
     block and the block that stops repeated replies were cut while smaller,
     less useful ones stood. Now, with each block's budget from _BUDGETS:
       1. every block is held to its cap, every cycle;
-      2. if still over, blocks are cut toward their floors, least important
-         first, only as far as needed;
+      2. if still over, blocks are cut to their floors, least important
+         first, until it fits (straight to the floor: a cut point that moves
+         with the board's size breaks the cached opening of the prompt);
       3. if still over, blocks are left out whole, least important first,
          each replaced by one line saying it exists and did not fit.
     Protected blocks (_NEVER_TRIM) are never touched; if they alone are over,
@@ -3699,11 +3850,16 @@ def _fit(parts, budget, log=None, big_build=False):
         if len(parts[i]) > cap:
             _cut(i, cap)
     least_first = sorted(specs, key=lambda i: -specs[i][0])
-    # 2. toward the floors, least important first, only as far as needed
+    # 2. to the floors, least important first, until it fits. STRAIGHT TO
+    # THE FLOOR, not "only as far as needed" (found 2026-11-03): the amount
+    # needed changes every cycle with the board, so a stable block early in
+    # the prompt (the goals) was cut at a different point each cycle, and the
+    # composer could reuse nothing after it. A floor is the same every cycle;
+    # the price is sometimes sending a little less than the room allows.
     for i in least_first:
         if total <= budget:
             break
-        _cut(i, max(specs[i][2], len(parts[i]) - (total - budget) - 160))
+        _cut(i, specs[i][2])
     # 3. left out whole, least important first
     left_out = []
     for i in least_first:

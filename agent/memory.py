@@ -552,6 +552,9 @@ DO NOT WRITE:
     in your record and you can look them up
   - anything you cannot point at in the material below
 
+SIX LINES AT MOST IN ALL, each one short (under two hundred characters). A
+longer answer is cut off mid-line and then nothing at all is kept.
+
 Format exactly:
 
 DURABLE
@@ -614,6 +617,24 @@ def reflect(state, cfg, log=None):
     # a backlog all at once would cost more than the cycle has. Taking the
     # oldest means the backlog drains in order instead of being discarded.
     last_done = state.note("last_reflected_cycle")
+    # A STALE BACKLOG IS SKIPPED (audit of the box, 2026-11-03). Reflection
+    # failed on 182 of ~260 attempts in three days (a 400-token ceiling the
+    # notes outgrew) and fell about 680 cycles, a week, behind, taking the
+    # oldest first, so every wake reflected on last week. A cycle more than two
+    # days old is a poor "what I want to know when I next wake"; its journal
+    # and actions stay in the database. Passed over in one step, and said.
+    import datetime as _dtr
+    _old = (_dtr.datetime.now(_dtr.timezone.utc) - _dtr.timedelta(days=2)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _skip = state.db.execute(
+        "SELECT MAX(id) AS m, COUNT(*) AS c FROM cycles WHERE ended_at IS NOT NULL"
+        " AND id > ? AND started_at < ?", (int(last_done or 0), _old)).fetchone()
+    if _skip and _skip["m"]:
+        state.note("last_reflected_cycle", _skip["m"])
+        last_done = _skip["m"]
+        if log:
+            log(f"reflection skipped {_skip['c']} cycle(s) more than two days old, "
+                f"through cycle {_skip['m']}", level="warn")
     row = state.db.execute(
         "SELECT * FROM cycles WHERE ended_at IS NOT NULL AND id > ?"
         " ORDER BY id ASC LIMIT 1", (int(last_done or 0),)).fetchone()
@@ -625,7 +646,7 @@ def reflect(state, cfg, log=None):
         (int(last_done or 0),)).fetchone()["c"]
     if _behind > 3 and log:
         log(f"reflection is {_behind} cycle(s) behind; working through them "
-            f"oldest first, one per wake")
+            f"oldest first, up to three per wake")
 
     acts = state.db.execute(
         "SELECT kind, drive, status, rationale, numcheck FROM actions"
@@ -697,7 +718,12 @@ def reflect(state, cfg, log=None):
 
     from agent import cortex
     try:
-        out = cortex.complete(cfg["llm"]["triage"], REFLECT_PROMPT,
+        # Room for the notes (the same audit): six short lines are about 250
+        # tokens, and the 400 the triage model is set to was cut off on two
+        # attempts in three. At least 1,000 here, whatever config.yaml says.
+        _tri = dict(cfg["llm"]["triage"])
+        _tri["max_tokens"] = max(int(_tri.get("max_tokens") or 0), 1000)
+        out = cortex.complete(_tri, REFLECT_PROMPT,
                               _already + "\n\n" + _rest, timeout=900)
     except Exception as e:
         # GIVE UP ON A CYCLE AFTER THREE TRIES.
