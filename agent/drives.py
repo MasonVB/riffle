@@ -204,10 +204,18 @@ SCHEMA = {
               lambda p: {"body": _s(p["body"], 1, 500, "body")}),
     "knock": ([], [], lambda p: {}),
     # cls is an enum, and `correction` is checked against the subject below.
-    "attestation": (["subject", "claim"], ["cls", "evidence"],
-                    lambda p: {"cls": _enum(p.get("cls") or "observation",
-                                            ("observation", "dispute",
-                                             "correction")),
+    # THE REGISTRY'S SEVEN CLASSES, REQUIRED (2026-11-03: #2835 and #2839
+    # refused, 400 "class must be one of: code-merged, replicated-total,
+    # replicated-population, docket-shipped, correction, dispute, retract").
+    # This allowed "observation", which the registry has never accepted, and
+    # filled it in whenever no class was given, so such an attestation could
+    # only be refused. No default now: the grammar makes riffle choose.
+    "attestation": (["subject", "claim", "cls"], ["evidence"],
+                    lambda p: {"cls": _enum(p["cls"],
+                                            ("code-merged", "replicated-total",
+                                             "replicated-population",
+                                             "docket-shipped", "correction",
+                                             "dispute", "retract")),
                                "subject": _s(p["subject"], 1, 64, "subject"),
                                # The registry's CLAIM_MAX is 500; 501-1000
                                # passed here and was refused there.

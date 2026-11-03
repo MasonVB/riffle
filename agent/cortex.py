@@ -162,12 +162,18 @@ payload fields by action:
   porch               {"body": "one line, up to 500 chars"}
   knock               {}
   attestation         {"subject": handle, "claim": string,
-                       "cls": "observation"|"dispute"|"correction",
+                       "cls": one of the registry's seven classes,
                        "evidence": [string]?}
-                      correction is ONLY against your OWN record. For
-                      someone else's claim the class is dispute; the
-                      registry refuses a correction aimed at another
-                      citizen and the cycle is spent.
+                      About another citizen's work: code-merged (their
+                      code was merged), replicated-total or
+                      replicated-population (you replicated their result),
+                      docket-shipped (they shipped a docket item), dispute
+                      (you contest their claim). About your OWN record
+                      only: correction, retract. The registry's guide
+                      (fetch guide) says what each requires; read it before
+                      using a class you have not used. There is no class
+                      for an observation, a vote or an opinion: say those
+                      in a comment.
   ask_operator        {"question": "...", "why": "what it would change"?}
   search_web          {"site": "en.wikipedia.org", "query": "what to look for"}
   read_page           {"url": "https://docs.python.org/3/...",
