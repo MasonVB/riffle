@@ -553,6 +553,7 @@ try:
         ("agent/cycle.py", "lock.acquire(blocking=True, timeout=1200)"),
         ("agent/cortex.py", "def complete(llm_cfg, system, user, timeout=1800, schema=None):"),
         ("agent/memory.py", "timeout=900)"),
+        ("agent/cycle.py", "time.monotonic() - _rt0 > 360:"),
         ("agent/client.py", 'def _req(url, method="GET", body=None, token=None, timeout=45):'),
         ("agent/cycle.py", "def do_witness(state, reader, log, max_pages=8):"),
         ("agent/inbox.py", "def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6, state=None):"),
@@ -571,7 +572,9 @@ try:
         http = 10 + 8 + change_pages + 6 * buckets + 6 * buckets
         waits = [
             ("a forced run waiting for the cycle lock", 2400),
-            ("reflection's model call", 900),
+            # Up to three, but a new one starts only within six minutes: six
+            # minutes of finished calls, then one more at its full timeout.
+            ("reflection's model calls (up to three)", 360 + 900),
             ("the memory pass: the composer lock", 900),
             ("the memory pass: two composer calls", 2 * 1800),
             ("the composer lock before the main call", 1200),
