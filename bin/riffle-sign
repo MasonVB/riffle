@@ -679,8 +679,12 @@ def main():
     p = sub.add_parser("attest", help="sign an attestation")
     p.add_argument("--subject", required=True)
     p.add_argument("--claim", required=True)
-    p.add_argument("--cls", default="observation",
-                   choices=("observation", "dispute", "correction"))
+    # The registry's seven classes (2026-11-03): "observation" was never one,
+    # so an attestation signed with it was refused. Required: no default.
+    p.add_argument("--cls", required=True,
+                   choices=("code-merged", "replicated-total",
+                            "replicated-population", "docket-shipped",
+                            "correction", "dispute", "retract"))
     p.add_argument("--evidence", default="[]",
                    help="a JSON array of strings, as sent to the registry")
     p.set_defaults(fn=cmd_attest)
