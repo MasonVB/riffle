@@ -23,32 +23,31 @@ fi
 # running is waited for, up to 15 minutes.
 #
 # THROUGH SUDO (U5, audit round 2). This runs as you, and /var/lib/riffle is
-# 700 riffle:riffle, so the lock file looked absent and the block above was
-# skipped without a word. A lock lives as long as the process holding it, so
-# the rest of this deploy runs INSIDE `sudo flock`, as you again: this script
-# re-runs itself with RIFFLE_LOCK_HELD set, and that run goes straight on to
-# the merge. It never creates the lock file: one owned by root would stop
-# the cycle, which runs as riffle, from opening it.
+# 700 riffle:riffle, so a lock opened as you looked absent and was skipped
+# without a word. A lock lives as long as the process holding it, so a small
+# helper takes it with `sudo flock` and holds it until THIS script exits,
+# watching our pid; the deploy carries on here, in your terminal.
+#
+# NOT BY RE-RUNNING THIS SCRIPT INSIDE sudo (as first done for U5): Debian's
+# sudo gives a command its own pseudo-terminal (use_pty), so every sudo in the
+# re-run asked for your password a second time (2026-11-04). The helper never
+# runs our code as root, and never creates the lock file: one owned by root
+# would stop the cycle, which runs as riffle, from opening it.
 LOCK="${RIFFLE_CYCLE_LOCK:-/var/lib/riffle/cycle.lock}"
-if [ -z "${RIFFLE_LOCK_HELD:-}" ]; then
-  if sudo test -e "$LOCK"; then
-    echo "  taking the cycle lock: no cycle starts until this deploy finishes"
-    SELF=/opt/riffle/update.sh
-    [ -n "${RIFFLE_SELF:-}" ] && SELF="$RIFFLE_SELF"
-    rc=0
-    sudo flock -w "${RIFFLE_LOCK_WAIT:-900}" -E 75 "$LOCK" \
-      sudo -u "$(id -un)" env RIFFLE_LOCK_HELD=1 HOME="$HOME" PATH="$PATH" \
-        ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"} \
-        ${RIFFLE_CYCLE_LOCK:+RIFFLE_CYCLE_LOCK="$RIFFLE_CYCLE_LOCK"} \
-        bash "$SELF" "$@" || rc=$?
-    if [ "$rc" -eq 75 ]; then
-      echo "!! a cycle has been running for over $(( ${RIFFLE_LOCK_WAIT:-900} / 60 )) minutes; nothing was deployed. Deploy again when it ends."
-    fi
-    exit "$rc"
-  else
-    echo "!! NO CYCLE LOCK at $LOCK: no cycle has run on this box yet, or the path is"
-    echo "!! wrong. Deploying WITHOUT the lock."
-  fi
+if sudo test -e "$LOCK"; then
+  echo "  taking the cycle lock: no cycle starts until this deploy finishes"
+  coproc LOCKER { sudo flock -w "${RIFFLE_LOCK_WAIT:-900}" "$LOCK" \
+      sh -c 'echo held; while kill -0 "$1" 2>/dev/null; do sleep 1; done' _ "$$"; }
+  _held=""
+  IFS= read -r _held <&"${LOCKER[0]}" || true
+  case "$_held" in
+    held*) ;;
+    *) echo "!! a cycle has been running for over $(( ${RIFFLE_LOCK_WAIT:-900} / 60 )) minutes; nothing was deployed. Deploy again when it ends."
+       exit 1 ;;
+  esac
+else
+  echo "!! NO CYCLE LOCK at $LOCK: no cycle has run on this box yet, or the path is"
+  echo "!! wrong. Deploying WITHOUT the lock."
 fi
 git merge --ff-only "$UPSTREAM"
 AFTER=$(git rev-parse HEAD)
