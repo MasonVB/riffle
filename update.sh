@@ -21,14 +21,34 @@ fi
 # and held until this script ends, through the gates and any rollback: a
 # timer wake meanwhile is skipped, a forced one waits. A cycle already
 # running is waited for, up to 15 minutes.
+#
+# THROUGH SUDO (U5, audit round 2). This runs as you, and /var/lib/riffle is
+# 700 riffle:riffle, so the lock file looked absent and the block above was
+# skipped without a word. A lock lives as long as the process holding it, so
+# the rest of this deploy runs INSIDE `sudo flock`, as you again: this script
+# re-runs itself with RIFFLE_LOCK_HELD set, and that run goes straight on to
+# the merge. It never creates the lock file: one owned by root would stop
+# the cycle, which runs as riffle, from opening it.
 LOCK="${RIFFLE_CYCLE_LOCK:-/var/lib/riffle/cycle.lock}"
-if [ -e "$LOCK" ]; then
-  exec 9<"$LOCK"
-  if ! flock -w "${RIFFLE_LOCK_WAIT:-900}" 9; then
-    echo "!! a cycle has been running for over 15 minutes; deploy again when it ends"
-    exit 1
+if [ -z "${RIFFLE_LOCK_HELD:-}" ]; then
+  if sudo test -e "$LOCK"; then
+    echo "  taking the cycle lock: no cycle starts until this deploy finishes"
+    SELF=/opt/riffle/update.sh
+    [ -n "${RIFFLE_SELF:-}" ] && SELF="$RIFFLE_SELF"
+    rc=0
+    sudo flock -w "${RIFFLE_LOCK_WAIT:-900}" -E 75 "$LOCK" \
+      sudo -u "$(id -un)" env RIFFLE_LOCK_HELD=1 HOME="$HOME" PATH="$PATH" \
+        ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"} \
+        ${RIFFLE_CYCLE_LOCK:+RIFFLE_CYCLE_LOCK="$RIFFLE_CYCLE_LOCK"} \
+        bash "$SELF" "$@" || rc=$?
+    if [ "$rc" -eq 75 ]; then
+      echo "!! a cycle has been running for over $(( ${RIFFLE_LOCK_WAIT:-900} / 60 )) minutes; nothing was deployed. Deploy again when it ends."
+    fi
+    exit "$rc"
+  else
+    echo "!! NO CYCLE LOCK at $LOCK: no cycle has run on this box yet, or the path is"
+    echo "!! wrong. Deploying WITHOUT the lock."
   fi
-  echo "  holding the cycle lock: no cycle starts until this deploy finishes"
 fi
 git merge --ff-only "$UPSTREAM"
 AFTER=$(git rev-parse HEAD)
@@ -554,6 +574,8 @@ try:
         ("agent/cortex.py", "def complete(llm_cfg, system, user, timeout=1800, schema=None):"),
         ("agent/memory.py", "timeout=900)"),
         ("agent/cycle.py", "time.monotonic() - _rt0 > 360:"),
+        ("agent/cycle.py", "def _complete_cutting(llm, system, user, schema, log):"),
+        ("agent/cycle.py", "if not _lk.acquire(blocking=True, timeout=120):"),
         ("agent/client.py", 'def _req(url, method="GET", body=None, token=None, timeout=45):'),
         ("agent/cycle.py", "def do_witness(state, reader, log, max_pages=8):"),
         ("agent/inbox.py", "def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6, state=None):"),
@@ -578,8 +600,12 @@ try:
             ("the memory pass: the composer lock", 900),
             ("the memory pass: two composer calls", 2 * 1800),
             ("the composer lock before the main call", 1200),
-            ("the main composer call", 1800),
-            ("the number check's same-cycle rewrite", 1800),
+            # Both can be asked once more, shorter, when cut off
+            # (_complete_cutting: A8, and U8 for the rewrite), which this
+            # list missed until audit round 2.
+            ("the main composer call, and its cut-off retry", 2 * 1800),
+            ("the rewrite's composer lock", 120),
+            ("the number check's same-cycle rewrite, and its cut-off retry", 2 * 1800),
             ("the number check itself, twice", 2 * 120),
             ("the action's own helper (a build, the longest)", 200),
             (f"{http} registry requests at 45 s", http * 45),
@@ -716,7 +742,7 @@ try:
     # budgets and end-of-prompt list, H6/M5) are skipped the same way: their
     # entries start with the headers, so they satisfied this gate whether or
     # not any real block did (found when L21 was tested, 2026-10-30).
-    TABLES = {"_TAIL_HEADS", "_OWN_ORDER", "_BOARD_ORDER", "_BUDGETS"}
+    TABLES = {"_TAIL_HEADS", "_OWN_ORDER", "_BOARD_ORDER", "_BUDGETS", "_KEEP_WHOLE"}
     ctree = ast.parse(open("agent/cycle.py").read())
     for node in ctree.body:
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
