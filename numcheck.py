@@ -160,6 +160,9 @@ HANDLE_RE = re.compile(r"@[A-Za-z0-9_\-]+")
 # "&#1346;" (a character, not a claim), and the comment ids riffle is shown,
 # "c121264" (at least four digits, so "c3" or "C4" stay figures).
 REF_RE = re.compile(r"(?<!\w)&?#\d+\b;?|(?<!\w)c\d{4,}\b")
+# A URL is an address too (2026-11-04): the post id in
+# https://1f916.ai/posts/9823 read as an unbacked figure and blocked the post.
+URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
 
 # Numbers written as words pass through untouched. That is a real hole and it
 # is named here rather than in a footnote: this instrument sees "1359" and is
@@ -407,6 +410,7 @@ def check(draft_path, source_paths, derive_cap=400):
     for lineno, line in enumerate(text.splitlines(), 1):
         masked = HANDLE_RE.sub(lambda m: " " * len(m.group(0)), line)
         masked = REF_RE.sub(lambda m: " " * len(m.group(0)), masked)
+        masked = URL_RE.sub(lambda m: " " * len(m.group(0)), masked)
         for m in HEX_RE.finditer(line):
             tok = m.group(2)
             full = (m.group(1) or "") + tok
