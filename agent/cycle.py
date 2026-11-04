@@ -3305,6 +3305,37 @@ def main():
             state.end_cycle(cid, "post-needs-reference", _why_ref[:200])
             return 0
 
+    # A LINK IS A REFERENCE, OR IT GOES (operator, 2026-11-04). A post on
+    # 2026-11-04 attached en.wikipedia.org/wiki/Null_(computer_programming)
+    # and nothing in it used the page: it looked sourced and was not. A post
+    # that links an outside page must pass the reference check, whether or not
+    # one is due: the page read with read_page, and a passage from it quoted.
+    # Links to the registry itself (a thread on the square) are not references.
+    if kind == "post":
+        _ptext = "\n".join(str(payload.get(k) or "") for k in ("title", "body", "url"))
+        _home = urllib.parse.urlparse(cfg.get("base") or "").netloc.lower()
+
+        def _outside(u):
+            h = urllib.parse.urlparse(u).netloc.lower()
+            h = h[4:] if h.startswith("www.") else h
+            return not (_home and (h == _home or h.endswith("." + _home)))
+        _links = [u.rstrip(".,;:!?") for u in re.findall(r"https?://[^\s<>\"')\]]+", _ptext)
+                  if _outside(u)]
+        if _links:
+            _ok_l, _why_l = reference.check(state, cfg, _ptext)
+            if not _ok_l:
+                why = (f"it links {_links[0][:100]}, and {_why_l}. A link in a "
+                       f"post is a reference: it must be a page you read with "
+                       f"read_page, and the post must quote, in quotation marks, "
+                       f"the passage it relies on. Quote it, or take the link out.")
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log(f"post refused: it links {_links[0][:80]} without using it",
+                    level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "post-link-unused", _links[0][:120])
+                return 0
+
     # One reply per comment; see replied_to.
     if kind == "comment" and payload.get("parent_id") is not None:
         _prev = replied_to(state, payload["parent_id"])
@@ -3933,7 +3964,7 @@ def _fit(parts, budget, log=None, big_build=False):
                        fixed=lambda x: x.lstrip().startswith(_head))
     used = sum(len(x) for x in own) + 2 * len(own)
     brd = _fit_section([parts[i] for i in brd_i], max(0, budget - used), log,
-                       big_build, " (board)")
+                       big_build, " (board)", to_floor=False)
     out = list(parts)
     for i, x in zip(own_i, own):
         out[i] = x
@@ -3943,7 +3974,7 @@ def _fit(parts, budget, log=None, big_build=False):
 
 
 def _fit_section(parts, budget, log=None, big_build=False, label="",
-                 fixed=lambda x: False):
+                 fixed=lambda x: False, to_floor=True):
     """Bring the blocks under `budget` by importance, loudly; rules never.
 
     BY IMPORTANCE, NOT LENGTH (H6, audit 2026-10-27). This cut the longest
@@ -4001,10 +4032,15 @@ def _fit_section(parts, budget, log=None, big_build=False, label="",
     # the prompt (the goals) was cut at a different point each cycle, and the
     # composer could reuse nothing after it. A floor is the same every cycle;
     # the price is sometimes sending a little less than the room allows.
+    # The board passes to_floor=False: it comes after riffle's own section and
+    # changes every cycle anyway, so a moving cut point costs it no cache, and
+    # straight to the floor there threw away room (the thread fell from 3,440
+    # to 1,301 with 2,200 characters unused).
     for i in least_first:
         if total <= budget:
             break
-        _cut(i, specs[i][2])
+        _cut(i, specs[i][2] if to_floor
+             else max(specs[i][2], len(parts[i]) - (total - budget) - 160))
     # 3. left out whole, least important first (never a _KEEP_WHOLE block)
     left_out = []
     for i in least_first:
