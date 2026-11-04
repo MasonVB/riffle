@@ -835,6 +835,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 resp = execute(Writer(self.cfg["base"], secret), a["kind"], payload)
                 s.set_status(aid, "executed", resp)
+                # Unsigned, said out loud (U6): from here the signer cannot run.
+                cycle_mod._report_unsigned(s, None, a["kind"], aid, resp,
+                                           lambda m, **k: s.log(m, drive=a["drive"], **k))
                 # The SERVER's day, which is the boundary the registry
                 # counts by. utcnow()[:10] is this machine's idea of the
                 # date, and the two disagree for part of every day if the

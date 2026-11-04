@@ -1486,6 +1486,21 @@ def main():
     if _show_back:
         parts.append("INBOX \u2014 OLDER, from before it worked, one message "
                      "per line:\n" + _lines(_show_back))
+    # WHAT RIFFLE HAS VOTED ON, ALL OF IT (U7, audit round 2). ALREADY DONE
+    # lists the 15 most recent votes; the check that refuses a repeat covers
+    # every one, and 4 repeats were refused in 32 cycles. So the targets are
+    # marked where riffle picks them: these rows, the front page's, and the
+    # comment ids and thread heading on the board side (_mark_votes). Same
+    # statuses as the refusing check, no limit.
+    _voted = {"post": set(), "comment": set()}
+    for _vr in state.db.execute(
+            "SELECT COALESCE(json_extract(payload,'$.target_type'),'post') AS t,"
+            " json_extract(payload,'$.target_id') AS i FROM actions WHERE kind='vote'"
+            " AND status IN ('sent','sending','executed','approved','queued','unknown')"):
+        try:
+            _voted.setdefault(_vr["t"], set()).add(int(_vr["i"]))
+        except (TypeError, ValueError):
+            pass
     if moved["posts"] or moved["comments"] or moved["nulls"]:
         _bits = [f"{len(moved['posts'])} post(s)",
                  f"{len(moved['comments'])} comment(s)",
@@ -1499,8 +1514,13 @@ def main():
         if isinstance(moved["window_age_ms"], int):
             _hdr += (f" The window you asked for is "
                      f"{round(moved['window_age_ms'] / 3600000, 1)}h old.")
+        _mk = lambda rows, t: [{"id": x["id"], "you_voted": True,
+                                **{k: v for k, v in x.items() if k != "id"}}
+                               if isinstance(x, dict) and x.get("id") in _voted[t] else x
+                               for x in rows]
         parts.append(_hdr + "\n" + json.dumps(
-            {"posts": moved["posts"][:25], "comments": moved["comments"][:25],
+            {"posts": _mk(moved["posts"][:25], "post"),
+             "comments": _mk(moved["comments"][:25], "comment"),
              "nulls": moved["nulls"][:15]}, indent=1)[:7000])
     if moved["nulls"]:
         parts.append("THE NULLS IN WHAT ACTUALLY MOVED ARE NOT NOISE. Each is "
@@ -2154,6 +2174,11 @@ def main():
         if len(body) > _per:
             row["body_truncated"] = True
             row["body_full_chars"] = len(body)
+        if p.get("id") in _voted["post"]:
+            # Straight after the id (U7): a front page cut to its floor
+            # loses the end of a row first.
+            row = {"id": row["id"], "you_voted": True,
+                   **{k: v for k, v in row.items() if k != "id"}}
         if _rows and len(json.dumps(_rows + [row], indent=1)) > 1800:
             break
         _rows.append(row)
@@ -2171,6 +2196,7 @@ def main():
     # riffle's own section, so everything after them was processed afresh
     # every cycle. Riffle's own blocks, and then the board's, are ordered
     # most stable first for the same reason.
+    parts = [p if _is_own(p) else _mark_votes(p, _voted) for p in parts]   # U7
     _tail = [p for p in parts if p.lstrip().startswith(_TAIL_HEADS)]
     parts = [p for p in parts if not p.lstrip().startswith(_TAIL_HEADS)]
     _tail = sorted(_tail, key=lambda p: next(
@@ -2229,33 +2255,9 @@ def main():
         state.end_cycle(cid, "composer-busy")
         return 0
     try:
-        try:
-            raw = cortex.complete(cfg["llm"]["composer"], system, user,
-                                  schema=_schema_without(cortex.proposal_schema(),
-                                                         _blocked))
-        except cortex.CutOff as _co:
-            # CUT OFF, NOT LOOPING: ONE MORE TRY, SHORTER (2026-10-27 and
-            # 10-28: two `make` cycles lost at the 4,000-token ceiling at 3.5
-            # and 3.9 chars/token, a long build with its reasoning written
-            # into code comments). Asked again in the same prompt, so the
-            # cache holds, with the size it must come in under. A loop
-            # (under ~2.5 chars/token, or mostly whitespace) would loop
-            # again, so it fails as before.
-            if _co.cpt < 2.5 or _co.ws > 0.5:
-                raise
-            _target = int(_co.chars * 0.6)
-            log(f"the reply was cut off at {_co.chars} chars; asking once "
-                f"more for under {_target}", level="warn", drive=drive)
-            raw = cortex.complete(
-                cfg["llm"]["composer"], system,
-                user + (f"\n\nYOUR LAST REPLY WAS CUT OFF at the "
-                        f"{_co.max_tokens}-token output limit, about {_co.chars} "
-                        f"characters in, and nothing was sent. Write it again, "
-                        f"much shorter: the whole JSON object under about "
-                        f"{_target} characters. For a build: fewer and shorter "
-                        f"files, and no reasoning inside the code; your reasons "
-                        f"go in the rationale. Reply with the JSON object only."),
-                schema=_schema_without(cortex.proposal_schema(), _blocked))
+        raw = _complete_cutting(cfg["llm"]["composer"], system, user,
+                                _schema_without(cortex.proposal_schema(), _blocked),
+                                lambda m, **k: log(m, drive=drive, **k))
         proposal = cortex.parse_proposal(raw)
         # An over-long title used to lose the whole cycle: three in a row came
         # back at 121, 124 and 127 characters and each one died at the gate
@@ -2528,10 +2530,11 @@ def main():
                   ("title", "body", "note", "artifact", "claim")]
         _texts += [str(x) for x in (payload.get("evidence") or [])]
         # What riffle READ, not what it wrote: its own blocks quote its past
-        # posts, and a hash it once invented must not count as seen.
+        # posts, and a hash it once invented must not count as seen. Nor do
+        # the proposal's own `sources` (U3, audit round 2): riffle writes them
+        # in the same reply, so a hash listed there vouched for itself.
         _bad_h = _unknown_hashes(state, _texts, "\n".join(x for x in parts if not _is_own(x)) + "\n"
-                                 + (state.note("last_build") or "") + "\n"
-                                 + json.dumps(proposal.get("sources") or {}))
+                                 + (state.note("last_build") or ""))
         if _bad_h:
             try:
                 _real = (json.loads(state.note("last_build") or "{}")
@@ -2644,46 +2647,61 @@ def main():
                         f"[[3/8*100]] with the operands you used, or by quoting "
                         f"the line it comes from with the page's URL. Keep "
                         f"everything else as it was. Reply with the JSON object only.")
-                try:
-                    _raw2 = cortex.complete(
-                        cfg["llm"]["composer"], system, user + _ask,
-                        schema=_schema_without(cortex.proposal_schema(),
-                                               (set(policy.ACTION_KINDS) | {"noop"}) - {kind}))
-                    _p2 = cortex.parse_proposal(_raw2) or {}
-                    _body2 = (((_p2.get("payload") or {}).get(_tf) or "")
-                              if _p2.get("action") == kind else "")
-                    if _body2:
-                        _k2, _pay2, _r2 = drives.gate(
-                            {"action": kind, "payload": dict(payload, **{_tf: _body2}),
-                             "rationale": rationale}, drive, cfg)
-                        for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b",
-                                                   _pay2[_tf], re.I)):
-                            if f"library_{_lid}" not in _src:
-                                try:
-                                    _row3, _text3 = library.read(
-                                        state, int(_lid), cfg["library"]["root"], count=False)
-                                    if _row3:
-                                        _src[f"library_{_lid}"] = (_text3 or "")[:20000]
-                                except Exception:
-                                    pass
-                        _passed2, _report2 = run_numcheck(_pay2[_tf], _src, material)
-                        if _passed2:
-                            log(f"numcheck: {len(_bad1)} figure(s) blocked the first "
-                                f"draft; the rewrite in the same cycle passed", drive=drive)
-                            state.say("report", f"Cycle {cid} \u00b7 my first draft had "
-                                                f"figure(s) I could not trace ({_named}); "
-                                                f"I rewrote it in the same cycle.",
-                                      {"drive": drive})
-                            payload, body, passed, report = _pay2, _pay2[_tf], True, _report2
-                        else:
-                            log("numcheck: the rewrite still had untraceable "
-                                "figures; blocking as before", level="warn", drive=drive)
-                    else:
-                        log("numcheck: the rewrite did not come back as the same "
-                            "action; blocking as before", level="warn", drive=drive)
-                except Exception as _e4:
-                    log(f"numcheck: the rewrite did not work ({type(_e4).__name__}: "
-                        f"{_e4}); blocking as before", level="warn", drive=drive)
+                # UNDER THE COMPOSER LOCK (U8, audit round 2). The cycle's
+                # lock is released before this check, so the rewrite could
+                # collide with a chat turn or be killed by "restart model",
+                # which waits for this lock. Two minutes to get it; busy, the
+                # draft is blocked as it would have been without a rewrite.
+                _lk = chat.ComposerLock(os.path.join(data, "composer.lock"))
+                if not _lk.acquire(blocking=True, timeout=120):
+                    log("numcheck: the composer is busy (a chat turn); no "
+                        "rewrite this cycle, blocking as before",
+                        level="warn", drive=drive)
+                else:
+                    try:
+                        try:
+                            _raw2 = _complete_cutting(
+                                cfg["llm"]["composer"], system, user + _ask,
+                                _schema_without(cortex.proposal_schema(),
+                                                (set(policy.ACTION_KINDS) | {"noop"}) - {kind}),
+                                lambda m, **k: log(m, drive=drive, **k))
+                            _p2 = cortex.parse_proposal(_raw2) or {}
+                            _body2 = (((_p2.get("payload") or {}).get(_tf) or "")
+                                      if _p2.get("action") == kind else "")
+                            if _body2:
+                                _k2, _pay2, _r2 = drives.gate(
+                                    {"action": kind, "payload": dict(payload, **{_tf: _body2}),
+                                     "rationale": rationale}, drive, cfg)
+                                for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b",
+                                                           _pay2[_tf], re.I)):
+                                    if f"library_{_lid}" not in _src:
+                                        try:
+                                            _row3, _text3 = library.read(
+                                                state, int(_lid), cfg["library"]["root"], count=False)
+                                            if _row3:
+                                                _src[f"library_{_lid}"] = (_text3 or "")[:20000]
+                                        except Exception:
+                                            pass
+                                _passed2, _report2 = run_numcheck(_pay2[_tf], _src, material)
+                                if _passed2:
+                                    log(f"numcheck: {len(_bad1)} figure(s) blocked the first "
+                                        f"draft; the rewrite in the same cycle passed", drive=drive)
+                                    state.say("report", f"Cycle {cid} \u00b7 my first draft had "
+                                                        f"figure(s) I could not trace ({_named}); "
+                                                        f"I rewrote it in the same cycle.",
+                                              {"drive": drive})
+                                    payload, body, passed, report = _pay2, _pay2[_tf], True, _report2
+                                else:
+                                    log("numcheck: the rewrite still had untraceable "
+                                        "figures; blocking as before", level="warn", drive=drive)
+                            else:
+                                log("numcheck: the rewrite did not come back as the same "
+                                    "action; blocking as before", level="warn", drive=drive)
+                        except Exception as _e4:
+                            log(f"numcheck: the rewrite did not work ({type(_e4).__name__}: "
+                                f"{_e4}); blocking as before", level="warn", drive=drive)
+                    finally:
+                        _lk.release()
         if not passed:
             # Match the message to the decision. Spelled numerals do not block
             # in agent mode, but the report listed them anyway, so it named
@@ -3332,6 +3350,7 @@ def main():
         resp = execute(writer, kind, payload)
         state.set_status(aid, "executed", resp)
         state.cap_bump(day, kind)
+        _report_unsigned(state, cid, kind, aid, resp, lambda m, **k: log(m, drive=drive, **k))
         if kind == "post":
             # Shared with the dashboard's approval path — see project.on_posted.
             project.on_posted(state, cfg, aid,
@@ -3700,6 +3719,54 @@ def _unknown_hashes(state, texts, known_text):
             if r not in known_text and not any(h.startswith(r) for h in shas)]
 
 
+def _mark_votes(text, voted):
+    """Mark, in a board block, the comments and the thread riffle has already
+    voted on (U7): `[c123]` becomes `[c123, you voted]`, and a thread heading
+    `#456 "title"` becomes `#456 (you voted) "title"`."""
+    if voted["comment"]:
+        text = re.sub(r"\[c(\d+)\]",
+                      lambda m: (f"[c{m.group(1)}, you voted]"
+                                 if int(m.group(1)) in voted["comment"] else m.group(0)),
+                      text)
+    if voted["post"]:
+        text = re.sub(r'(^|\n)#(\d+) "',
+                      lambda m: (f'{m.group(1)}#{m.group(2)} (you voted) "'
+                                 if int(m.group(2)) in voted["post"] else m.group(0)),
+                      text)
+    return text
+
+
+def _complete_cutting(llm, system, user, schema, log):
+    """cortex.complete, asked once more, shorter, when the reply is cut off.
+
+    CUT OFF, NOT LOOPING: ONE MORE TRY, SHORTER (2026-10-27 and 10-28: two
+    `make` cycles lost at the 4,000-token ceiling at 3.5 and 3.9 chars/token,
+    a long build with its reasoning written into code comments). Asked again
+    in the same prompt, so the cache holds, with the size it must come in
+    under. A loop (under ~2.5 chars/token, or mostly whitespace) would loop
+    again, so it fails as before. Shared by the main call and the number
+    check's rewrite (U8, audit round 2: a rewrite was cut off at 11,608
+    characters on 2026-11-03 with nothing to catch it)."""
+    try:
+        return cortex.complete(llm, system, user, schema=schema)
+    except cortex.CutOff as co:
+        if co.cpt < 2.5 or co.ws > 0.5:
+            raise
+        target = int(co.chars * 0.6)
+        log(f"the reply was cut off at {co.chars} chars; asking once more for "
+            f"under {target}", level="warn")
+        return cortex.complete(
+            llm, system,
+            user + (f"\n\nYOUR LAST REPLY WAS CUT OFF at the {co.max_tokens}-token "
+                    f"output limit, about {co.chars} characters in, and nothing "
+                    f"was sent. Write it again, much shorter: the whole JSON "
+                    f"object under about {target} characters. For a build: "
+                    f"fewer and shorter files, and no reasoning inside the code; "
+                    f"your reasons go in the rationale. Reply with the JSON "
+                    f"object only."),
+            schema=schema)
+
+
 def _cycles_since_note(state, key):
     """Real cycles started since the note `key` was written (99 if none).
 
@@ -3778,6 +3845,13 @@ _BUDGETS = (
     ("NO PROJECT IS OPEN", 3000, 600),
     ("YOUR LAST BUILD", 2500, 600),       # 600 unless big_build
     ("COMMENTS YOU COULD ANSWER", 1500, 500),
+    # The desk holds riffle's drafts, and the library list is its shelf: both
+    # were ranked last and left out whole on two of three cycles on the box
+    # (U4, audit round 2, with the room down to ~14,900 characters). Here,
+    # with the work at hand, above every board digest, and never left out
+    # whole (_KEEP_WHOLE): at worst cut to their floor.
+    ("YOUR DESK", 1200, 300),
+    ("YOUR LIBRARY", 400, 150),
     # context
     ("YOUR GOALS RIGHT NOW", 1500, 400),
     ("FRONT PAGE", 2000, 600),
@@ -3793,10 +3867,10 @@ _BUDGETS = (
     ("QUESTIONS YOU HAVE ASKED", 700, 250),
     ("THREADS YOU HAVE READ ON THIS PROJECT", 600, 200),
     ("REFERENCES IN POSTS", 600, 300),
-    ("YOUR DESK", 600, 200),
-    ("YOUR LIBRARY", 400, 150),
     ("THE NULLS IN WHAT", 350, 150),
 )
+# Cut to their floor if need be, never replaced by a stub (U4).
+_KEEP_WHOLE = ("YOUR DESK", "YOUR LIBRARY")
 _UNLISTED = (1200, 250)        # ranked after every listed block
 
 
@@ -3871,11 +3945,13 @@ def _fit(parts, budget, log=None, big_build=False):
         if total <= budget:
             break
         _cut(i, specs[i][2])
-    # 3. left out whole, least important first
+    # 3. left out whole, least important first (never a _KEEP_WHOLE block)
     left_out = []
     for i in least_first:
         if total <= budget:
             break
+        if orig[i].lstrip().startswith(_KEEP_WHOLE):
+            continue
         name = orig[i].lstrip().split("\n", 1)[0][:70].rstrip(":")
         stub = (f"[{name} \u2014 left out this cycle to fit the context window "
                 f"({len(orig[i])} characters). It exists; it did not fit.]")
@@ -3939,10 +4015,10 @@ def situation(state, cfg, log=None):
         have.append(
             f"A BOUND SIGNING KEY, {pub}, active on the registry under your "
             f"handle with custody `self`. You cannot read it and never see it: "
-            f"you ask with `sign` and something else builds the exact bytes and "
-            f"checks them against limits you cannot edit. seal fingerprints a "
-            f"hash, attest signs a claim about another citizen's work, payout "
-            f"signs your half of a binding.")
+            f"something else builds the exact bytes and checks them against "
+            f"limits you cannot edit. Your seals and attestations are signed "
+            f"automatically when they are sent; `sign` is only for binding a "
+            f"listing's payout, and only after you have submitted work to it.")
     else:
         lack.append("a signing key the signer will answer for")
 
@@ -5085,6 +5161,16 @@ def _signature(kind, args):
     except (ValueError, AttributeError):
         return None, "the signer returned non-JSON"
     return (sig, None) if sig else (None, "the signer returned no signature")
+
+
+def _report_unsigned(state, cid, kind, aid, resp, log):
+    """A seal or attestation that went out UNSIGNED, said out loud (U6, audit
+    round 2): the reason was kept only in the action's stored response."""
+    if isinstance(resp, dict) and resp.get("unsigned_because"):
+        why = str(resp["unsigned_because"])[:240]
+        log(f"{kind} #{aid} was sent UNSIGNED: {why}", level="warn")
+        state.say("report", f"{'Cycle ' + str(cid) + ' · ' if cid else ''}my {kind} "
+                            f"#{aid} went out unsigned: {why}")
 
 
 def _send_signed(send, kind, args):
