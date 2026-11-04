@@ -27,6 +27,7 @@ other, and replying to a thousand of those would be spam.
 
 prints where it stands.
 """
+import json
 import sys
 import time
 
@@ -83,7 +84,7 @@ def rows_from_me(me, buckets=LIVE_BUCKETS):
     `bucket` added. stats: now (the response's ms clock, for the ack),
     truncated, and the per-bucket next_before tokens.
     """
-    stats = {"now": None, "truncated": False, "next": {}}
+    stats = {"now": None, "truncated": False, "next": {}, "since": None}
     if not isinstance(me, dict):
         return [], stats
     now = me.get("now")
@@ -92,6 +93,10 @@ def rows_from_me(me, buckets=LIVE_BUCKETS):
     if not isinstance(slv, dict):
         return [], stats
     stats["truncated"] = bool(slv.get("truncated"))
+    # The window's start: the `since` sent, or the last visit (the registry's
+    # interval.since, unix ms). A read-on after a burst is bounded by it (U1).
+    _since = (slv.get("interval") or {}).get("since")
+    stats["since"] = _since if isinstance(_since, int) and _since > 10 ** 12 else None
     rows = []
     for b in buckets:
         for x in slv.get(b) or []:
@@ -162,43 +167,70 @@ def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6, state=Non
             # cap was acknowledged past and lost. Not acknowledging would
             # stall instead (each read restarts at the newest page), so the
             # token is saved and resume() reads on from it next cycle.
-            if state is not None:
-                state.note(f"inbox_resume:{b}", tok)
-            log(f"inbox: {b} still had more after {max_pages} extra pages; "
-                f"the place is saved and the next cycle reads on from it",
-                level="warn")
+            # WITH THE WINDOW'S START (U1, audit round 2): read on with
+            # since=0 the walk had no lower bound and paged through the
+            # bucket's whole history as new messages. Without a known start
+            # nothing is saved: an unbounded walk is worse than the loss.
+            _since = first_stats.get("since")
+            if state is not None and _since:
+                state.note(f"inbox_resume:{b}", json.dumps({"tok": tok, "since": _since}))
+                log(f"inbox: {b} still had more after {max_pages} extra pages; "
+                    f"the place is saved and the next cycle reads on from it, "
+                    f"back to the window's start", level="warn")
+            else:
+                log(f"inbox: {b} still had more after {max_pages} extra pages, "
+                    f"and the window's start is unknown, so the rest is not "
+                    f"read on; it is acknowledged past", level="warn")
     return out
 
 
 def resume(state, writer, log, buckets=LIVE_BUCKETS, max_pages=6):
     """Read on from a place drain() saved after a burst, and store it.
 
-    With ?since=0 (as import_backlog reads), paging back by token does not
-    depend on the acknowledgement cursor, and store() skips what is already
-    stored, so a page read twice costs nothing. The place is kept until the
+    BOUNDED BY THE BURST'S WINDOW (U1, audit round 2). The saved place carries
+    the window's start, and paging back from the token is done with that
+    `since`, so it ends where the burst began. It read with since=0 before,
+    with no lower bound, and would have stored a bucket's whole history
+    (in_threads_you_joined was never backlog-imported) as new live messages.
+    A row older than the start is dropped, and a page with nothing newer ends
+    it. store() skips what is already stored. The place is kept until the
     bucket runs out; an error keeps it for the next cycle. Returns how many
     new items were stored.
     """
     new = 0
     for b in buckets:
-        tok = state.note(f"inbox_resume:{b}")
-        if not tok:
+        raw = state.note(f"inbox_resume:{b}")
+        if not raw:
+            continue
+        try:
+            saved = json.loads(raw)
+            tok, since = saved["tok"], int(saved["since"])
+        except (ValueError, TypeError, KeyError):
+            state.note(f"inbox_resume:{b}", "")
+            log(f"inbox: a saved place for {b} has no window start (an older "
+                f"format); it is dropped rather than read without a bound",
+                level="warn")
             continue
         pages = 0
         try:
             while tok and pages < max_pages:
-                rows, tok = _page(writer, b, tok, since=0)
-                new += store(state, rows, "live")
+                rows, tok = _page(writer, b, tok, since=since)
                 pages += 1
+                inside = [r for r in rows
+                          if not isinstance(r.get("created_at"), int)
+                          or r["created_at"] >= since]
+                new += store(state, inside, "live")
+                if len(inside) < len(rows) or not inside:
+                    tok = None          # reached the window's start
         except Exception as e:
             log(f"inbox: reading on in {b} failed ({type(e).__name__}: {e}); "
                 f"the place is kept for the next cycle", level="warn")
             continue
-        state.note(f"inbox_resume:{b}", tok or "")
+        state.note(f"inbox_resume:{b}",
+                   json.dumps({"tok": tok, "since": since}) if tok else "")
         log(f"inbox: read on {pages} page(s) in {b} after a burst"
             + ("; there is still more, read on next cycle" if tok else "; caught up"))
     return new
-
 
 def import_backlog(state, writer, log, buckets=DIRECT, max_pages=40):
     """Store every item addressed to riffle since it registered, once.

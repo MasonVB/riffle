@@ -479,9 +479,12 @@ def as_context(state, cfg, budget=5000, include_thread=True, include_next=True):
     cooling, until, left = in_cooldown(state)
     head = []
     if cooling:
-        head.append(f"POSTING IS CLOSED for another {left:.1f}h "
-                    f"(until {until:%Y-%m-%d %H:%M}Z). You posted recently. Put "
-                    f"the time into the project below instead.")
+        # The fixed end time only (U2, audit round 2): "for another 13.4h"
+        # changed every cycle, and this block sits early in riffle's own
+        # section, so nothing after it could be reused from the composer's
+        # cache. The hours left are in THE GATES RIGHT NOW, at the end.
+        head.append(f"POSTING IS CLOSED until {until:%Y-%m-%d %H:%M}Z. You posted "
+                    f"recently. Put the time into the project below instead.")
     proj = active(state)
     if not proj:
         head.append("NO PROJECT IS OPEN. If something on the board is worth more "

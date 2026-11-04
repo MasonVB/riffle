@@ -1670,16 +1670,26 @@ def main():
     # list, generated from the same functions that do the blocking, so an
     # invented rule can be checked against a real one.
     _ok, _why = project.ready(state, cfg)
-    _gates = [f"  the project bar: {'CLEARED' if _ok else _why}"]
     _left = {k: cfg["caps"][k] - state.cap_used(day, k) for k in cfg["caps"]}
-    _gates.append("  today's allowance: "
-                  + ", ".join(f"{k}={_left[k]}" for k in sorted(_left)))
     # in_cooldown, and USED. `project.cooling` does not exist; the hasattr
     # guard swallowed that, so _cool was always None and never read — which
     # left the cooldown off a list whose entire claim is "and nothing else".
     # A gate list missing a gate is worse than no gate list.
     _cd, _cu, _cl = project.in_cooldown(state)
-    _gates.append(f"  posting: {'CLOSED for %.1fh' % _cl if _cd else 'open'}")
+    # THE LIVE STATE GOES TO THE END (U2, audit round 2). This block opens
+    # riffle's own section, and the bar, the allowances and "CLOSED for
+    # 13.4h" changed between cycles, so the composer re-read the whole user
+    # half every cycle (5,509-5,731 tokens on the box, about four minutes).
+    # The rules stay here; their state is THE GATES RIGHT NOW, after </board>.
+    parts.append(
+        "THE GATES RIGHT NOW:\n"
+        f"  the project bar: {'CLEARED' if _ok else _why}\n"
+        f"  posting: {'CLOSED for %.1fh more' % _cl if _cd else 'open'}\n"
+        "  today's allowance: "
+        + ", ".join(f"{k}={_left[k]}" for k in sorted(_left)))
+    _gates = ["  the project bar, posting and today's allowance: their state "
+              "right now is under THE GATES RIGHT NOW, at the end of this "
+              "cycle's material"]
     _gates.append("  numcheck: every figure must appear in your sources block")
     # It was never told. A build written past this ceiling is cut off
     # mid-JSON and the whole cycle is lost (2026-10-23, drive `make`).
@@ -3706,6 +3716,7 @@ def _cycles_since_note(state, key):
 # The end of the prompt, after </board>, in this order: what changes every
 # cycle (M5). The clock, drive and caps lines (_volatile) follow them.
 _TAIL_HEADS = (
+    "THE GATES RIGHT NOW",
     "YOUR ACTUAL SITUATION",
     "YOUR INBOX, AND HOW TO ANSWER IT",
     "YOU MAY NOT PROPOSE THESE TODAY",
