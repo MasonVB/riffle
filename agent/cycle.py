@@ -1143,7 +1143,16 @@ def main():
             return False
         return True
 
-    open_listings = [l for l in listings if _is_open(l)]
+    # SET ASIDE BY THE OPERATOR (2026-11-04). Listing 13, "Fund MaciekTMPL
+    # ... Anyone may pay", asks citizens to GIVE $1; riffle read "Fund" and
+    # "$1" as money on offer, bound its payout, and kept submitting to it.
+    # The registry's record has no field that tells a donation request from
+    # work, so the operator names such listings in config.yaml
+    # (listings.ignore): not shown, not a reason to draw `earn`, and a
+    # submission to one is refused below as not open to work.
+    _ignored = {int(x) for x in ((cfg.get("listings") or {}).get("ignore") or [])
+                if str(x).strip().isdigit()}
+    open_listings = [l for l in listings if _is_open(l) and l.get("id") not in _ignored]
 
     # --- which drives have material this cycle ------------------------------
     # A goal with nothing to act on is not available this cycle. Goals you
@@ -2913,7 +2922,8 @@ def main():
         _lid = payload.get("listing_id")
         if _lid not in {l.get("id") for l in open_listings}:
             _open = ", ".join(f"#{l.get('id')}" for l in open_listings[:8])
-            why = (f"listing {_lid} is not open to work: withdrawn, closed, "
+            why = (f"listing {_lid} is not open to work: set aside by your "
+                   f"operator, withdrawn, closed, "
                    f"past its deadline, or not on the board. Open now: "
                    f"{_open or 'none'}.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
@@ -3886,6 +3896,54 @@ def _budget_of(part, big_build=False):
 
 
 def _fit(parts, budget, log=None, big_build=False):
+    """Fit riffle's own section and the board SEPARATELY (audit round 2, U2,
+    found on the box: after U2 the composer still re-read ~5,500 tokens a
+    cycle, the whole user half).
+
+    Fitted together, whether a block in riffle's own section was cut depended
+    on how much the whole prompt was over, and that changes every cycle with
+    the board (an inbox message, a longer thread). A block cut one cycle and
+    whole the next ends the composer's reusable opening at that block: the
+    library list, fourth in the section, did. So the own section is fitted
+    first within a budget of its own, 65% of the room rounded down to 500 so
+    a few characters' wobble in the room cannot move it, and the board gets
+    everything left. Inside each section the rules are as before: caps,
+    floors, importance, the protected and keep-whole blocks. A busy board
+    can no longer change the own section; only the own section's content can.
+    """
+    own_i = [i for i, x in enumerate(parts) if _is_own(x)]
+    brd_i = [i for i, x in enumerate(parts) if not _is_own(x)]
+    # Never so much that the board's own protected blocks (the inbox, up to
+    # ~4,800 characters) cannot fit: they cannot shrink, and fitted together
+    # the own section used to give way to them. So the share is the smaller
+    # of 65% and what the board's protected blocks leave, with 1,500 to work
+    # in; both rounded down to 500. It moves only when those blocks change.
+    _brd_rules = sum(len(parts[i]) + 2 for i in brd_i if _is_rule(parts[i]))
+    own_budget = max(2000, min((int(budget * 0.65) // 500) * 500,
+                               (int(budget - _brd_rules - 1500) // 500) * 500))
+    # THE STABLE HEAD IS NOT CUT FOR ROOM. Riffle's own changing blocks (what
+    # it already did and said, its notes) grow with almost every action, and
+    # cutting for them reached back to the library list and broke the cache
+    # there. The blocks ranked before the project in _OWN_ORDER, the stable
+    # head, are held to their caps only; the room a busy cycle needs is taken
+    # from the project onward, which changes anyway.
+    _head = _OWN_ORDER[:_OWN_ORDER.index("YOUR PROJECT")]
+    own = _fit_section([parts[i] for i in own_i], own_budget, log, big_build,
+                       " (own section)",
+                       fixed=lambda x: x.lstrip().startswith(_head))
+    used = sum(len(x) for x in own) + 2 * len(own)
+    brd = _fit_section([parts[i] for i in brd_i], max(0, budget - used), log,
+                       big_build, " (board)")
+    out = list(parts)
+    for i, x in zip(own_i, own):
+        out[i] = x
+    for i, x in zip(brd_i, brd):
+        out[i] = x
+    return out
+
+
+def _fit_section(parts, budget, log=None, big_build=False, label="",
+                 fixed=lambda x: False):
     """Bring the blocks under `budget` by importance, loudly; rules never.
 
     BY IMPORTANCE, NOT LENGTH (H6, audit 2026-10-27). This cut the longest
@@ -3912,6 +3970,8 @@ def _fit(parts, budget, log=None, big_build=False):
     want = total
     specs = {i: _budget_of(parts[i], big_build) for i in range(len(parts))
              if not _is_rule(parts[i])}
+    # Held to their caps in step 1, but not cut further or left out (fixed).
+    _movable = [i for i in specs if not fixed(orig[i])]
 
     def _cut(i, keep):
         nonlocal total
@@ -3934,7 +3994,7 @@ def _fit(parts, budget, log=None, big_build=False):
     for i, (_rank, cap, _floor) in specs.items():
         if len(parts[i]) > cap:
             _cut(i, cap)
-    least_first = sorted(specs, key=lambda i: -specs[i][0])
+    least_first = sorted(_movable, key=lambda i: -specs[i][0])
     # 2. to the floors, least important first, until it fits. STRAIGHT TO
     # THE FLOOR, not "only as far as needed" (found 2026-11-03): the amount
     # needed changes every cycle with the board, so a stable block early in
@@ -3959,8 +4019,30 @@ def _fit(parts, budget, log=None, big_build=False):
             total += len(stub) - len(parts[i])
             parts[i] = stub
             left_out.append(name[:40])
+    # 4. LAST RESORT: the fixed blocks too (the stable head of riffle's own
+    # section). Held whole for the composer's cache on an ordinary cycle; in a
+    # room too small for everything else, they give way like the rest.
+    if total > budget:
+        _fixed_least_first = sorted((i for i in specs if fixed(orig[i])),
+                                    key=lambda i: -specs[i][0])
+        for i in _fixed_least_first:
+            if total <= budget:
+                break
+            _cut(i, specs[i][2])
+        for i in _fixed_least_first:
+            if total <= budget:
+                break
+            if orig[i].lstrip().startswith(_KEEP_WHOLE):
+                continue
+            name = orig[i].lstrip().split("\n", 1)[0][:70].rstrip(":")
+            stub = (f"[{name} \u2014 left out this cycle to fit the context window "
+                    f"({len(orig[i])} characters). It exists; it did not fit.]")
+            if len(stub) < len(parts[i]):
+                total += len(stub) - len(parts[i])
+                parts[i] = stub
+                left_out.append(name[:40])
     if log and want > budget:
-        log(f"prompt fitted: wanted {want} chars of {budget}, sent {total}"
+        log(f"prompt fitted{label}: wanted {want} chars of {budget}, sent {total}"
             + (f"; left out whole: {', '.join(left_out)}" if left_out else ""),
             level="warn" if left_out else "info")
     if total > budget and log:
