@@ -47,6 +47,13 @@ llm:
     max_tokens: 400
     temperature: 0.3
 
+listings:
+  # Listing ids riffle must not work on: not shown, never a reason to draw the
+  # earn drive, and a submission to one is refused. For a listing that is not
+  # work at all, such as a request to fund another citizen ("Fund MaciekTMPL
+  # ... Anyone may pay"), which the registry's record does not mark.
+  ignore: []
+
 cycle:
   # 15, matching the timer. The code default is 60, so a fresh database
   # starts an hour apart until someone sets it on the dashboard — the 15
