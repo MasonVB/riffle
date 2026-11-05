@@ -222,7 +222,8 @@
               "pattern": "^[0-9a-f]{64}$"
             },
             "label": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[a-z0-9._-]+$"
             }
           },
           "required": [
