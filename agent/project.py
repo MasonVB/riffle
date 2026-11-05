@@ -68,6 +68,28 @@ def cooldown_until(state):
         return None
 
 
+def strip_old_titles(state):
+    """Take strangers' thread titles out of old source notes (U13, audit round
+    2). H4 stopped filing them, but notes written before still read
+    `Read #N "<title>" by <author>: ...`, inside riffle's own project block.
+    Rewritten once to the current `Read #N by <author>: ...`; greedy up to
+    the last `" by <handle>:`, since a title can itself contain quotes."""
+    if state.note("migrated:read_titles"):
+        return 0
+    n = 0
+    for r in state.db.execute(
+            "SELECT id, text FROM project_notes WHERE text LIKE 'Read #% \"%\" by %'"
+            ).fetchall():
+        new = re.sub(r'^Read #(\d+) ".*" by ([^\s:]+):', r"Read #\1 by \2:", r["text"],
+                     count=1, flags=re.S)
+        if new != r["text"]:
+            state.db.execute("UPDATE project_notes SET text=? WHERE id=?", (new, r["id"]))
+            n += 1
+    state.db.commit()
+    state.note("migrated:read_titles", str(n))
+    return n
+
+
 def start_cooldown(state, hours=24):
     until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours)
     state.note("post_cooldown_until", until.isoformat())

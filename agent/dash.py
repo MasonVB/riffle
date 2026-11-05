@@ -534,6 +534,25 @@ class Handler(BaseHTTPRequestHandler):
         def run():
             import time as _t
             import urllib.request as _u
+            import subprocess as _sp
+            REQ = "/var/lib/riffle/restart-composer.request"
+
+            def healthy():
+                try:
+                    with _u.urlopen("http://127.0.0.1:8080/health", timeout=4) as r:
+                        return r.status == 200
+                except Exception:
+                    return False
+
+            def unit_failed():
+                try:
+                    return _sp.run(["systemctl", "show", "-p", "ActiveState", "--value",
+                                    "riffle-restart-composer.service"],
+                                   capture_output=True, text=True,
+                                   timeout=10).stdout.strip() == "failed"
+                except Exception:
+                    return False
+
             t0 = _t.time()
             self.state.say("report", "Restarting the composer. It has to read "
                                      "20.6 GB off disk, so give it a couple of "
@@ -542,29 +561,48 @@ class Handler(BaseHTTPRequestHandler):
                 # Ask systemd rather than becoming root. riffle-restart-composer.path
                 # is watching this file; the matching service deletes it and does
                 # the restart. The dashboard needs no privilege of any kind.
-                open("/var/lib/riffle/restart-composer.request", "w").close()
+                open(REQ, "w").close()
             except Exception as e:
                 self.state.say("error", f"could not signal a restart: {e}")
+                cls._restarting = False
                 return
             try:
-                # Wait for it to answer rather than assuming. A unit that has
-                # "started" has only forked; the model is still loading.
-                for _ in range(200):
-                    _t.sleep(2)
-                    try:
-                        with _u.urlopen("http://127.0.0.1:8080/health",
-                                        timeout=4) as resp:
-                            if resp.status == 200:
-                                self.state.say(
-                                    "report", f"Composer is back, "
-                                              f"{int(_t.time() - t0)}s. Fresh "
-                                              f"KV cache and slot state.")
-                                self.state.log("you restarted the composer")
-                                return
-                    except Exception:
-                        continue
-                self.state.say("error", "the composer did not answer /health "
-                                        "within 400s; check "
+                # DOWN FIRST, THEN UP (U10, audit round 2). This checked
+                # /health two seconds in: with the restart unit still waiting
+                # on the cycle or composer lock, the OLD composer answered and
+                # the card said it was back. Loading the model takes minutes,
+                # so a real restart always shows /health failing first. The
+                # unit gives up after 900 s; once it has taken the request (it
+                # deletes the file), a failed unit is said, not waited out.
+                down = False
+                while _t.time() - t0 < 960:
+                    _t.sleep(3)
+                    if not healthy():
+                        down = True
+                        break
+                    if not os.path.exists(REQ) and unit_failed():
+                        self.state.say("error", "The restart unit gave up: it waited "
+                                                "15 minutes for a running cycle or "
+                                                "chat to finish. Nothing was "
+                                                "restarted; try again.")
+                        return
+                if not down:
+                    self.state.say("error", "The composer did not go down within 16 "
+                                            "minutes, so nothing was restarted. "
+                                            "Check `systemctl status "
+                                            "riffle-restart-composer`.")
+                    return
+                t1 = _t.time()
+                while _t.time() - t1 < 400:
+                    _t.sleep(3)
+                    if healthy():
+                        self.state.say("report", f"Composer is back, "
+                                                 f"{int(_t.time() - t0)}s. Fresh "
+                                                 f"KV cache and slot state.")
+                        self.state.log("you restarted the composer")
+                        return
+                self.state.say("error", "the composer went down but did not answer "
+                                        "/health within 400s; check "
                                         "`journalctl -u llama-composer`.")
             except Exception as e:
                 self.state.say("error", f"restart failed: {e}")

@@ -53,6 +53,16 @@ _NEGATION = re.compile(
     r"couldnt|wouldnt|mustnt|neednt|hasnt|havent|hadnt|without|\w+n't)\b")
 
 
+# The negation words as _key sees them (over three letters; an apostrophe
+# splits "doesn't" into "doesn" and "t").
+_NEG_TOKENS = frozenset({
+    "never", "none", "nobody", "nothing", "nowhere", "neither", "cannot",
+    "dont", "doesnt", "didnt", "isnt", "arent", "wasnt", "werent", "wont",
+    "shouldnt", "couldnt", "wouldnt", "mustnt", "neednt", "hasnt", "havent",
+    "hadnt", "without", "doesn", "didn", "wasn", "weren", "shouldn",
+    "couldn", "wouldn", "mustn", "needn", "hasn", "haven", "hadn", "aren"})
+
+
 def _negated(text):
     return bool(_NEGATION.search((text or "").lower().replace("\u2019", "'")))
 
@@ -103,12 +113,24 @@ def remember(state, text, kind="operator", source=None, pinned=0,
                          if len(w) > 3)
     incoming = _key(text)
     neg = _negated(text)
+    contradicts = None
     if len(incoming) >= 4:
         for row in state.db.execute(
-                f"SELECT id, text FROM memories WHERE {live} AND kind=?"
+                f"SELECT id, text, pinned FROM memories WHERE {live} AND kind=?"
                 " ORDER BY id DESC LIMIT 60", (kind,)):
             if _negated(row["text"]) != neg:
-                continue                  # a statement and its opposite
+                # A statement and its opposite are never merged (H7a). But if
+                # they differ ONLY by the negation, the newer one is the
+                # correction and the older must stop being recalled as live
+                # (U14, audit round 2): it was left beside it, so riffle
+                # remembered both "X" and "not X". Strict on purpose, 80% of
+                # the other words shared, so two facts that merely share words
+                # are not taken for one reversed; never a pinned memory.
+                a, b = incoming - _NEG_TOKENS, _key(row["text"]) - _NEG_TOKENS
+                if (contradicts is None and not row["pinned"] and a and b
+                        and len(a & b) / max(len(a), len(b)) >= 0.8):
+                    contradicts = row["id"]
+                continue
             other = _key(row["text"])
             if not other:
                 continue
@@ -130,6 +152,8 @@ def remember(state, text, kind="operator", source=None, pinned=0,
     mid = cur.lastrowid
     if supersedes:
         state.db.execute("UPDATE memories SET superseded_by=? WHERE id=?", (mid, supersedes))
+    if contradicts and contradicts != supersedes:
+        state.db.execute("UPDATE memories SET superseded_by=? WHERE id=?", (mid, contradicts))
     state.db.commit()
     if _ensure_fts(state):
         try:

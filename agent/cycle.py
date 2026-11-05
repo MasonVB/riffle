@@ -704,6 +704,7 @@ def main():
 
     goals.seed(state, cfg)
     project.ensure(state)
+    project.strip_old_titles(state)        # once; U13
     # BEFORE the approved actions below, not after. They ran first, so on a
     # fresh database an approved library action died on "no such table:
     # library", and any future migration inside these ensure() calls would
@@ -1903,6 +1904,14 @@ def main():
     if _ex:
         _done.append("threads read to the end (read_more has nothing left): "
                      + ", ".join(dict.fromkeys(_ex)))
+    # Payout bindings refused for want of work (U11, audit round 2): two
+    # cycles since the A5 check went in were spent proposing one again.
+    _pw = [str(r["n"]) for r in state.db.execute(
+        "SELECT c.notes AS n FROM cycles c WHERE c.outcome='payout-without-work'"
+        " ORDER BY c.id DESC LIMIT 15")]
+    if _pw:
+        _done.append("payout bindings refused, as you submitted no work to the "
+                     "listing: " + ", ".join(f"listing {x}" for x in dict.fromkeys(_pw)))
     if _done:
         parts.append("ALREADY DONE \u2014 each of these is refused if proposed "
                      "again, so do not:\n" + "\n".join("  " + x for x in _done))
@@ -2842,17 +2851,20 @@ def main():
     # the id the registry gave back, so this is answerable here.
     if kind == "vote" and payload.get("target_id"):
         _mine = set()
+        _own_kind = "post" if payload.get("target_type", "post") == "post" else "comment"
         for _r in state.db.execute(
                 "SELECT response FROM actions WHERE kind=?"
                 " AND status IN ('sent','executed') AND response IS NOT NULL",
-                ("post" if payload.get("target_type", "post") == "post"
-                 else "comment",)):
+                (_own_kind,)):
             # post_id / comment_id: the registry's create answers carry no
             # "id" (M2, audit 2026-10-27), so reading "id" meant this check
             # never matched and each vote on riffle's own work cost a 403.
             try:
                 _resp = json.loads(_r["response"]) or {}
-                _rid = (_resp.get("post_id") or _resp.get("comment_id")
+                # The field for THIS kind first (U15, audit round 2): a
+                # comment's answer carries the post it is on as post_id too,
+                # and reading post_id first took that for the comment.
+                _rid = (_resp.get("comment_id" if _own_kind == "comment" else "post_id")
                         or _resp.get("id"))
             except Exception:
                 _rid = None

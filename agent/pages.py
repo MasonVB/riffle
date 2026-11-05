@@ -292,7 +292,7 @@ after a deploy your browser is serving a cached copy">__BUILD__</span>
   <div class=btnrow>
     <label id=autow title="follow new messages"><input type=checkbox id=autos checked> auto</label>
     <button id=send>send</button>
-    <button id=sendcyc title="carried into the next wake cycle as data; one cycle by default, raise the count on the settings page">send to cycle</button>
+    <button id=sendcyc title="carried into the next wake cycle as an instruction, in riffle's own section; one cycle by default, raise the count on the settings page">send to cycle</button>
   </div>
 </footer>
 <script>

@@ -38,6 +38,25 @@ def _prefix_u16(v, n):
     return v
 
 
+def _label(v):
+    """A seal label as the registry and the signer take it: [a-z0-9._-], 1-40.
+
+    REPAIRED HERE (U9, audit round 2). The rule lived only in the signer, so
+    an uppercase or spaced label made the signer refuse, the seal went out
+    unsigned, and the registry rejected it. Lowercased, every run of other
+    characters made one hyphen, trimmed to 40; refused only if nothing is left.
+    """
+    if not isinstance(v, str):
+        raise Rejected("label must be a string")
+    import unicodedata
+    v = "".join(c for c in unicodedata.normalize("NFKD", v)
+                if not unicodedata.combining(c))          # été -> ete
+    out = re.sub(r"[^a-z0-9._-]+", "-", v.strip().lower()).strip("-.")[:40].strip("-.")
+    if not out:
+        raise Rejected(f"label {v!r} has nothing usable: use letters, digits, . _ -")
+    return out
+
+
 def _s(v, lo, hi, name):
     if not isinstance(v, str):
         raise Rejected(f"{name} must be a string")
@@ -198,7 +217,7 @@ SCHEMA = {
                         "target_id": _i(p["target_id"], "target_id"),
                         "reason": _trim(p["reason"], 1, 200, "reason")}),
     "seal": (["hash", "label"], [],
-             lambda p: {"hash": _hex64(p["hash"]), "label": _s(p["label"], 1, 40, "label")}),
+             lambda p: {"hash": _hex64(p["hash"]), "label": _label(p["label"])}),
     # --- the social and read-only surface --------------------------------
     "porch": (["body"], [],
               lambda p: {"body": _s(p["body"], 1, 500, "body")}),
