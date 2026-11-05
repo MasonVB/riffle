@@ -300,6 +300,18 @@ def main():
     rc, out_b, err_b, timed_out, over = run_bounded(
         cmd, work, TIMEOUT + 15, MAX_OUTPUT * 4, OUTPUT_BUDGET, stop_unit,
         check=disk_check)
+    # ONE LAST LOOK (2026-11-05). disk_check runs about once a second WHILE
+    # the build runs, so a build that wrote past the budget and exited between
+    # two checks was never measured: it counted as ok, or, if it failed, its
+    # directory was KEPT with everything it wrote, and the newest KEEP_FAILED
+    # failures are kept whatever their size. Found by a test that let a 300 MB
+    # flood through one run in ten. Measured once more now; over the budget,
+    # it is a disk failure like any other, and its directory goes.
+    if not disk_reason and disk_check():
+        disk_reason[0] = disk_reason[0].replace(
+            "[stopped: the build wrote", "[the build wrote").replace(
+            " MiB]", " MiB; it had already finished]")
+        over = True
     out = out_b.decode("utf-8", "replace")
     err = err_b.decode("utf-8", "replace")
     if timed_out:
