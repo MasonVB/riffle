@@ -1192,6 +1192,32 @@ def main():
             _blocked.add("post")
     except Exception:
         pass
+    # NO SIGN WITHOUT WORK TO BIND (V3, audit round 3). A5 refuses a payout
+    # binding for a listing riffle submitted nothing to, but only after the
+    # cycle is spent writing it: eleven of 48 cycles after 2026-11-05 ended
+    # that way, every one for listing 13, a request to fund another citizen
+    # that listings.ignore already hides. As with `post` above, `sign` is
+    # offered only when there is something to bind: a submission of riffle's
+    # (sent, executed or unknown) to a listing not on the operator's ignore
+    # list, with no binding for it already queued, approved, sent or done.
+    _ignored_l = {int(x) for x in ((cfg.get("listings") or {}).get("ignore") or [])
+                  if str(x).strip().isdigit()}
+    _bindable = []
+    for _sr in state.db.execute(
+            "SELECT DISTINCT CAST(json_extract(payload,'$.listing_id') AS INTEGER) AS l"
+            " FROM actions WHERE kind='listing_submission'"
+            " AND status IN ('sent','executed','unknown')"):
+        _l = _sr["l"]
+        if _l is None or _l in _ignored_l:
+            continue
+        if not state.db.execute(
+                "SELECT 1 FROM actions WHERE kind='sign'"
+                " AND json_extract(payload,'$.row')=?"
+                " AND status IN ('queued','approved','sending','sent','executed','unknown')"
+                " LIMIT 1", (f"listing-{_l}",)).fetchone():
+            _bindable.append(_l)
+    if not _bindable:
+        _blocked.add("sign")
     _blocked.discard("noop")
 
     known = {"understand", "witness"}
@@ -1909,7 +1935,11 @@ def main():
     _pw = [str(r["n"]) for r in state.db.execute(
         "SELECT c.notes AS n FROM cycles c WHERE c.outcome='payout-without-work'"
         " ORDER BY c.id DESC LIMIT 15")]
-    if _pw:
+    # Not while `sign` is out of the grammar (V3): riffle cannot propose a
+    # binding then, and naming the listing every cycle only kept it in mind.
+    # Never a listing the operator set aside.
+    _pw = [x for x in _pw if not (x.isdigit() and int(x) in _ignored_l)]
+    if _pw and "sign" not in _blocked:
         _done.append("payout bindings refused, as you submitted no work to the "
                      "listing: " + ", ".join(f"listing {x}" for x in dict.fromkeys(_pw)))
     if _done:
