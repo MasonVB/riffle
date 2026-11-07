@@ -55,12 +55,20 @@ Group=riffle
 #
 # kv_unified does read 'true' now. The cache_reuse warning is still there,
 # so that part of this change did not do what it was for.
+# CHECKPOINTS AT EVERY USER MESSAGE (audit round 3, V1). The composer can
+# resume a cached prompt only from a saved checkpoint, and llama.cpp saves
+# mid-prompt checkpoints only where a user message starts, no closer than
+# --checkpoint-min-step tokens (default 8,192). riffle now sends its prompt as
+# three user messages; 512 lets each start be a checkpoint. --ctx-checkpoints
+# 8 (default 32): a cycle makes about four, and only the latest cycle's are
+# any use, so this keeps a quarter of the checkpoint memory the default
+# allows, whatever one checkpoint weighs (this build does not log it).
 ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/composer.gguf \
   --host 127.0.0.1 --port 8080 \
   --ctx-size 20480 --threads 6 --threads-batch 6 \
   --batch-size 512 --ubatch-size 128 \
-  \
+  --checkpoint-min-step 512 --ctx-checkpoints 8 \
   --parallel 1 --kv-unified --chat-template-kwargs '{"enable_thinking":false}' \
   --cache-ram 1024 --cache-reuse 256 --slots --no-webui
 Restart=always
