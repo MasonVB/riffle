@@ -2588,6 +2588,39 @@ def main():
             state.end_cycle(cid, "payout-without-work", _mrow.group(1))
             return 0
 
+    # THE SAME THING ALREADY WAITING (2026-11-07). A14 refuses a second post
+    # while one waits for the operator; nothing did for other kinds, and on
+    # 2026-11-07 two close_project actions for the same project were queued
+    # eighteen minutes apart (3150, 3153). Refused here, before local actions
+    # branch off: an action identical to one already queued, and a second
+    # close_project for the same project (its reason differs each time).
+    if kind != "post":
+        _dup = None
+        _act_now = project.active(state) if kind == "close_project" else None
+        _pid_now = _act_now["id"] if _act_now else None       # a Row: no .get()
+        for _q in state.db.execute(
+                "SELECT id, created_at, payload FROM actions WHERE kind=?"
+                " AND status='queued' ORDER BY id DESC LIMIT 20", (kind,)):
+            try:
+                _qp = json.loads(_q["payload"] or "{}")
+            except Exception:
+                _qp = {}
+            if _qp == payload or (_pid_now is not None and _qp.get("project_id") == _pid_now):
+                _dup = _q
+                break
+        if _dup:
+            why = (f"the same {kind} is already waiting for your operator's "
+                   f"approval \u2014 #{_dup['id']}, proposed {_dup['created_at'][:16]}. "
+                   f"A second one does not make the first go sooner; it makes "
+                   f"your operator decide twice. Wait for it.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"{kind} refused: #{_dup['id']} is already queued", level="warn",
+                drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not propose that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "already-queued", str(_dup["id"]))
+            return 0
+
     if kind in LOCAL_KINDS:
         _m = (policy.modes(state) or {}).get(kind, "queue")
         # NO FORCE CLAUSE. --force skips the INTERVAL gate; it was never
