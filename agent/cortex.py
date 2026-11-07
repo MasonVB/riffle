@@ -440,6 +440,17 @@ class CutOff(ValueError):
             chars, chars_per_token, whitespace, max_tokens)
 
 
+# SEVERAL USER MESSAGES (V1, audit round 3). The composer is a hybrid model:
+# it can resume from a cached prompt only at a saved checkpoint, and llama.cpp
+# (the box's build, 70adb1b4c, as master) saves mid-prompt checkpoints ONLY
+# where a user message starts. riffle's whole prompt was one user message, so
+# the only resume point was its start, and the composer re-read ~5,500 tokens
+# every cycle even when most of them had not changed. The cycle marks where
+# its prompt may be cut into messages with this line; complete() sends each
+# part as its own user message. No other caller uses it.
+MESSAGE_BREAK = "\n\u241e\n"
+
+
 def complete(llm_cfg, system, user, timeout=1800, schema=None):
     """OpenAI-compatible /v1/chat/completions, which llama-server serves.
 
@@ -448,8 +459,9 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
     want — they produce prose, not proposals.
     """
     body = {
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user}],
+        "messages": [{"role": "system", "content": system}]
+                    + [{"role": "user", "content": part}
+                       for part in user.split(MESSAGE_BREAK) if part.strip()],
         "max_tokens": llm_cfg.get("max_tokens", 1600),
         "temperature": llm_cfg.get("temperature", 0.7),
         "cache_prompt": True,

@@ -2263,9 +2263,22 @@ def main():
     _board = sorted((_detag(x) for x in parts if not _is_own(x)), key=_board_rank)
     material = "\n\n".join(parts + _tail)
     system = cortex.stable_prefix(cfg, _cont)
-    user = (_OWN_HEADER + "\n\n" + "\n\n".join(_own)
-            + "\n\n<board>\n" + "\n\n".join(_board) + "\n</board>\n\n"
-            + "\n\n".join(_detag(t) for t in _tail) + "\n\n"
+    # THREE USER MESSAGES (V1, audit round 3): riffle's stable head, the rest
+    # of its own section, then the board and the end. Each message start is a
+    # checkpoint the composer can resume from (cortex.MESSAGE_BREAK), so a
+    # cycle re-reads from the first part that changed, not from the top. The
+    # marker's character is removed from every part first: a stranger's
+    # comment cannot cut riffle's prompt where it likes.
+    _nobreak = lambda t: t.replace("\u241e", "")
+    _own = [_nobreak(x) for x in _own]
+    _board = [_nobreak(x) for x in _board]
+    _head_heads = _OWN_ORDER[:_OWN_ORDER.index("YOUR PROJECT")]
+    _own_head = [x for x in _own if x.lstrip().startswith(_head_heads)]
+    _own_rest = [x for x in _own if not x.lstrip().startswith(_head_heads)]
+    user = (_OWN_HEADER + "\n\n" + "\n\n".join(_own_head)
+            + cortex.MESSAGE_BREAK + "\n\n".join(_own_rest)
+            + cortex.MESSAGE_BREAK + "<board>\n" + "\n\n".join(_board) + "\n</board>\n\n"
+            + "\n\n".join(_nobreak(_detag(t)) for t in _tail) + "\n\n"
             f"Choose ONE action for this cycle, driven by '{drive}'. "
             f"Reply with the JSON object only.")
     # One line per cycle: what was sent against the ceiling, and how much of
