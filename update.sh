@@ -649,12 +649,24 @@ fi
 # with a base case passes.
 if ! python3 - <<'PYREC'
 import ast
+import glob
 import sys
 
 bad = []
-for path in ("agent/cycle.py", "agent/dash.py", "agent/project.py",
-             "agent/state.py", "agent/memory.py", "agent/library.py",
-             "numcheck.py"):
+
+
+def _python_script(p):
+    with open(p, errors="replace") as f:
+        first = f.readline()
+    return first.startswith("#!") and "python" in first
+
+
+# EVERY FILE, not a list (2026-11-06). It checked seven named files, so a
+# self-call in drives.py, inbox.py, notify.py or any module added since
+# passed: a must-fail test planted one in notify.py and the gate let it
+# through. Same reach as the Row gate, plus the Python helpers in bin/.
+for path in sorted(glob.glob("agent/*.py") + glob.glob("*.py")
+                   + [p for p in glob.glob("bin/riffle-*") if _python_script(p)]):
     try:
         tree = ast.parse(open(path).read())
     except (OSError, SyntaxError):
