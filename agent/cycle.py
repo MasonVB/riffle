@@ -2662,6 +2662,39 @@ def main():
     # threads it read, where others quote commits) and its stated sources. A
     # run of 12+ hex characters with a letter in it, in anything published,
     # must be one of those or a prefix of one.
+    # A SEAL FINGERPRINTS SOMETHING RIFFLE HOLDS (2026-11-07). On 2026-11-07
+    # riffle signed and sealed 78805fea5876ac16d1234567890abcdef1234567890ab
+    # cdef1234567890abcd1 ("listing-13-binding-proof"): eight real characters,
+    # then 1234567890abcdef typed out twice. The invented-hash check below
+    # covered posts, comments and attestations but not seals, the one action
+    # that signs a hash into a permanent public record, and the gate only checks
+    # 64 hex characters. A seal says "I held something with exactly this
+    # fingerprint, now", so its hash must be the FULL sha256 of a document in
+    # riffle's library (its builds, the pages it read and the documents it
+    # filed live there): not a prefix, and not a hash merely seen on the board.
+    if kind == "seal":
+        _h = str(payload.get("hash") or "").lower()
+        _held = state.db.execute("SELECT id, title, sha256 FROM library WHERE lower(sha256)=?",
+                                 (_h,)).fetchone()
+        if not _held:
+            _recent = state.db.execute("SELECT id, title, sha256 FROM library"
+                                       " ORDER BY id DESC LIMIT 3").fetchall()
+            why = (f"a seal fingerprints something you hold, and {_h[:16]}... is not "
+                   f"the sha256 of any document in your library. Seal the full "
+                   f"sha256 of the document itself"
+                   + (": your newest are " + "; ".join(
+                       f"#{r['id']} {r['title'][:40]} = {(r['sha256'] or '')[:16]}..."
+                       for r in _recent) if _recent else "")
+                   + ". A seal is permanent and signed with your key: never seal a "
+                     "hash you made up or half remember.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"seal refused: {_h[:16]} is not a library document's sha256",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "seal-not-held", _h[:40])
+            return 0
+
     if kind in ("post", "comment", "porch", "listing_submission", "attestation"):
         _texts = [str(payload.get(k) or "") for k in
                   ("title", "body", "note", "artifact", "claim")]
