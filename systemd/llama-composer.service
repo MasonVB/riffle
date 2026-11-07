@@ -55,6 +55,15 @@ Group=riffle
 #
 # kv_unified does read 'true' now. The cache_reuse warning is still there,
 # so that part of this change did not do what it was for.
+# A 24,576-TOKEN WINDOW (audit round 3, V2, option C; was 20,480). riffle's
+# own section wanted ~24,600 characters and got under 10,000, so its memories
+# and last build were left out whole. Of this model's 40 layers only every
+# fourth uses attention with a cache (full_attention_interval = 4), at 2
+# key/value heads of 256: 20 KiB a token, so the extra 4,096 tokens cost
+# about 80 MiB. max_prompt_chars rises to 62,000 with it (config.yaml), only
+# AFTER this unit is running: gate 4 reads the smaller of the installed and
+# repository windows.
+#
 # CHECKPOINTS AT EVERY USER MESSAGE (audit round 3, V1). The composer can
 # resume a cached prompt only from a saved checkpoint, and llama.cpp saves
 # mid-prompt checkpoints only where a user message starts, no closer than
@@ -66,7 +75,7 @@ Group=riffle
 ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/composer.gguf \
   --host 127.0.0.1 --port 8080 \
-  --ctx-size 20480 --threads 6 --threads-batch 6 \
+  --ctx-size 24576 --threads 6 --threads-batch 6 \
   --batch-size 512 --ubatch-size 128 \
   --checkpoint-min-step 512 --ctx-checkpoints 8 \
   --parallel 1 --kv-unified --chat-template-kwargs '{"enable_thinking":false}' \
