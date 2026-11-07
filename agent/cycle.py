@@ -1737,6 +1737,49 @@ def main():
     # 13.4h" changed between cycles, so the composer re-read the whole user
     # half every cycle (5,509-5,731 tokens on the box, about four minutes).
     # The rules stay here; their state is THE GATES RIGHT NOW, after </board>.
+    # WHAT THE CHECKS SAID LAST TIME (2026-11-07). A refusal's reason went to
+    # the operator's chat and the cycle record, never to riffle: on 2026-11-06
+    # and 07 it proposed the same post twenty times, each refused for the same
+    # unknown hash, each time not knowing there had been a refusal. The
+    # one-queued-post rule had the same loop fixed for it alone (the WAITING
+    # block); this is the general case. Shown at the end, where the prompt
+    # changes every cycle anyway, so it costs the composer's cache nothing.
+    try:
+        _rf = state.db.execute(
+            "SELECT c.id, c.outcome, c.notes FROM cycles c WHERE c.id < ?"
+            " AND EXISTS (SELECT 1 FROM actions a WHERE a.cycle_id = c.id"
+            " AND a.status = 'blocked') ORDER BY c.id DESC LIMIT 1", (cid,)).fetchone()
+        _rf_ago = (state.db.execute("SELECT COUNT(*) FROM cycles WHERE id > ? AND id < ?",
+                                    (_rf["id"], cid)).fetchone()[0] if _rf else 99)
+    except Exception:
+        _rf, _rf_ago = None, 99
+    if _rf and _rf_ago <= 5:
+        _msg = state.db.execute(
+            "SELECT content FROM messages WHERE role IN ('report', 'error')"
+            " AND content LIKE ? ORDER BY id DESC LIMIT 1",
+            (f"Cycle {_rf['id']} %",)).fetchone()
+        _said = re.sub(r"^Cycle \d+ [\u00b7:] *", "", (_msg["content"] if _msg else "")).strip()
+        # Refused cycles in a row with the same outcome and detail, counting
+        # back past cycles that went through: the loop on the box was
+        # interleaved with replies that were sent.
+        _same = 0
+        for _r in state.db.execute(
+                "SELECT c.outcome, c.notes FROM cycles c WHERE c.id <= ?"
+                " AND EXISTS (SELECT 1 FROM actions a WHERE a.cycle_id = c.id"
+                " AND a.status = 'blocked') ORDER BY c.id DESC LIMIT 40", (_rf["id"],)):
+            if _r["outcome"] == _rf["outcome"] and (_r["notes"] or "") == (_rf["notes"] or ""):
+                _same += 1
+            else:
+                break
+        parts.append(
+            f"YOUR LAST REFUSAL, cycle {_rf['id']} "
+            f"({'the last cycle' if _rf_ago == 0 else '%d cycle(s) before that' % _rf_ago}): "
+            f"{_rf['outcome']}. What the check said: "
+            + (_said[:600] or "(no explanation was recorded)")
+            + (f"\nTHE SAME THING HAS NOW BEEN REFUSED {_same} TIMES IN A ROW for the "
+               f"same reason. Proposing it again unchanged will be refused again: "
+               f"change what the check names, or do something else."
+               if _same >= 2 else ""))
     parts.append(
         "THE GATES RIGHT NOW:\n"
         f"  the project bar: {'CLEARED' if _ok else _why}\n"
@@ -3879,6 +3922,7 @@ def _cycles_since_note(state, key):
 # The end of the prompt, after </board>, in this order: what changes every
 # cycle (M5). The clock, drive and caps lines (_volatile) follow them.
 _TAIL_HEADS = (
+    "YOUR LAST REFUSAL",
     "THE GATES RIGHT NOW",
     "YOUR ACTUAL SITUATION",
     "YOUR INBOX, AND HOW TO ANSWER IT",
