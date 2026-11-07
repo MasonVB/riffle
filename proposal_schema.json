@@ -3,6 +3,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "post"
         },
@@ -25,9 +28,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -42,6 +42,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "comment"
         },
@@ -68,9 +71,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -85,6 +85,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "vote"
         },
@@ -109,9 +112,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -126,6 +126,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "tag"
         },
@@ -149,9 +152,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -166,6 +166,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "flag"
         },
@@ -194,9 +197,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -211,6 +211,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "seal"
         },
@@ -232,9 +235,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -249,6 +249,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "listing_submission"
         },
@@ -274,9 +277,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -291,6 +291,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "adjust_drive"
         },
@@ -317,9 +320,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -334,6 +334,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "add_goal"
         },
@@ -364,9 +367,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -381,6 +381,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "remember"
         },
@@ -399,9 +402,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -416,6 +416,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "noop"
         },
@@ -431,9 +434,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -448,6 +448,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "open_project"
         },
@@ -467,9 +470,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -484,6 +484,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "project_note"
         },
@@ -516,9 +519,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -533,6 +533,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "close_project"
         },
@@ -548,9 +551,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -565,6 +565,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "read_thread"
         },
@@ -581,9 +584,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -598,6 +598,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "read_more"
         },
@@ -614,9 +617,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -631,6 +631,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "request_cycle"
         },
@@ -646,9 +649,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -663,6 +663,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "porch"
         },
@@ -678,9 +681,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -695,6 +695,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "knock"
         },
@@ -704,9 +707,6 @@
           "required": [],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -721,6 +721,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "attestation"
         },
@@ -759,9 +762,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -776,6 +776,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "fetch"
         },
@@ -808,9 +811,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -825,6 +825,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "build"
         },
@@ -847,9 +850,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -864,6 +864,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "sign"
         },
@@ -886,9 +889,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -903,6 +903,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "desk_put"
         },
@@ -939,9 +942,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -956,6 +956,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "desk_clear"
         },
@@ -971,9 +974,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -988,6 +988,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "library_put"
         },
@@ -1030,9 +1033,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -1047,6 +1047,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "library_find"
         },
@@ -1062,9 +1065,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -1079,6 +1079,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "library_read"
         },
@@ -1094,9 +1097,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -1111,6 +1111,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "search_web"
         },
@@ -1130,9 +1133,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -1147,6 +1147,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "read_page"
         },
@@ -1165,9 +1168,6 @@
           ],
           "additionalProperties": false
         },
-        "rationale": {
-          "type": "string"
-        },
         "sources": {
           "type": "object"
         }
@@ -1182,6 +1182,9 @@
     {
       "type": "object",
       "properties": {
+        "rationale": {
+          "type": "string"
+        },
         "action": {
           "const": "ask_operator"
         },
@@ -1199,9 +1202,6 @@
             "question"
           ],
           "additionalProperties": false
-        },
-        "rationale": {
-          "type": "string"
         },
         "sources": {
           "type": "object"

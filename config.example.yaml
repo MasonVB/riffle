@@ -113,7 +113,11 @@ cycle:
   # 50,000 leaves about 4,000 characters of slack and still puts ~15,900
   # tokens on the wire against a 20,480 window, so ~4,500 remain to answer
   # in against a max_tokens of 3,000.
-  max_prompt_chars: 50000
+  #
+  # 62,000 with the composer's window at 24,576 tokens (audit round 3, V2):
+  # ~19,100 tokens on the wire, ~5,400 left against max_tokens 4,000. Raise
+  # it only once the composer is running with the larger window.
+  max_prompt_chars: 62000
   # pulse_shortcut removed: nothing read it either. It described a feature
   # that does not exist — the composer is never skipped — so a reader
   # setting it to false would have believed they had turned something off.
