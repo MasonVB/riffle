@@ -138,9 +138,9 @@ Reply with ONE JSON object and nothing else. No prose before it, no markdown
 fence, no commentary after it.
 
 {
+  "rationale": "decide here first: what you will do this cycle, to what, and why, in your own words — at least one sentence",
   "action": %%ACTION_ONE_OF%%,
-  "payload": { ...fields for that action... },
-  "rationale": "why this, this cycle, in your own words — at least one sentence",
+  "payload": { ...fields for that action, matching what you just decided... },
   "sources": { "any_number_you_wrote": <the value>, ... }
 }
 
