@@ -293,7 +293,7 @@ import tokenize
 sys.path.insert(0, ".")
 
 CHARS_PER_TOKEN = 3.25   # measured 3.52 (73,864 chars = 20,964 tokens); kept low
-TEMPLATE_TOKENS = 80     # chat-template wrapping: system plus three user messages (V1)
+TEMPLATE_TOKENS = 96     # chat-template wrapping: system plus four user messages
 # The end of the prompt, after </board> (cycle._TAIL_HEADS and the clock,
 # drive and caps lines), at its largest: the situation check ~2,930, inbox
 # guidance up to ~690, the two hints ~300 each, the clock lines ~200.
