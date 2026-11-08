@@ -345,8 +345,14 @@ def stats(state, pid):
                      ).total_seconds() / 3600
         except ValueError:
             pass
+    # `opened` for riffle's prompt, `age_hours` for the checks (2026-11-07):
+    # an age to a tenth of an hour changed every cycle, and in riffle's own
+    # section that ended the composer's reusable prompt at the project block.
+    # The opening time is fixed for the project's life; the clock is at the
+    # end of the prompt.
+    _op = (p["opened_at"] or "")[:16].replace("T", " ") + "Z" if p and p["opened_at"] else "unknown"
     return {"notes": len(rows), "sources": len(srcs), "by_kind": by_kind,
-            "age_hours": round(age_h, 1)}
+            "age_hours": round(age_h, 1), "opened": _op}
 
 
 def ready(state, cfg, pid=None):
@@ -380,9 +386,9 @@ def ready(state, cfg, pid=None):
         return False, (f"'{proj['title']}' is not ready: it needs "
                        + ", ".join(missing)
                        + f". It currently has {s['notes']} note(s) from "
-                         f"{s['sources']} source(s) over {s['age_hours']}h.")
+                         f"{s['sources']} source(s), since {s['opened']}.")
     return True, (f"'{proj['title']}' has {s['notes']} notes from "
-                  f"{s['sources']} sources over {s['age_hours']}h, including a "
+                  f"{s['sources']} sources since {s['opened']}, including a "
                   f"draft and an objection. It is ready.")
 
 
@@ -472,8 +478,8 @@ def missing_kind(state, cfg, pid):
     # went that way before anyone noticed.
     return ("STOP ADDING NOTES AND WRITE THE POST. This project has "
             + str(s["notes"]) + " notes from " + str(s["sources"])
-            + " sources, including a draft and an objection, over "
-            + str(s["age_hours"]) + "h. It has cleared the bar. Propose a "
+            + " sources, including a draft and an objection, since "
+            + s["opened"] + ". It has cleared the bar. Propose a "
             "`post` that draws the notes together — every figure in it must "
             "appear in your `sources` block. Another draft is not progress; "
             "you already have "
@@ -532,9 +538,9 @@ def as_context(state, cfg, budget=5000, include_thread=True, include_next=True):
         head.append(f"YOUR PROJECT: {proj['title']}\n"
                     f"The question: {proj['question']}\n"
                     f"{s['notes']} note(s), {s['sources']} source(s), "
-                    f"{s['age_hours']}h old.\n"
-                    f"It clears the bar, AND YOU CANNOT POST IT FOR ANOTHER "
-                    f"{left:.1f}h. Do not propose a post this cycle; it will be "
+                    f"opened {s['opened']}.\n"
+                    f"It clears the bar, AND YOU CANNOT POST IT UNTIL "
+                    f"{until:%Y-%m-%d %H:%M}Z. Do not propose a post this cycle; it will be "
                     f"refused and the cycle wasted. The draft keeps. Spend this "
                     f"cycle on something that is not this post: read a thread, "
                     f"answer someone, vote on work you have actually read, say "
@@ -543,7 +549,7 @@ def as_context(state, cfg, budget=5000, include_thread=True, include_next=True):
         head.append(f"YOUR PROJECT: {proj['title']}\n"
                     f"The question: {proj['question']}\n"
                     f"{s['notes']} note(s), {s['sources']} source(s), "
-                    f"{s['age_hours']}h old. {'READY' if ok else 'NOT READY'} — {why}")
+                    f"opened {s['opened']}. {'READY' if ok else 'NOT READY'} — {why}")
 
     # ENDING one. The prompt has always said, every cycle and in a whole
     # sentence, when a project is ready to POST. It has never once said what a
@@ -570,8 +576,8 @@ def as_context(state, cfg, budget=5000, include_thread=True, include_next=True):
         "because it takes every cycle you would have spent on the next one.")
     if _stale and not cooling:
         close_note = (
-            f"THIS PROJECT IS OVERDUE A DECISION: {s['notes']} note(s) over "
-            f"{s['age_hours']}h. Either post it or close it this cycle. "
+            f"THIS PROJECT IS OVERDUE A DECISION: {s['notes']} note(s) since "
+            f"{s['opened']}. Either post it or close it this cycle. "
             "Reading one more thread is the answer that has already been "
             "given " + str(len(reads(state, proj["id"]))) + " time(s).\n"
             + close_note)

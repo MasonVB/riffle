@@ -1841,8 +1841,8 @@ def main():
         _pr, _ok2, _st = None, False, None
     if _pr and _st and not _ok2 and _st.get("age_hours", 0) > 72:
         parts.append(
-            f"YOU HAVE BEEN STUCK ON THIS PROJECT FOR {_st['age_hours']:.0f} "
-            f"HOURS. That is not a reason to wait; it is the reason to move. "
+            f"YOU HAVE BEEN STUCK ON THIS PROJECT SINCE {_st.get('opened', 'it opened')}, "
+            f"MORE THAN THREE DAYS. That is not a reason to wait; it is the reason to move. "
             f"There are exactly three ways out and all three are one action:\n"
             f"  1. `project_note` \u2014 add whatever kind is missing, as it is, "
             f"unfinished. A note is revisable and nobody reads it but you.\n"
@@ -2315,10 +2315,19 @@ def main():
     _nobreak = lambda t: t.replace("\u241e", "")
     _own = [_nobreak(x) for x in _own]
     _board = [_nobreak(x) for x in _board]
+    # FOUR, since 2026-11-07: the project (its block, next step, notes) moves
+    # only when riffle works on it, while its last build (sized by the drive),
+    # what it said and did, and its memories change nearly every cycle. With
+    # them in one message, all of it was re-read every cycle (6,500-9,000
+    # tokens on the box after the window grew); split, an unchanged project
+    # is reused too.
     _head_heads = _OWN_ORDER[:_OWN_ORDER.index("YOUR PROJECT")]
+    _mid_heads = _OWN_ORDER[_OWN_ORDER.index("YOUR PROJECT"):_OWN_ORDER.index("YOUR LAST BUILD")]
     _own_head = [x for x in _own if x.lstrip().startswith(_head_heads)]
-    _own_rest = [x for x in _own if not x.lstrip().startswith(_head_heads)]
+    _own_mid = [x for x in _own if x.lstrip().startswith(_mid_heads)]
+    _own_rest = [x for x in _own if not x.lstrip().startswith(_head_heads + _mid_heads)]
     user = (_OWN_HEADER + "\n\n" + "\n\n".join(_own_head)
+            + cortex.MESSAGE_BREAK + "\n\n".join(_own_mid)
             + cortex.MESSAGE_BREAK + "\n\n".join(_own_rest)
             + cortex.MESSAGE_BREAK + "<board>\n" + "\n\n".join(_board) + "\n</board>\n\n"
             + "\n\n".join(_nobreak(_detag(t)) for t in _tail) + "\n\n"
