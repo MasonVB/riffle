@@ -904,14 +904,19 @@ class Handler(BaseHTTPRequestHandler):
                 # failed, it was invisible to every duplicate check, so the
                 # same comment could be proposed and sent again; the cycle's
                 # path already records it as unknown.
+                # Counted against the day unless it never left, and a "spent"
+                # refusal believed: the cycle's path does the same (2026-11-09).
+                _eday = utcnow()[:10]
                 if getattr(e, "status", None) == 0:
                     s.set_status(aid, "unknown", {"error": str(e)})
+                    cycle_mod._count_uncertain_send(s, _eday, a["kind"], e)
                     self._update_card(aid, status="unknown", error=str(e)[:200])
                     s.log(f"{a['kind']} #{aid}: no answer from the registry "
                           f"({e}); it may or may not have landed",
                           level="error", drive=a["drive"])
                     return
                 s.set_status(aid, "failed", {"error": str(e)})
+                cycle_mod._sync_spent_allowance(s, self.cfg, _eday, a["kind"], e)
                 self._update_card(aid, status="failed", error=str(e)[:200])
                 s.log(f"the registry refused {a['kind']} #{aid}: {e}",
                       level="error", drive=a["drive"])

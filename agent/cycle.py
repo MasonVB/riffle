@@ -3622,6 +3622,7 @@ def main():
         # the same comment twice because the duplicate check sees the row.
         if getattr(e, "status", None) == 0:
             state.set_status(aid, "unknown", {"error": str(e)})
+            _count_uncertain_send(state, day, kind, e)
             log(f"{kind} #{aid}: no answer from the registry ({e}). It may or "
                 f"may not have been applied.", level="error", drive=drive)
             state.say("error",
@@ -3631,12 +3632,54 @@ def main():
             state.end_cycle(cid, "unknown-outcome", str(e)[:500])
         else:
             state.set_status(aid, "failed", {"error": str(e)})
+            _sync_spent_allowance(state, cfg, day, kind, e)
             log(f"{kind} #{aid} refused by the registry: {e}",
                 level="error", drive=drive)
             state.say("error",
                       f"Cycle {cid} \u00b7 the registry refused my {kind}: {e}")
             state.end_cycle(cid, "failed", str(e)[:500])
     return 0
+
+
+# Messages that mean the request never left this machine: nothing can have
+# reached the registry, so nothing is counted against the day.
+_NEVER_LEFT = ("name resolution", "Name or service not known", "Connection refused",
+               "No route to host", "Network is unreachable")
+
+
+def _count_uncertain_send(state, day, kind, err):
+    """Count a send with no answer against the day, unless it never left.
+
+    COUNTED, BECAUSE IT MAY HAVE LANDED (2026-11-09). An unanswered send was
+    recorded as unknown and not counted, so a comment that timed out at 21:46
+    but reached the registry left riffle's count one short of the registry's,
+    and its 20th comment at 23:51 was refused: "Daily comments spent (20/day)".
+    Counting a send that did not land costs one slot on a bad day; not
+    counting one that did costs a refused send. A failure to resolve or reach
+    the host is the exception: the request never left.
+    """
+    if any(s in str(err) for s in _NEVER_LEFT):
+        return False
+    state.cap_bump(day, kind)
+    return True
+
+
+def _sync_spent_allowance(state, cfg, day, kind, err):
+    """When the registry says the day's allowance is spent, believe it.
+
+    A 429 "Daily comments spent" changed nothing locally, so riffle could
+    keep proposing what the registry would refuse until midnight. Its count
+    for the day is raised to the cap (never lowered).
+    """
+    cap = (cfg.get("caps") or {}).get(kind)
+    if getattr(err, "status", None) != 429 or not cap or "spent" not in str(err).lower():
+        return False
+    state.db.execute(
+        "INSERT INTO caps (day_utc,kind,used) VALUES (?,?,?)"
+        " ON CONFLICT(day_utc,kind) DO UPDATE SET used=MAX(used, excluded.used)",
+        (day, kind, int(cap)))
+    state.db.commit()
+    return True
 
 
 def _one_per_id(rows):
