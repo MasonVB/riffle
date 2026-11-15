@@ -2278,6 +2278,19 @@ def main():
                                      state.note("continuity_at"))
     _sys_chars = len(cortex.stable_prefix(cfg, _cont))
     _ceiling = int(_ccfg.get("max_prompt_chars", 50000))
+    # NEVER MORE THAN THE RUNNING COMPOSER HOLDS (2026-11-15). Gate 4 checks
+    # max_prompt_chars against the composer's unit FILE; the window in use is
+    # the one it started with. Raise the ceiling before the composer restarts
+    # with the larger window and every prompt overflows it. So the ceiling is
+    # held to what the running composer reports, by gate 4's arithmetic.
+    _nctx = cortex.composer_ctx(cfg["llm"]["composer"])
+    if _nctx:
+        _fits = int((_nctx - int(cfg["llm"]["composer"].get("max_tokens", 1600)) - 96) * 3.25)
+        if _fits < _ceiling:
+            log(f"max_prompt_chars is {_ceiling}, but the running composer's "
+                f"window ({_nctx} tokens) holds {_fits}; using {_fits}. Restart "
+                f"llama-composer if its unit has a larger --ctx-size.", level="warn")
+            _ceiling = _fits
     # NO FLOOR. max(8000, ...) meant that once the system prompt grew past
     # the ceiling minus 8,000, _room stopped shrinking and the total went
     # over regardless — the floor silently defeated the budget it was part
@@ -2303,7 +2316,7 @@ def main():
             # loses the end of a row first.
             row = {"id": row["id"], "you_voted": True,
                    **{k: v for k, v in row.items() if k != "id"}}
-        if _rows and len(json.dumps(_rows + [row], indent=1)) > 1800:
+        if _rows and len(json.dumps(_rows + [row], indent=1)) > 6000:
             break
         _rows.append(row)
     if _rows:
@@ -4662,23 +4675,29 @@ _WRAP_CHARS = len(_OWN_HEADER) + 260
 _OWN_ORDER = (
     "WHAT CAN STOP AN ACTION", "THE FIELDS THE API ACTUALLY RETURNS",
     "YOUR GOALS RIGHT NOW", "YOUR LIBRARY", "YOUR DESK", "QUESTIONS YOU HAVE ASKED",
-    "REFERENCES IN POSTS", "A POST NOW NEEDS A REFERENCE",
+    "ANSWERS FROM YOUR OPERATOR", "REFERENCES IN POSTS", "A POST NOW NEEDS A REFERENCE",
     "YOUR OPERATOR ASKED FOR THIS", "WAITING ON YOUR OPERATOR",
     "YOUR PROJECT", "POSTING IS CLOSED", "NO PROJECT IS OPEN",
     "THE ONE THING TO DO NEXT", "YOU HAVE BEEN STUCK",
-    "THINGS YOU NOTED FROM", "YOUR LAST BUILD", "WHAT YOU HAVE ALREADY SAID",
+    "YOUR LAST BUILD", "WHAT YOU HAVE ALREADY SAID",
     "ALREADY DONE",
     "WHAT YOU REMEMBER",
 )
 # The board's blocks, most stable first; the front page and the changes
 # walk, new every cycle, last.
 _BOARD_ORDER = (
-    "THREADS YOU HAVE READ ON THIS PROJECT", "MEMORIES THAT CARRY",
+    # (2026-11-15: MEMORIES THAT CARRY, a header nothing emits, and THE NULLS
+    # IN WHAT, which is riffle's own block, dropped from here; THINGS YOU
+    # NOTED FROM, a board block, moved here from _OWN_ORDER, LAST: being
+    # unlisted is what had put it last, and it changes most cycles, since
+    # each reflection writes one. Listed early, it ended the composer's
+    # reusable board there every cycle. Audit drift notes.)
+    "THREADS YOU HAVE READ ON THIS PROJECT",
     "THE THREAD YOU READ MOST RECENTLY", "THE THREAD YOU ASKED TO READ AGAIN",
     "OPEN LISTINGS", "WORK NOBODY HAS TAKEN", "THE DOCUMENT YOU OPENED",
     "WHAT YOU READ LAST CYCLE", "WHAT YOUR SEARCH FOUND",
     "COMMENTS YOU COULD ANSWER", "INBOX \u2014 OLDER", "INBOX \u2014 NEW",
-    "THE NULLS IN WHAT", "WHAT ACTUALLY MOVED", "FRONT PAGE",
+    "WHAT ACTUALLY MOVED", "FRONT PAGE", "THINGS YOU NOTED FROM",
 )
 
 
@@ -4698,44 +4717,65 @@ _own_rank, _board_rank = _rank_in(_OWN_ORDER), _rank_in(_BOARD_ORDER)
 # stub) least important first. Protected blocks (_NEVER_TRIM) never shrink.
 # Measured over 92 cycles: riffle wanted ~47,600 characters against a room of
 # ~18,100, and longest-first trimming cut what mattered.
+#
+# CAPS THAT CLEAR WHAT THE BOX SENDS (2026-11-15; audit F37 and F12). The caps
+# were set for an 18,000-character room, and step 1 below holds every block
+# to its cap every cycle whether or not the prompt is over. With the room at
+# ~17,000 to 26,000 that was a guard; it also cut while room stood empty
+# (the box: the desk, 6,207 characters in five drafts, shown at 1,200, and
+# about 2,500 characters of room unused on an average cycle). With the
+# composer's window at 49,152 tokens (the box went to 64 GB) and the ceiling
+# at 105,000 characters, the room is ~68,000, and each cap is set above the
+# largest that block measured on the box over 92 cycles (in brackets), so an
+# ordinary cycle cuts nothing. A cap still stops one block taking the room
+# on an unusual cycle (a 40-reply thread, a long page).
 _BUDGETS = (
     # the work at hand
-    ("WHAT YOU HAVE ALREADY SAID", 2000, 1500),
-    ("ALREADY DONE", 900, 400),
-    ("THE THREAD YOU READ MOST RECENTLY", 3500, 1200),
-    ("THE THREAD YOU ASKED TO READ AGAIN", 3500, 1200),
-    ("YOUR PROJECT", 3000, 1200),
-    ("POSTING IS CLOSED", 3000, 1200),
-    ("NO PROJECT IS OPEN", 3000, 600),
-    ("YOUR LAST BUILD", 2500, 600),       # 600 unless big_build
-    ("COMMENTS YOU COULD ANSWER", 1500, 500),
+    ("WHAT YOU HAVE ALREADY SAID", 4000, 1500),          # [2,042]
+    ("ALREADY DONE", 2500, 400),
+    ("THE THREAD YOU READ MOST RECENTLY", 10000, 1200),  # [4,888]
+    ("THE THREAD YOU ASKED TO READ AGAIN", 10000, 1200), # [4,963]
+    ("YOUR PROJECT", 9000, 1200),                         # [5,126]
+    ("POSTING IS CLOSED", 9000, 1200),                    # [5,766]
+    ("NO PROJECT IS OPEN", 3000, 600),                    # [339]
+    ("YOUR LAST BUILD", 8000, 600),       # 3,000 unless big_build  [6,027]
+    ("COMMENTS YOU COULD ANSWER", 8000, 500),             # [5,311]
+    # Every answer you gave stays (F12): unlisted, it was capped at 1,200 and
+    # ranked last, so it was the first block cut, to its header.
+    ("ANSWERS FROM YOUR OPERATOR", 6000, 1200),
     # The desk holds riffle's drafts, and the library list is its shelf: both
     # were ranked last and left out whole on two of three cycles on the box
     # (U4, audit round 2, with the room down to ~14,900 characters). Here,
     # with the work at hand, above every board digest, and never left out
     # whole (_KEEP_WHOLE): at worst cut to their floor.
-    ("YOUR DESK", 1200, 300),
-    ("YOUR LIBRARY", 400, 150),
+    # The whole desk: desk.py holds it to 9,000, and the prompt promises
+    # "the whole desk is in front of you every cycle" (F12).
+    ("YOUR DESK", 9500, 300),
+    ("YOUR LIBRARY", 2000, 150),                          # [357]
     # context
-    ("YOUR GOALS RIGHT NOW", 1500, 400),
-    ("FRONT PAGE", 2000, 600),
-    ("WHAT ACTUALLY MOVED", 1500, 400),
-    ("WHAT YOUR SEARCH FOUND", 1500, 400),
-    ("WHAT YOU READ LAST CYCLE", 2000, 500),
-    ("THE DOCUMENT YOU OPENED", 2000, 500),
-    ("OPEN LISTINGS", 1500, 400),
-    ("WORK NOBODY HAS TAKEN", 1200, 300),
-    ("THINGS YOU NOTED FROM", 900, 300),
-    ("WHAT YOU REMEMBER", 900, 300),
-    ("MEMORIES THAT CARRY", 700, 250),
-    ("QUESTIONS YOU HAVE ASKED", 700, 250),
-    ("THREADS YOU HAVE READ ON THIS PROJECT", 600, 200),
-    ("REFERENCES IN POSTS", 600, 300),
-    ("THE NULLS IN WHAT", 350, 150),
+    ("YOUR GOALS RIGHT NOW", 3000, 400),                  # [1,511]
+    ("FRONT PAGE", 6500, 600),
+    ("WHAT ACTUALLY MOVED", 9000, 400),                   # [7,335]
+    ("WHAT YOUR SEARCH FOUND", 5000, 400),
+    ("WHAT YOU READ LAST CYCLE", 8000, 500),              # [5,132]
+    ("THE DOCUMENT YOU OPENED", 8000, 500),               # [2,743]
+    ("OPEN LISTINGS", 6000, 400),                         # [4,590]
+    ("WORK NOBODY HAS TAKEN", 3000, 300),
+    ("THINGS YOU NOTED FROM", 2500, 300),                 # [1,088]
+    ("WHAT YOU REMEMBER", 3000, 300),                     # [954]
+    ("QUESTIONS YOU HAVE ASKED", 2500, 250),              # [664]
+    ("THREADS YOU HAVE READ ON THIS PROJECT", 3000, 200), # [1,222]
+    ("REFERENCES IN POSTS", 1500, 300),
+    ("THE NULLS IN WHAT", 1500, 150),                     # [317]
 )
 # Cut to their floor if need be, never replaced by a stub (U4).
 _KEEP_WHOLE = ("YOUR DESK", "YOUR LIBRARY")
-_UNLISTED = (1200, 250)        # ranked after every listed block
+_UNLISTED = (4000, 250)        # ranked after every listed block
+# CUT FROM THE MIDDLE (F12): these list their items oldest first and end with
+# what matters most (a project's newest notes, the objection and the draft,
+# then the instruction to post). Cut from the end, the newest went first:
+# the old fault P3, one layer up. They keep their opening and their end.
+_CUT_MIDDLE = ("YOUR PROJECT", "POSTING IS CLOSED")
 
 
 def _budget_of(part, big_build=False):
@@ -4744,7 +4784,7 @@ def _budget_of(part, big_build=False):
     for i, (head, cap, floor) in enumerate(_BUDGETS):
         if t.startswith(head):
             if head == "YOUR LAST BUILD" and not big_build:
-                cap = 600
+                cap = 3000      # 600 cut off the hashes it now prints (F4)
             return i, cap, floor
     return len(_BUDGETS), _UNLISTED[0], _UNLISTED[1]
 
@@ -4827,27 +4867,53 @@ def _fit_section(parts, budget, log=None, big_build=False, label="",
     # Held to their caps in step 1, but not cut further or left out (fixed).
     _movable = [i for i in specs if not fixed(orig[i])]
 
-    def _cut(i, keep):
-        nonlocal total
-        if keep >= len(orig[i]) or keep >= len(parts[i]):
-            return
-        head = orig[i][:keep]
+    def _shorten(i, keep):
+        """The block's original text cut to about `keep` characters."""
+        o = orig[i]
+        if keep >= len(o):
+            return o
+        if o.lstrip().startswith(_CUT_MIDDLE):
+            k1 = int(keep * 0.35)
+            k2 = keep - k1
+            head, tail = o[:k1], o[len(o) - k2:]
+            brk = head.rfind("\n")
+            if brk > k1 * 0.6:
+                head = head[:brk]
+            brk = tail.find("\n")
+            if 0 <= brk < k2 * 0.4:
+                tail = tail[brk + 1:]
+            return (head + f"\n[...{len(o) - len(head) - len(tail)} characters "
+                    f"from the middle of this section were cut to fit the "
+                    f"context window: its start and its newest items are "
+                    f"here.]\n" + tail)
+        head = o[:keep]
         brk = head.rfind("\n\n")
         if brk <= keep * 0.6:
             brk = head.rfind("\n")
         if brk > keep * 0.6:
             head = head[:brk]
-        new = (head + f"\n[...{len(orig[i]) - len(head)} characters of this "
-               f"section were cut to fit the context window. It is shortened, "
-               f"not empty.]")
+        return (head + f"\n[...{len(o) - len(head)} characters of this "
+                f"section were cut to fit the context window. It is shortened, "
+                f"not empty.]")
+
+    def _cut(i, keep):
+        nonlocal total
+        if keep >= len(orig[i]) or keep >= len(parts[i]):
+            return
+        new = _shorten(i, keep)
         if len(new) < len(parts[i]):
             total += len(new) - len(parts[i])
             parts[i] = new
 
-    # 1. every block to its cap
+    # 1. every block to its cap. EVERY CUT IS LOGGED (F37): the journal said
+    # "prompt fitted" only when a section was over its room, so a cycle could
+    # show riffle a fifth of its desk and leave no line saying so.
+    _capped = []
     for i, (_rank, cap, _floor) in specs.items():
         if len(parts[i]) > cap:
+            _was = len(parts[i])
             _cut(i, cap)
+            _capped.append((i, _was))
     least_first = sorted(_movable, key=lambda i: -specs[i][0])
     # 2. to the floors, least important first, until it fits. STRAIGHT TO
     # THE FLOOR, not "only as far as needed" (found 2026-11-03): the amount
@@ -4900,6 +4966,31 @@ def _fit_section(parts, budget, log=None, big_build=False, label="",
                 total += len(stub) - len(parts[i])
                 parts[i] = stub
                 left_out.append(name[:40])
+    # 5. ROOM HANDED BACK (F37). The board changes every cycle anyway, so a
+    # moving cut point costs it no cache: room its caps left empty goes back
+    # to what they cut, most important first. riffle's own section keeps its
+    # cuts where they are, since there a moving cut point would end the
+    # composer's reusable opening.
+    _given = 0
+    if not to_floor and total < budget:
+        for i in sorted(specs, key=lambda i: specs[i][0]):
+            spare = budget - total
+            if spare < 400:
+                break
+            if len(parts[i]) >= len(orig[i]) or parts[i].startswith("["):
+                continue
+            new = _shorten(i, len(parts[i]) + spare - 260)
+            if len(new) > len(parts[i]) and total + len(new) - len(parts[i]) <= budget:
+                _given += len(new) - len(parts[i])
+                total += len(new) - len(parts[i])
+                parts[i] = new
+    _still = [(i, w) for i, w in _capped if len(parts[i]) < w]
+    if log and (_still or _given):
+        log(f"cap cuts{label}: " + ("; ".join(
+            f"{orig[i].lstrip().split(chr(10), 1)[0][:40].rstrip(':')} {w}\u2192{len(parts[i])}"
+            for i, w in _still) or "none left")
+            + (f"; {_given} chars of room handed back to blocks over their cap"
+               if _given else ""), level="info")
     if log and want > budget:
         log(f"prompt fitted{label}: wanted {want} chars of {budget}, sent {total}"
             + (f"; left out whole: {', '.join(left_out)}" if left_out else ""),

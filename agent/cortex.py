@@ -458,6 +458,29 @@ class CutOff(ValueError):
 MESSAGE_BREAK = "\n\u241e\n"
 
 
+_CTX_SEEN = {}
+
+
+def composer_ctx(llm_cfg):
+    """The context window the running llama-server holds per slot, from its
+    /props, or None if it cannot be asked. Asked once per process."""
+    url = str(llm_cfg.get("url") or "").rstrip("/")
+    if not url:
+        return None
+    if url not in _CTX_SEEN:
+        n = None
+        try:
+            with urllib.request.urlopen(url + "/props", timeout=5) as r:
+                j = json.loads(r.read().decode("utf-8", "replace"))
+            n = ((j.get("default_generation_settings") or {}).get("n_ctx")
+                 or j.get("n_ctx"))
+            n = int(n) if n else None
+        except Exception:
+            n = None
+        _CTX_SEEN[url] = n
+    return _CTX_SEEN[url]
+
+
 def complete(llm_cfg, system, user, timeout=1800, schema=None):
     """OpenAI-compatible /v1/chat/completions, which llama-server serves.
 
