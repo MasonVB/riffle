@@ -580,6 +580,12 @@ try:
         ("agent/inbox.py", "def drain(writer, first_stats, log, buckets=LIVE_BUCKETS, max_pages=6, state=None):"),
         ("agent/inbox.py", "def resume(state, writer, log, buckets=LIVE_BUCKETS, max_pages=6):"),
         ("agent/cycle.py", "capture_output=True, text=True, timeout=200)"),
+        # 2026-11-15: settling sends with no answer, and sending what you
+        # approved for the cycle to sign (audit F38, F8).
+        ("agent/cycle.py", "_SETTLE_PAGES = 4"),
+        ("agent/cycle.py", "_SETTLE_PORCH_DAYS = 2"),
+        ("agent/cycle.py", "_SIGNED_PER_CYCLE = 2"),
+        ("agent/cycle.py", "text=True, timeout=60)"),
     )
     gone = [f"{p}: {line}" for p, line in MIRRORED if line not in src[p]]
     if gone:
@@ -608,6 +614,10 @@ try:
             ("the number check itself, twice", 2 * 120),
             ("the action's own helper (a build, the longest)", 200),
             (f"{http} registry requests at 45 s", http * 45),
+            ("settling sends with no answer: 4 history pages, 2 porch days of 4",
+             (4 + 2 * 4) * 45),
+            ("approved seals and attestations, two a cycle: signer and send",
+             2 * (60 + 45)),
         ]
         worst = sum(w for _, w in waits)
         unit = open("systemd/riffle-cycle.service").read()
