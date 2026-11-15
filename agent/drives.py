@@ -184,6 +184,16 @@ def _files(v):
 # mistake as the duplicate root cycle.py, and the reason to import rather
 # than to keep two tuples in agreement by hand.
 from agent.library import KINDS as _LIB_KINDS  # noqa: E402
+_PUT_KINDS = tuple(k for k in _LIB_KINDS if k != "page")
+
+
+def _put_source(v):
+    s = _s(v, 0, 300, "source")
+    if s.strip().lower().startswith(("build:", "1f916:")):
+        raise Rejected("source: build: and 1f916: name what the program shelved "
+                       "itself (a build, a registry fetch). A document you file "
+                       "is yours: say where you took it from in words or a URL")
+    return s
 
 _DESK_KINDS = ("draft", "thread", "build", "question", "artifact",
                "reminder", "scrap")
@@ -216,8 +226,14 @@ SCHEMA = {
              lambda p: {"target_type": _enum(p["target_type"], ("post", "comment")),
                         "target_id": _i(p["target_id"], "target_id"),
                         "reason": _trim(p["reason"], 1, 200, "reason")}),
-    "seal": (["hash", "label"], [],
-             lambda p: {"hash": _hex64(p["hash"]), "label": _label(p["label"])}),
+    # BY LIBRARY NUMBER (audit F4). A seal carried a 64-character hash riffle
+    # typed, and riffle was never shown one whole: on 2026-11-07 it sealed 16
+    # real characters of library #241 followed by 1234567890abcdef. Now it
+    # names the document and the cycle supplies the sha256, the way `sign`
+    # names a row and the signer supplies the bytes.
+    "seal": (["library_id", "label"], [],
+             lambda p: {"library_id": _i(p["library_id"], "library_id"),
+                        "label": _label(p["label"])}),
     # --- the social and read-only surface --------------------------------
     "porch": (["body"], [],
               lambda p: {"body": _s(p["body"], 1, 500, "body")}),
@@ -266,13 +282,17 @@ SCHEMA = {
     "read_page": (["url"], ["why"],
                   lambda p: {"url": _s(p["url"], 12, 500, "url"),
                              "why": _trim(p.get("why") or "", 0, 300, "why")}),
+    # Not `page` (audit F5): a page is what read_page fetched, and the
+    # reference rule and the figure check trust one as such. Nor a source
+    # that names a build or a registry fetch, which mark what the PROGRAM
+    # shelved (cycle._fetched_doc). riffle's own filing is its own writing.
     "library_put": (["title", "body"], ["kind", "tags", "summary", "source"],
                     lambda p: {"title": _s(p["title"], 3, 200, "title"),
                                "body": _s(p["body"], 8, 8_000_000, "body"),
-                               "kind": _enum(p.get("kind") or "note", _LIB_KINDS),
+                               "kind": _enum(p.get("kind") or "note", _PUT_KINDS),
                                "tags": _s(p.get("tags") or "", 0, 300, "tags"),
                                "summary": _trim(p.get("summary") or "", 0, 600, "summary"),
-                               "source": _s(p.get("source") or "", 0, 300, "source")}),
+                               "source": _put_source(p.get("source") or "")}),
     "library_find": (["query"], [],
                      lambda p: {"query": _s(p["query"], 2, 120, "query")}),
     "library_read": (["id"], [],
@@ -347,12 +367,6 @@ def _enum(v, allowed):
     if v not in allowed:
         raise Rejected(f"expected one of {allowed}, got {v!r}")
     return v
-
-
-def _hex64(v):
-    if not isinstance(v, str) or len(v) != 64 or any(c not in "0123456789abcdef" for c in v.lower()):
-        raise Rejected("hash must be 64 lowercase hex characters")
-    return v.lower()
 
 
 def gate(proposal, drive, cfg):

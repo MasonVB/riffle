@@ -152,9 +152,21 @@ def find(state, query, limit=10, root=ROOT):
     so a document with a lazy title is a document you will not find — which
     is true of a real library too.
     """
+    # A HASH FINDS ITS DOCUMENT (box, 2026-11-07: riffle searched for
+    # `78805fea`, the start of a library document's own sha256, and was told
+    # nothing matched, because the search never looked at the hash). Seven or
+    # more hex characters are tried as the start of a sha256 first.
+    _hq = str(query).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{7,64}", _hq):
+        rows = state.db.execute(
+            "SELECT id,title,kind,tags,summary,bytes,created_at,reads,pinned,sha256"
+            " FROM library WHERE lower(sha256) LIKE ? ORDER BY id DESC LIMIT ?",
+            (_hq + "%", int(limit))).fetchall()
+        if rows:
+            return rows
     q = f"%{str(query).strip()[:120]}%"
     rows = state.db.execute(
-        "SELECT id,title,kind,tags,summary,bytes,created_at,reads,pinned"
+        "SELECT id,title,kind,tags,summary,bytes,created_at,reads,pinned,sha256"
         " FROM library WHERE title LIKE ? OR tags LIKE ? OR summary LIKE ?"
         " OR source LIKE ? ORDER BY pinned DESC, reads DESC, id DESC LIMIT ?",
         (q, q, q, q, int(limit))).fetchall()
@@ -179,7 +191,7 @@ def find(state, query, limit=10, root=ROOT):
         return []
     budget, hits = 8 * 1024 * 1024, []
     for r in state.db.execute(
-            "SELECT id,title,kind,tags,summary,bytes,created_at,reads,pinned,path"
+            "SELECT id,title,kind,tags,summary,bytes,created_at,reads,pinned,path,sha256"
             " FROM library ORDER BY bytes LIMIT 40").fetchall():
         if budget <= 0 or len(hits) >= int(limit):
             break

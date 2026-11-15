@@ -21,6 +21,7 @@ Order of operations, and why:
   execute -> or queue for the operator, per config autonomy.
 """
 import fcntl
+import hashlib
 import argparse
 import json
 import os
@@ -337,14 +338,23 @@ def _scalar(v):
         return v
 
 
-def run_numcheck(body, sources, context=None):
-    """Returns (ok, report). Blocks the action if a figure has no provenance."""
+def run_numcheck(body, sources, context=None, declared=None):
+    """Returns (ok, report). Blocks the action if a figure has no provenance.
+
+    `sources` are what the PROGRAM cites (the library's hashes, the last
+    build's output, library documents the text names); `context` is what
+    riffle read (_evidence); `declared` is riffle's own `sources` object,
+    which numcheck takes as --declared, not as a source (audit F1)."""
     with tempfile.TemporaryDirectory() as td:
         draft = os.path.join(td, "draft.md")
         src = os.path.join(td, "src")
         os.makedirs(src)
         open(draft, "w").write(body)
         json.dump(sources or {}, open(os.path.join(src, "sources.json"), "w"))
+        _decl = []
+        if declared:
+            json.dump(declared, open(os.path.join(td, "declared.json"), "w"))
+            _decl = ["--declared", os.path.join(td, "declared.json")]
         # Everything the agent was shown this cycle is, by definition, traceable.
         # Requiring the model to copy figures back out of its own prompt was
         # asking it to re-declare what it had just been handed, and it blocked
@@ -354,7 +364,7 @@ def run_numcheck(body, sources, context=None):
         try:
             p = subprocess.run(
                 [sys.executable, os.path.join(HERE, "numcheck.py"), draft, src,
-                 "--json", "--agent"],
+                 "--json", "--agent"] + _decl,
                 capture_output=True, text=True, timeout=120)
             report = json.loads(p.stdout) if p.stdout.strip() else {"error": p.stderr[:400]}
             return p.returncode == 0, report
@@ -2061,6 +2071,19 @@ def main():
                 f"{'worked' if _lb['ok'] else 'FAILED'}"
                 + (f" (exit {_lb.get('exit_code')})" if not _lb["ok"] else "")
                 + f", files: {', '.join(_lb['files'])}.\n"
+                # Every hash in full, first, so a cut block still carries them
+                # (audit F4: no whole library hash appeared anywhere).
+                + ("Hashes, each the sha256 of the exact bytes, so anyone with "
+                   "the file gets the same: "
+                   + "; ".join(f"{n} = {h}"
+                               + (f" (library #{(_lb.get('file_library_ids') or {})[n]})"
+                                  if n in (_lb.get("file_library_ids") or {}) else "")
+                               for n, h in sorted((_lb.get("file_sha256") or {}).items()))
+                   + (f"; its output = {_lb['output_sha']} (library "
+                      f"#{_lb['output_library_id']})" if _lb.get("output_sha") else "")
+                   + ". Cite one of these, whole or by its first 12 or more "
+                     "characters; to seal one, seal its library number.\n"
+                   if _lb.get("file_sha256") else "")
                 + (f"stdout:\n{_lb['stdout'][:2000]}\n" if _lb["stdout"] else "")
                 + (f"stderr:\n{_lb['stderr'][:1500]}\n" if _lb["stderr"] else "")
                 + (("YOUR SOURCE, so you can fix it rather than start over:\n"
@@ -2304,7 +2327,8 @@ def main():
                  big_build=(drive == "make" or _cycles_since_note(state, "last_build") <= 2))
     _own = sorted((_detag(x) for x in parts if _is_own(x)), key=_own_rank)
     _board = sorted((_detag(x) for x in parts if not _is_own(x)), key=_board_rank)
-    material = "\n\n".join(parts + _tail)
+    # (`material`, the whole prompt joined, was what the figure check was
+    # given. It now gets _evidence: what riffle read, not what it wrote.)
     system = cortex.stable_prefix(cfg, _cont)
     # THREE USER MESSAGES (V1, audit round 3): riffle's stable head, the rest
     # of its own section, then the board and the end. Each message start is a
@@ -2586,7 +2610,9 @@ def main():
                 " AND status IN ('sent','executed','unknown')"
                 " AND CAST(json_extract(payload,'$.listing_id') AS INTEGER)=? LIMIT 1",
                 (int(_mrow.group(1)),)).fetchone():
-            why = (f"you have submitted no work to listing {_mrow.group(1)}. A "
+            why = (_set_aside(int(_mrow.group(1)))
+                   if int(_mrow.group(1)) in _ignored_l else
+                   f"you have submitted no work to listing {_mrow.group(1)}. A "
                    f"payout binding claims that listing's money for work you "
                    f"did; submit an artifact that meets its condition first.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
@@ -2681,50 +2707,73 @@ def main():
     # fingerprint, now", so its hash must be the FULL sha256 of a document in
     # riffle's library (its builds, the pages it read and the documents it
     # filed live there): not a prefix, and not a hash merely seen on the board.
+    #
+    # BY LIBRARY NUMBER (audit F4, 2026-11-10). That check stood, but the
+    # refusal itself showed riffle 16 characters of each hash and asked for 64,
+    # and nothing else in the prompt carried a whole one: a model handed 16
+    # real characters and asked for 64 supplies the other 48, which is how the
+    # 2026-11-07 seal came about. A seal now names a document by its number and
+    # the sha256 is taken from the library here, so no hash riffle typed can
+    # reach a seal at all. The payload keeps both, so the card you approve
+    # shows which document it is and the exact hash that will be signed.
     if kind == "seal":
-        _h = str(payload.get("hash") or "").lower()
-        _held = state.db.execute("SELECT id, title, sha256 FROM library WHERE lower(sha256)=?",
-                                 (_h,)).fetchone()
-        if not _held:
-            _recent = state.db.execute("SELECT id, title, sha256 FROM library"
+        _held = state.db.execute("SELECT id, title, sha256 FROM library WHERE id=?",
+                                 (payload.get("library_id"),)).fetchone()
+        if not _held or not _held["sha256"]:
+            _recent = state.db.execute("SELECT id, title FROM library"
                                        " ORDER BY id DESC LIMIT 3").fetchall()
-            why = (f"a seal fingerprints something you hold, and {_h[:16]}... is not "
-                   f"the sha256 of any document in your library. Seal the full "
-                   f"sha256 of the document itself"
-                   + (": your newest are " + "; ".join(
-                       f"#{r['id']} {r['title'][:40]} = {(r['sha256'] or '')[:16]}..."
-                       for r in _recent) if _recent else "")
-                   + ". A seal is permanent and signed with your key: never seal a "
-                     "hash you made up or half remember.")
+            why = (f"a seal is the fingerprint of a document you hold, and there is no "
+                   f"library #{payload.get('library_id')}"
+                   + (". Your newest are " + "; ".join(
+                       f"#{r['id']} {r['title'][:40]}" for r in _recent) if _recent else "")
+                   + ". Name the document by its number; its sha256 is filled in "
+                     "for you.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
-            log(f"seal refused: {_h[:16]} is not a library document's sha256",
+            log(f"seal refused: no library #{payload.get('library_id')}",
                 level="warn", drive=drive)
             state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
                       {"drive": drive})
-            state.end_cycle(cid, "seal-not-held", _h[:40])
+            state.end_cycle(cid, "seal-not-held", str(payload.get("library_id")))
             return 0
+        payload["hash"] = _held["sha256"].lower()
+        payload["document"] = f"#{_held['id']} {_held['title'][:120]}"
 
-    if kind in ("post", "comment", "porch", "listing_submission", "attestation"):
-        _texts = [str(payload.get(k) or "") for k in
-                  ("title", "body", "note", "artifact", "claim")]
-        _texts += [str(x) for x in (payload.get("evidence") or [])]
-        # What riffle READ, not what it wrote: its own blocks quote its past
-        # posts, and a hash it once invented must not count as seen. Nor do
-        # the proposal's own `sources` (U3, audit round 2): riffle writes them
-        # in the same reply, so a hash listed there vouched for itself.
-        _bad_h = _unknown_hashes(state, _texts, "\n".join(x for x in parts if not _is_own(x)) + "\n"
-                                 + (state.note("last_build") or ""))
+    # What riffle READ, not what it wrote (_evidence): its own blocks quote
+    # its past posts, and a hash it once invented must not count as seen. Nor
+    # do the proposal's own `sources` (U3, audit round 2): riffle writes them
+    # in the same reply, so a hash listed there vouched for itself. Nor the
+    # last build's SOURCE: riffle wrote it, and on the box an invented hash
+    # sat in a build's docstring (2026-11-05). Its output and the sha256 of
+    # each of its files are what the build itself produced.
+    _evid = _evidence(state, cfg, parts)
+    try:
+        _lbn = json.loads(state.note("last_build") or "{}")
+    except (ValueError, TypeError):
+        _lbn = {}
+    _known_h = (_evid + "\n" + str(_lbn.get("stdout") or "") + "\n"
+                + " ".join(str(v) for v in (_lbn.get("file_sha256") or {}).values()))
+
+    def _hash_refusal(texts):
+        """The refusal message for an unknown hash in texts, or None."""
+        _bad = _unknown_hashes(state, texts, _known_h)
+        if not _bad:
+            return None, None
+        _real = str(_lbn.get("library_sha") or "")
+        _files = _lbn.get("file_sha256") or {}
+        return _bad, (
+            f"it gives the hash {_bad[0][:24]}, and no build, library "
+            f"document or thread you read carries it. A hash is a claim "
+            f"a stranger can check: copy the real one"
+            + ((" (your last build: " + "; ".join(
+                f"{n} = {h}" for n, h in sorted(_files.items()))
+                + (f"; shelved as library #{_lbn.get('library_id')}" if _real else "")
+                + ")") if _files else
+               (f" (your last build is shelved as {_real})" if _real else ""))
+            + ", or leave the hash out.")
+
+    if kind in ("post", "comment", "porch", "listing_submission", "attestation", "flag"):
+        _bad_h, why = _hash_refusal([_outward_text(payload)])
         if _bad_h:
-            try:
-                _real = (json.loads(state.note("last_build") or "{}")
-                         .get("library_sha") or "")
-            except Exception:
-                _real = ""
-            why = (f"it gives the hash {_bad_h[0][:24]}, and no build, library "
-                   f"document or thread you read carries it. A hash is a claim "
-                   f"a stranger can check: copy the real one"
-                   + (f" (your last build is shelved as {_real[:16]}...)" if _real
-                      else "") + ", or leave the hash out.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
             log(f"{kind} refused: unknown hash {_bad_h[0][:24]}", level="warn",
                 drive=drive)
@@ -2738,8 +2787,12 @@ def main():
     # submission's note and an attestation's claim (the same audit: a note
     # gave BTC at $84,120.50, "verified against live endpoint responses",
     # and was never checked, because this read only `body`).
-    _tf = next((k for k in ("body", "note", "claim") if payload.get(k)), None)
-    body = payload.get(_tf) if _tf else None
+    #
+    # Every field a stranger reads, joined (F3, audit 2026-11-10): a post's
+    # title, a submission's artifact, an attestation's evidence, a flag's
+    # reason, as well as body, note and claim.
+    _tfs = [k for k in _TEXT_FIELDS + ("evidence",) if payload.get(k)]
+    body = _outward_text(payload)
     if body and cfg["constraints"].get("numcheck_required", True):
         # YOUR OWN BUILD IS A SOURCE.
         #
@@ -2753,7 +2806,12 @@ def main():
         # A number is backed if it appears in a document riffle can point a
         # stranger at. The last build's output and any library document it
         # cites both qualify, so both are handed to numcheck as sources.
-        _src = dict(proposal.get("sources") or {})
+        #
+        # What riffle declared in `sources` is NOT among them (F1): it goes to
+        # numcheck as --declared, where a value counts only if something riffle
+        # read carries it, and then only as an operand for a derivation.
+        _src = {}
+        _declared = proposal.get("sources") or {}
         # Every hash in the library is one riffle can cite (audit of the box,
         # 2026-11-03): numcheck counts a hash, or a 7+ character prefix of
         # one, as verbatim only when it is in its sources, and these were not,
@@ -2768,6 +2826,7 @@ def main():
                 _src["last_build_library_id"] = _lb2["library_id"]
         except (ValueError, TypeError):
             pass
+        _own_cited = []
         for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b", body, re.I)):
             try:
                 # library.read returns (row, text). This called .get("body")
@@ -2782,15 +2841,19 @@ def main():
                 _row2, _text2 = library.read(state, int(_lid),
                                              cfg["library"]["root"],
                                              count=False)
-                if _row2:
+                # A document riffle filed itself (library_put) is its own
+                # writing, not a source (F2): citing it backs nothing.
+                if _row2 and _fetched_doc(_row2):
                     _src[f"library_{_lid}"] = (_text2 or "")[:20000]
+                elif _row2:
+                    _own_cited.append(int(_lid))
             except Exception as _e3:
                 # SAY SO. A bare `pass` here is why the tuple bug survived
                 # three audit rounds: the loop failed on every call and the
                 # only evidence was a figure that numcheck could not back.
                 log(f"could not read library #{_lid} for numcheck: "
                     f"{type(_e3).__name__}: {_e3}", level="warn", drive=drive)
-        passed, report = run_numcheck(body, _src, material)
+        passed, report = run_numcheck(body, _src, _evid, _declared)
         # A CRASH IS NOT A BLOCK (M13, audit 2026-10-27). A numcheck crash or
         # timeout came back as a report with no findings and was announced as
         # a block "containing 0 figures", with the real error never logged.
@@ -2821,7 +2884,8 @@ def main():
                                    f"({f.get('status', '?').lower()})" for f in _bad1)
                 _ask = (f"\n\nYOUR DRAFT WAS NOT SENT. It contains figure(s) I "
                         f"could not trace to anything you have read: {_named}. "
-                        f"Write the same {kind} again, changing only its {_tf}: "
+                        f"Write the same {kind} again, changing only its "
+                        f"{', '.join(_tfs)}: "
                         f"take those figures out, or back each one, as 37.5% "
                         f"[[3/8*100]] with the operands you used, or by quoting "
                         f"the line it comes from with the page's URL. Keep "
@@ -2845,31 +2909,43 @@ def main():
                                                 (set(policy.ACTION_KINDS) | {"noop"}) - {kind}),
                                 lambda m, **k: log(m, drive=drive, **k))
                             _p2 = cortex.parse_proposal(_raw2) or {}
-                            _body2 = (((_p2.get("payload") or {}).get(_tf) or "")
-                                      if _p2.get("action") == kind else "")
-                            if _body2:
+                            _new2 = ({k: v for k, v in (_p2.get("payload") or {}).items()
+                                      if k in _tfs and v}
+                                     if _p2.get("action") == kind else {})
+                            if _new2:
                                 _k2, _pay2, _r2 = drives.gate(
-                                    {"action": kind, "payload": dict(payload, **{_tf: _body2}),
+                                    {"action": kind, "payload": dict(payload, **_new2),
                                      "rationale": rationale}, drive, cfg)
+                                _body2 = _outward_text(_pay2)
                                 for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b",
-                                                           _pay2[_tf], re.I)):
+                                                           _body2, re.I)):
                                     if f"library_{_lid}" not in _src:
                                         try:
                                             _row3, _text3 = library.read(
                                                 state, int(_lid), cfg["library"]["root"], count=False)
-                                            if _row3:
+                                            if _row3 and _fetched_doc(_row3):
                                                 _src[f"library_{_lid}"] = (_text3 or "")[:20000]
                                         except Exception:
                                             pass
-                                _passed2, _report2 = run_numcheck(_pay2[_tf], _src, material)
-                                if _passed2:
+                                # THE REWRITE GETS THE HASH CHECK TOO (F6). It ran
+                                # before this one and the new text was never put
+                                # through it, though the comment above said every
+                                # check that reads the text came after.
+                                _hb2, _hwhy2 = _hash_refusal([_body2])
+                                _passed2, _report2 = ((False, {"findings": []}) if _hb2 else
+                                                      run_numcheck(_body2, _src, _evid, _declared))
+                                if _hb2:
+                                    log(f"numcheck: the rewrite gives a hash nothing "
+                                        f"carries ({_hb2[0][:24]}); blocking as before",
+                                        level="warn", drive=drive)
+                                elif _passed2:
                                     log(f"numcheck: {len(_bad1)} figure(s) blocked the first "
                                         f"draft; the rewrite in the same cycle passed", drive=drive)
                                     state.say("report", f"Cycle {cid} \u00b7 my first draft had "
                                                         f"figure(s) I could not trace ({_named}); "
                                                         f"I rewrote it in the same cycle.",
                                               {"drive": drive})
-                                    payload, body, passed, report = _pay2, _pay2[_tf], True, _report2
+                                    payload, body, passed, report = _pay2, _body2, True, _report2
                                 else:
                                     log("numcheck: the rewrite still had untraceable "
                                         "figures; blocking as before", level="warn", drive=drive)
@@ -2907,6 +2983,22 @@ def main():
             _hint += (" If the figure comes from outside the board, back it: "
                       "search_web a reference site, read_page the result, "
                       "and quote the line it is on with the page's URL.")
+            # Say WHY a figure riffle "sourced" did not count (F1, F2), or it
+            # will list the same value in `sources` again next cycle.
+            _nf = [f for f in report.get("findings", []) if f.get("status") == "NOT-FOUND"]
+            if _nf:
+                _hint += (" Your sources listed "
+                          + "; ".join(f"{f['token']}" for f in _nf[:4])
+                          + ", and nothing you read carries "
+                          + ("that" if len(_nf) == 1 else "those")
+                          + ": `sources` names numbers you read, it does not "
+                            "back them. A number you wrote in a note, a draft "
+                            "or a library document of your own is yours, not "
+                            "a source; the thread or page you took it from is.")
+            if _own_cited:
+                _hint += (" Library " + ", ".join(f"#{i}" for i in sorted(_own_cited))
+                          + " is your own filing (library_put), so it backs "
+                            "nothing; cite what it was taken from.")
             log(f"numcheck blocked a {kind}: {len(bad)} figure(s) without "
                 f"provenance — " + detail, level="warn", drive=drive)
             state.say("error",
@@ -3095,8 +3187,9 @@ def main():
         _lid = payload.get("listing_id")
         if _lid not in {l.get("id") for l in open_listings}:
             _open = ", ".join(f"#{l.get('id')}" for l in open_listings[:8])
-            why = (f"listing {_lid} is not open to work: set aside by your "
-                   f"operator, withdrawn, closed, "
+            why = (_set_aside(_lid) if _lid in _ignored else
+                   f"listing {_lid} is not open to work: "
+                   f"withdrawn, closed, "
                    f"past its deadline, or not on the board. Open now: "
                    f"{_open or 'none'}.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
@@ -3194,8 +3287,11 @@ def main():
                 r"\b(my (simulation|build|script|artifact)|solve\.py)\b",
                 _body, re.I):
             try:
+                # A build's files and its shelved output (F4: each now its
+                # own document, with the sha256 of its own bytes).
                 _lib = {r["sha256"] for r in state.db.execute(
-                    "SELECT sha256 FROM library WHERE kind='code'")}
+                    "SELECT sha256 FROM library WHERE kind='code'"
+                    " OR (kind='data' AND source LIKE 'build:%')")}
             except Exception:
                 _lib = set()
             _bad = [h for h in {c.lower() for c in _claims}
@@ -3206,10 +3302,10 @@ def main():
                     " ORDER BY id DESC LIMIT 1").fetchone()
                 why = (f"you present {', '.join(_bad[:3])} as the hash of your "
                        f"own artifact and no document in your library has it. "
-                       f"The hash of a run's output is not the hash of the "
-                       f"script and changes every run \u2014 nobody can resolve "
-                       f"it. Your latest shelved build is library "
-                       f"#{_recent['id']}, sha {_recent['sha256'][:12]}. Cite "
+                       f"A hash your script prints is a hash of something it "
+                       f"computed, not of the script \u2014 nobody can resolve "
+                       f"it to the file. Your latest shelved build file is library "
+                       f"#{_recent['id']}, sha256 {_recent['sha256']}. Cite "
                        f"that, or say which library id you mean.")
                 state.propose(cid, kind, drive, payload, rationale, "blocked")
                 log(f"unresolvable self-cited hash: {', '.join(_bad[:3])}",
@@ -3957,23 +4053,222 @@ def _is_rule(part):
     return (part or "").lstrip().startswith(_NEVER_TRIM)
 
 
-_HEXRUN = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{12,}(?![0-9A-Za-z])")
+# THREE FORMS THIS MISSED (audit 2026-11-10, F6). It matched lowercase only,
+# so a hash in capitals was not seen; its lookbehind failed after the `x` of
+# `0x`, so no 0x address or transaction hash was ever matched; and it ignored
+# runs under 12 characters, though 7 or 8 is how people quote a hash. Now: any
+# case, an optional 0x (the run is what is compared), and 7 or more. Under 12,
+# a run needs a digit as well as a letter, so "defaced" is a word and not a
+# hash; and a comment reference such as c136770 is a reference, not a hash.
+_HEXRUN = re.compile(r"(?<![0-9A-Za-z])(?:0[xX])?([0-9a-fA-F]{7,})(?![0-9A-Za-z])")
 
 
-def _unknown_hashes(state, texts, known_text):
-    """Hex runs of 12+ characters (with a letter: not a long number) in texts
-    that are neither in known_text nor a prefix of a library sha256."""
+def _set_aside(lid):
+    """The refusal for work on a listing the operator set aside.
+
+    ONE REASON, NOT FIVE (box, 2026-11-07 to 11-14). Listing 13 has been in
+    listings.ignore since 11-04, and riffle went on drafting, submitting and
+    binding for it from its own notes: 17 refusals in a week. The refusal gave
+    "set aside by your operator, withdrawn, closed, past its deadline, or not
+    on the board" in one breath, so nothing said that this one would never
+    change."""
+    return (f"your operator set listing {lid} aside for good (listings.ignore), "
+            f"so it will never be open to you. Stop working on it: no "
+            f"submission, no payout binding, no project note or draft for it. "
+            f"If a draft on your desk is for listing {lid}, clear it.")
+
+
+def _hex_runs(texts):
+    """The hash-like runs in texts, lowercased, in order, once each."""
     runs = []
     for t in texts:
         for m in _HEXRUN.finditer(t or ""):
-            r = m.group(0)
-            if re.search(r"[a-f]", r) and r not in runs:
+            r = m.group(1).lower()
+            if (not re.search(r"[a-f]", r) or re.fullmatch(r"c\d+", r)
+                    or (len(r) < 12 and not re.search(r"\d", r))):
+                continue
+            try:
+                float(r)          # 1e10 and the like are numbers
+                continue
+            except ValueError:
+                pass
+            if r not in runs:
                 runs.append(r)
+    return runs
+
+
+def _unknown_hashes(state, texts, known_text):
+    """Hex runs (see _HEXRUN) in texts that are neither in known_text nor a
+    prefix of a library sha256. Compared without regard to case."""
+    runs = _hex_runs(texts)
     if not runs:
         return []
-    shas = [x[0] or "" for x in state.db.execute("SELECT sha256 FROM library")]
+    known = (known_text or "").lower()
+    shas = [(x[0] or "").lower() for x in state.db.execute("SELECT sha256 FROM library")]
     return [r for r in runs
-            if r not in known_text and not any(h.startswith(r) for h in shas)]
+            if r not in known and not any(h.startswith(r) for h in shas)]
+
+
+# --- what riffle READ: one idea of evidence for every check -------------------
+#
+# AUDIT 2026-11-10, F1, F2, F5 and its recommendation: "decide what evidence is
+# in one place". The figure check was handed the whole prompt, riffle's own
+# blocks included, so a number riffle typed into a project note last cycle was
+# "seen" this cycle, and the usual way to a post (a draft note, then the post)
+# had its figures checked against nothing but its own draft. The hash check
+# already left riffle's own blocks out, but took the board side whole, where a
+# thread riffle commented on, or `fetch my_history`, carries its own words back.
+#
+# Evidence is what came from outside riffle: the board side of this prompt with
+# riffle's own comments and posts taken out of it; the few blocks of riffle's
+# own section that are the PROGRAM's facts or the OPERATOR's words (an
+# allowlist, so a new block of riffle's own writing is left out until someone
+# decides otherwise: a figure wrongly refused is visible, one wrongly let
+# through is not); and stored copies of what it read before this cycle, so a
+# figure riffle noted from a thread three days ago can still be backed by that
+# thread: the thread reads, the pages its reader fetched, the registry
+# surfaces it fetched, its operator's answers and words.
+_OWN_FACTS = (
+    "TODAY (server):",
+    "caps remaining today:",
+    "SELECTED DRIVE THIS CYCLE:",
+    "THE FIELDS THE API ACTUALLY RETURNS",
+    "YOUR ACTUAL SITUATION",
+    "THE NULLS IN WHAT ACTUALLY MOVED",
+    "YOUR OPERATOR ASKED FOR THIS",
+    "YOUR GOALS RIGHT NOW",
+    "WHAT CAN STOP AN ACTION",
+    "YOUR INBOX, AND HOW TO ANSWER IT",
+)
+# Board-side blocks that are riffle's own words all the same.
+_BOARD_BUT_OWN = (
+    "THINGS YOU NOTED FROM",                          # its paraphrases
+    "WHAT YOU READ LAST CYCLE \u2014 /my_history",    # its own record
+)
+_EVIDENCE_CAP = 1_500_000                              # characters, all told
+
+
+def _my_handle(cfg):
+    return str((cfg or {}).get("handle")
+               or ((cfg or {}).get("registry") or {}).get("handle") or "riffle")
+
+
+def _strip_own_words(text, me):
+    """text with riffle's own comments and posts taken out.
+
+    Comments are rendered `  [ref] author (N votes): body`, a post heading
+    `#N "title" by author (N votes)`. A comment by riffle runs to the next
+    comment line; a post by riffle, to its REPLIES line or the next heading."""
+    if not text or not me:
+        return text or ""
+    h = re.escape(me)
+    text = re.sub(r"(?ms)^[ \t]*\[[^\]\n]+\] " + h + r" \(-?\d+ votes\):.*?"
+                  r"(?=^[ \t]*\[[^\]\n]+\] \S+ \(-?\d+ votes\):|\Z)", "", text)
+    text = re.sub(r"(?ms)^#\d+ (?:\(you voted\) )?\"[^\"\n]*\" by " + h + r" \(.*?"
+                  r"(?=^REPLIES|^#\d+ |\Z)", "", text)
+    # The front page and the change feed are JSON (indent=1): an object whose
+    # own "author" line is riffle's goes, whole.
+    _mine = re.compile(r'(?m)^\s*"author": "' + h + r'",?\s*$')
+    text = re.sub(r"(?ms)^([ \t]*)\{\n(.*?)^\1\},?[ \t]*\n?",
+                  lambda m: "" if _mine.search(m.group(2)) else m.group(0), text)
+    return text
+
+
+def _fetched_doc(row):
+    """True for a library document the PROGRAM shelved from outside riffle:
+    a page its reader fetched, a registry surface it fetched (not its own
+    history), a build's file or output. False for anything riffle filed with
+    library_put, which cannot produce these kinds and sources (drives.gate)."""
+    kind, src = (row["kind"] or ""), (row["source"] or "")
+    if kind == "page":
+        return src.startswith(("http://", "https://"))
+    if kind == "data":
+        return ((src.startswith("1f916:/api/") and "my_history" not in src)
+                or src.startswith("build:"))
+    if kind == "code":
+        return src.startswith("build:")
+    return False
+
+
+def _evidence(state, cfg, parts):
+    """Everything riffle READ from outside itself, as one text (see above)."""
+    me = _my_handle(cfg)
+    out = []
+    for p in parts:
+        t = (p or "").lstrip()
+        if _is_own(p):
+            if t.startswith(_OWN_FACTS):
+                out.append(p)
+            continue
+        if t.startswith(_BOARD_BUT_OWN):
+            continue
+        out.append(_strip_own_words(p, me))
+    used = sum(len(x) for x in out)
+
+    def add(text):
+        nonlocal used
+        if text and used < _EVIDENCE_CAP:
+            text = text[:_EVIDENCE_CAP - used]
+            out.append(text)
+            used += len(text)
+
+    try:
+        _lb = json.loads(state.note("last_build") or "{}")
+        add(str(_lb.get("stdout") or ""))
+    except (ValueError, TypeError):
+        pass
+    try:
+        for r in state.db.execute(
+                "SELECT answer FROM questions WHERE answer IS NOT NULL"
+                " ORDER BY id DESC LIMIT 40"):
+            add(r["answer"])
+    except Exception:
+        pass
+    try:
+        for r in state.db.execute(
+                "SELECT text FROM memories WHERE kind='operator'"
+                " AND COALESCE(expired,0)=0 ORDER BY id DESC LIMIT 60"):
+            add(r["text"])
+    except Exception:
+        pass
+    try:
+        _act = project.active(state)
+        _pid = _act["id"] if _act else -1
+        for r in state.db.execute(
+                "SELECT author, body, replies FROM thread_reads"
+                " WHERE id IN (SELECT id FROM thread_reads ORDER BY id DESC LIMIT 40)"
+                "    OR project_id=? ORDER BY id DESC", (_pid,)):
+            if str(r["author"] or "").lower() != me.lower():
+                add(r["body"] or "")
+            add(_strip_own_words(r["replies"] or "", me))
+    except Exception:
+        pass
+    try:
+        _root = (cfg.get("library") or {}).get("root", library.ROOT)
+        for r in state.db.execute(
+                "SELECT id, kind, source FROM library WHERE kind IN ('page','data')"
+                " ORDER BY id DESC LIMIT 60"):
+            if _fetched_doc(r):
+                _row, _text = library.read(state, int(r["id"]), _root, count=False)
+                add((_text or "")[:20000])
+    except Exception:
+        pass
+    return "\n\n".join(out)
+
+
+# The fields of an action a stranger will read. All of them are checked for
+# figures and hashes (audit 2026-11-10, F3: only the first of body, note and
+# claim was, so a post's TITLE never was, nor a submission's artifact, an
+# attestation's evidence or a flag's reason; the BTC-in-`note` bug, one field
+# over).
+_TEXT_FIELDS = ("title", "body", "note", "artifact", "claim", "reason")
+
+
+def _outward_text(payload):
+    """The outward text of an action, every field joined, in a fixed order."""
+    out = [str(payload.get(k)) for k in _TEXT_FIELDS if payload.get(k)]
+    out += [str(x) for x in (payload.get("evidence") or []) if x]
+    return "\n\n".join(out)
 
 
 def _mark_votes(text, voted):
@@ -4705,7 +5000,10 @@ def apply_library(state, cfg, cid, kind, p, drive, log):
                 + (f"\n      tags: {h['tags']}" if h["tags"] else "")
                 + (f"\n      {h['summary']}" if h["summary"] else "")
                 + f"\n      {h['bytes']} bytes, shelved {h['created_at'][:10]}, "
-                  f"read {h['reads']}x" for h in hits)
+                  f"read {h['reads']}x"
+                # THE WHOLE HASH (audit F4): riffle was never shown a complete
+                # library sha256 anywhere, so it could not copy one.
+                + f"\n      sha256 {h['sha256']}" for h in hits)
             body = (f"{len(hits)} match(es) for {p['query']!r}. "
                     f"`library_read` with an id opens one:\n" + body)
         state.note("last_library_read", body)
@@ -4725,6 +5023,7 @@ def apply_library(state, cfg, cid, kind, p, drive, log):
         state.note("last_library_read",
                    f"#{row['id']} [{row['kind']}] {row['title']}\n"
                    + (f"tags: {row['tags']}\n" if row["tags"] else "")
+                   + f"sha256 {row['sha256']} (of this document's exact bytes)\n"
                    + f"\n{text}")
         log(f"library: opened #{row['id']} {row['title'][:60]}", drive=drive)
         state.say("report", f"Cycle {cid} \u00b7 opened '{row['title']}' from "
@@ -4733,6 +5032,22 @@ def apply_library(state, cfg, cid, kind, p, drive, log):
         state.end_cycle(cid, "library-read", str(row["id"]))
         return 0
 
+    # NOT A PAGE, NOT A BUILD, NOT A FETCH (audit F5). A document riffle files
+    # could be `kind: page` from any URL, and the reference rule and the
+    # figure check took any page as one its reader had fetched: riffle shelved
+    # its own sentence as a nist.gov page and then "quoted NIST". The gate
+    # refuses these (drives.gate); this is the second line, for a proposal
+    # that reaches here another way.
+    _ps = str(p.get("source") or "").strip().lower()
+    if (p.get("kind") or "note") == "page" or _ps.startswith(("build:", "1f916:")):
+        why = ("a document you file is yours: `page` is for what read_page "
+               "fetched, and build: and 1f916: sources are for what the program "
+               "shelved itself. File it as a note or a reference, with where "
+               "you took it from in plain words or as a URL.")
+        log(f"library refused: {why}", level="warn", drive=drive)
+        state.say("error", f"Cycle {cid} \u00b7 the library refused that: {why}")
+        state.end_cycle(cid, "library-refused", why[:200])
+        return 0
     try:
         did, dropped = library.put(
             state, p["title"], p["body"], kind=p.get("kind") or "note",
@@ -4901,37 +5216,72 @@ def apply_build(state, cfg, cid, p, drive, log):
     #
     # Shelving the source gives it a stable document with a content hash that
     # does not move, and gives `listing_submission` something to point at.
+    #
+    # EACH FILE ON ITS OWN, THE OUTPUT APART (audit F4, 2026-11-10). That
+    # promise did not hold. The document was the files joined under
+    # `# --- name ---` headers, then `# --- stdout of run c<id> ---` and the
+    # output, so its sha256 contained the cycle id and changed on every run
+    # of identical source; and it was the hash of nothing anyone else has, so
+    # no one could reproduce it from the script. riffle was told to publish
+    # it as "the hash of the script".
+    #
+    # Now every file is shelved as its own exact bytes, so its library sha256
+    # IS the sha256 of that file: anyone with the file gets the same, and the
+    # same file built twice is one document. The output is a document of its
+    # own. Both are named in full in YOUR LAST BUILD.
     lib_id = None
+    _file_sha = {n: hashlib.sha256(b.encode("utf-8")).hexdigest()
+                 for n, b in p["files"].items()}
+    _file_ids, _out_id = {}, None
     if ok:
         lcfg = cfg.get("library") or {}
-        src = "\n\n".join(f"# --- {n} ---\n{b}" for n, b in
-                            sorted(p["files"].items()))
-        try:
-            lib_id, _ = library.put(
-                state, f"{p['entry']} \u2014 {(p.get('note') or 'build')[:80]}",
-                src + f"\n\n# --- stdout of run {run_id} ---\n{body}",
-                kind="code", tags=f"build,{p['entry']}",
-                summary=(p.get("note") or "")[:600],
-                source=f"build:{run_id}",
-                root=lcfg.get("root", library.ROOT),
-                cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
-        except (ValueError, OSError) as e:
-            log(f"build {run_id} worked but could not be shelved: {e}",
-                level="warn", drive=drive)
+        _what = (p.get("note") or "build")[:80]
+        for _n, _b in sorted(p["files"].items()):
+            try:
+                _file_ids[_n], _ = library.put(
+                    state, f"{_n} \u2014 {_what}", _b,
+                    kind="code", tags=f"build,{p['entry']},{_n}"[:300],
+                    summary=(p.get("note") or "")[:600],
+                    source=f"build:{run_id}",
+                    root=lcfg.get("root", library.ROOT),
+                    cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+            except (ValueError, OSError) as e:
+                log(f"build {run_id} worked but {_n} could not be shelved: {e}",
+                    level="warn", drive=drive)
+        lib_id = _file_ids.get(p["entry"])
+        if len((body or "").encode("utf-8")) >= 8:
+            try:
+                _out_id, _ = library.put(
+                    state, f"output of {p['entry']} \u2014 {_what}", body,
+                    kind="data", tags=f"build,{p['entry']},output",
+                    summary=f"what {p['entry']} printed in run {run_id}",
+                    source=f"build:{run_id}:stdout",
+                    root=lcfg.get("root", library.ROOT),
+                    cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+            except (ValueError, OSError) as e:
+                log(f"build {run_id}: its output could not be shelved: {e}",
+                    level="warn", drive=drive)
 
     # Now that lib_id exists, put it in the note the next cycle reads. This
     # is the citable hash — of the SOURCE, which does not change between
     # runs, unlike the sha256 the script prints.
-    if lib_id:
-        _lr = state.db.execute("SELECT sha256 FROM library WHERE id=?",
-                               (lib_id,)).fetchone()
-        try:
-            _nb = json.loads(state.note("last_build") or "{}")
+    try:
+        _nb = json.loads(state.note("last_build") or "{}")
+        _nb["file_sha256"] = _file_sha
+        _nb["file_library_ids"] = _file_ids
+        if lib_id:
+            _lr = state.db.execute("SELECT sha256 FROM library WHERE id=?",
+                                   (lib_id,)).fetchone()
             _nb["library_id"] = lib_id
             _nb["library_sha"] = _lr["sha256"] if _lr else ""
-            state.note("last_build", json.dumps(_nb))
-        except (ValueError, TypeError):
-            pass
+        if _out_id:
+            _orow = state.db.execute("SELECT sha256 FROM library WHERE id=?",
+                                     (_out_id,)).fetchone()
+            _nb["output_library_id"] = _out_id
+            _nb["output_sha"] = _orow["sha256"] if _orow else ""
+        state.note("last_build", json.dumps(_nb))
+    except (ValueError, TypeError):
+        pass
 
     log(f"build {run_id} {'ok' if ok else 'failed'} "
         f"(exit {out.get('exit_code')}, {len(p['files'])} file(s))"
