@@ -201,3 +201,35 @@ Every open question's card is now sent on every poll, archived or not, and count
 - New: `send_checks/test_a_send_with_no_answer_is_settled_against_the_square.py`.
 - The box-audit `send-*` cases print the reply's status.
 - 227 tests: 214 pass, 13 skip, 0 differ.
+
+## 11. Addendum, batch 4 (2026-11-15): F37, F12, drift notes; the box at 64 GB
+
+**The window and the ceiling.**
+- The composer's window goes from 24,576 to 49,152 tokens, and `max_prompt_chars` from 62,000 to 105,000.
+- What limits the ceiling is time, not memory. A cold read (after a restart, or any change to the system prompt) of ~30,000 tokens at ~21 tokens/s is ~1,420 s, inside the composer call's 1,800 s timeout.
+- The rest of the window is margin for token-dense text (F19).
+- The cycle now holds the ceiling to the window the *running* composer reports (`/props`), by gate 4's arithmetic. Raising the ceiling before the composer restarts therefore cannot overflow it.
+
+**F37, fixed.**
+- **Caps.** Every block's cap is now above the largest that block measured on the box, so an ordinary cycle cuts nothing.
+- **Hand-back.** On the board, room left by the caps is handed back to what they cut, most important block first. riffle's own section keeps fixed cut points, for the cache.
+- **Logging.** Every cut is logged as "cap cuts …", whether or not the section was over its room.
+
+**F12, fixed.**
+- `ANSWERS FROM YOUR OPERATOR` has its own budget (6,000), ranked with the work at hand, and sits in the stable head.
+- The desk's cap is 9,500 (desk.py holds it to 9,000).
+- The project block and its "posting is closed" form are cut from the middle, keeping their opening, their newest notes and the instruction at the end.
+
+**Drift notes, fixed.**
+- `MEMORIES THAT CARRY` is gone.
+- `THE NULLS IN WHAT` is out of the board's order.
+- `THINGS YOU NOTED FROM` is moved from riffle's own order to the board's, *last*. That is where being unlisted had put it, and it changes most cycles. I first listed it second, which ended the reusable board there; the cache test caught it.
+
+The gate the audit proposed (every header must have a budget and an order entry) is not written.
+
+**What it costs.** The board, new every cycle, is now sent nearly whole. In the suite's realistic pair of cycles, the composer re-reads 31,439 characters instead of 17,585: about 4,000 more tokens, about 3 more minutes a cycle.
+
+**Tests.**
+- New: `prompt/test_an_ordinary_box_cycle_sends_every_block_whole.py` and `prompt/test_the_prompt_ceiling_is_held_to_the_running_composers_window.py`.
+- Seven recordings were re-made, each checked (see the tests README).
+- 229 tests.
