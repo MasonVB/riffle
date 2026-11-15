@@ -145,6 +145,7 @@ def write_continuity(state, cfg, log):
     A failure here is logged and does not count against the memory pass.
     """
     try:
+        cortex.set_purpose("continuity note")
         raw = cortex.complete(cfg["llm"]["composer"], CONT_PROMPT,
                               "\n".join(_continuity_context(state)),
                               schema=CONT_SCHEMA)
@@ -220,6 +221,7 @@ def run(state, cfg, log, say=None):
     ]
     prompt = PROMPT.format(ttl=ttl, cap=cap)
     try:
+        cortex.set_purpose("memory pass")
         raw = cortex.complete(cfg["llm"]["composer"], prompt, "\n".join(body),
                               schema=SCHEMA)
         # json.loads ONLY. The old line routed to cortex.parse_proposal

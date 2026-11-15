@@ -280,6 +280,7 @@ after a deploy your browser is serving a cached copy">__BUILD__</span>
       <button id=rsbtn onclick="restartModel();closeMenu()">restart model</button>
       <div class=sep></div>
       <a href="/history">history</a>
+      <a href="/figures">figures</a>
       <a href="/settings">settings</a>
       <div class=sep></div>
       <button id=clearbtn class=danger onclick="clearChat();closeMenu()">clear chat</button>

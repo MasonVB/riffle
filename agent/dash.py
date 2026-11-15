@@ -181,6 +181,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"id": a["id"], "kind": a["kind"], "drive": a["drive"],
                                "status": a["status"], "rationale": a["rationale"],
                                "payload": json.dumps(json.loads(a["payload"]), indent=2)})
+        if u.path in ("/figures", "/api/figures.txt"):
+            # EVERY FIGURE IN ONE PLACE (2026-11-15; agent/figures.py). This
+            # process's own model calls (the chat) are stored first, so they
+            # are in it too.
+            from agent import cortex, figures
+            try:
+                figures.save_calls(self.state, cortex.CALLS)
+            except Exception:
+                pass
+            text = figures.report(self.state, self.cfg)
+            plain = u.path.endswith(".txt")
+            b = (text if plain else figures_page(text)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", ("text/plain" if plain else "text/html")
+                             + "; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            return self.wfile.write(b)
         if u.path == "/history":
             b = history_page(self.state).encode()
             self.send_response(200)
@@ -1117,6 +1136,35 @@ def link_token(state, aid):
 
 
 
+
+
+def figures_page(text):
+    """The figures report with one button that copies all of it."""
+    return (
+        "<!doctype html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>"
+        "<title>riffle &mdash; figures</title>"
+        f"<style>{_chat_css()}"
+        "#fig{white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,"
+        "SFMono-Regular,Menlo,monospace;padding:12px 16px 40px;margin:0}"
+        ".figbar{display:flex;gap:8px;align-items:center;padding:10px 16px}"
+        ".figbar button{font:inherit;padding:10px 18px;border-radius:10px;border:0;"
+        "background:var(--sig);color:#111;font-weight:600}</style></head><body>"
+        "<header><a class=brand href=\"/\">riffle</a><span style=\"flex:1\"></span>"
+        "<a class=link href=\"/\">chat</a></header>"
+        "<div class=figbar><button id=cp onclick=copyAll()>copy all</button>"
+        f"<span class=pill>{len(text):,} characters</span></div>"
+        f"<pre id=fig>{_esc(text)}</pre>"
+        "<script>function copyAll(){const t=document.getElementById('fig').textContent;"
+        "const b=document.getElementById('cp');const done=()=>{b.textContent='copied';"
+        "setTimeout(()=>b.textContent='copy all',1500)};"
+        "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t)"
+        ".then(done).catch(fb)}else{fb()}"
+        "function fb(){const a=document.createElement('textarea');a.value=t;"
+        "a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);"
+        "a.focus();a.select();a.setSelectionRange(0,t.length);"
+        "try{document.execCommand('copy');done()}catch(e){}document.body.removeChild(a)}}"
+        "</script></body></html>")
 
 
 def history_page(state):

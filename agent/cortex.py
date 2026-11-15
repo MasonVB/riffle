@@ -13,6 +13,8 @@ or you pay for it again every wake.
 """
 import json
 import re
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -460,6 +462,43 @@ MESSAGE_BREAK = "\n\u241e\n"
 
 _CTX_SEEN = {}
 
+# EVERY MODEL CALL, NOTED (2026-11-15). llama-server answers each request
+# with `timings` (tokens read, tokens reused from its cache, tokens written,
+# and the milliseconds of each) and `usage`, and this module threw both
+# away: the only copy was the server's own log, which only sudo can read, so
+# every question about speed or the cache was a journalctl command for the
+# operator to run. They are noted here, with what the call was for, and
+# stored by figures.save_calls (the cycle at its end, the dashboard when the
+# figures page is opened). Bounded: the oldest go first.
+CALLS = []
+_TL = threading.local()
+
+
+def set_purpose(purpose):
+    """Label this thread's next model calls (`cycle`, `rewrite`, `memory pass`...)."""
+    _TL.purpose = purpose
+
+
+def _note_call(llm_cfg, body, schema, t0, out=None, error=None):
+    try:
+        url = str(llm_cfg.get("url") or "")
+        m = re.search(r":(\d+)", url.split("//", 1)[-1])
+        ch = (out or {}).get("choices") or [{}]
+        CALLS.append({
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "purpose": getattr(_TL, "purpose", None) or ("proposal" if schema else "other"),
+            "port": int(m.group(1)) if m else None,
+            "chars": sum(len(x.get("content") or "") for x in body.get("messages", [])),
+            "max_tokens": body.get("max_tokens"),
+            "finish": ch[0].get("finish_reason"),
+            "timings": (out or {}).get("timings") or {},
+            "usage": (out or {}).get("usage") or {},
+            "wall_s": round(time.monotonic() - t0, 1),
+            "error": (f"{type(error).__name__}: {error}"[:300] if error else None)})
+        del CALLS[:-200]
+    except Exception:
+        pass
+
 
 def composer_ctx(llm_cfg):
     """The context window the running llama-server holds per slot, from its
@@ -501,8 +540,14 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
                                    "json_schema": {"name": "proposal",
                                                    "strict": True,
                                                    "schema": schema}}
-    out = _post_json(llm_cfg["url"].rstrip("/") + "/v1/chat/completions", body,
-                     timeout=timeout)
+    _t0 = time.monotonic()
+    try:
+        out = _post_json(llm_cfg["url"].rstrip("/") + "/v1/chat/completions", body,
+                         timeout=timeout)
+    except Exception as _e:
+        _note_call(llm_cfg, body, schema, _t0, error=_e)
+        raise
+    _note_call(llm_cfg, body, schema, _t0, out)
     choice = out["choices"][0]
     text = choice["message"]["content"]
 

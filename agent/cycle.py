@@ -35,7 +35,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import (chat, consolidate, cortex, desk, drives, goals,
+from agent import (chat, consolidate, cortex, desk, drives, figures, goals,
                    library, memory,
                    notify, policy, project, reference, web)  # noqa: E402
 from agent.client import HttpError, Reader, Writer  # noqa: E402
@@ -575,7 +575,20 @@ def do_witness(state, reader, log, max_pages=8):
                   {"drive": "witness"})
     return att
 
+_RUN = None          # (state, cfg) once main() has them, for _after_cycle
+
+
 def main():
+    """One cycle; then the figures report (agent/figures.py) is brought up to
+    date, whichever way the cycle ended."""
+    try:
+        return _main()
+    finally:
+        if _RUN:
+            figures.after_cycle(_RUN[0], _RUN[1], cortex.CALLS)
+
+
+def _main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=os.path.join(HERE, "config.yaml"))
     ap.add_argument("--dry-run", action="store_true", help="propose, never execute")
@@ -596,6 +609,8 @@ def main():
     _CFG = cfg
     data = os.path.expanduser(cfg["data_dir"])
     state = State(os.path.join(data, "state.sqlite"))
+    global _RUN
+    _RUN = (state, cfg)
     _CURRENT["state"] = state
     log = state.log
     reader = Reader(cfg["base"])
@@ -2346,8 +2361,13 @@ def main():
             f"max_prompt_chars or shorten the contract; the prompt cannot "
             f"fit as configured.", level="error")
         _room = max(2000, _room)
+    _before_fit = list(parts)
     parts = _fit(parts, _room, log,
                  big_build=(drive == "make" or _cycles_since_note(state, "last_build") <= 2))
+    # Every block's size, wanted and sent, for the figures report.
+    figures.record_fit(state, cid, _ceiling, _nctx, _sys_chars, _tail_chars, _room,
+                       _before_fit, parts,
+                       lambda p: p.lstrip().split("\n", 1)[0][:44].rstrip(":"))
     _own = sorted((_detag(x) for x in parts if _is_own(x)), key=_own_rank)
     _board = sorted((_detag(x) for x in parts if not _is_own(x)), key=_board_rank)
     # (`material`, the whole prompt joined, was what the figure check was
@@ -2415,6 +2435,7 @@ def main():
         state.end_cycle(cid, "composer-busy")
         return 0
     try:
+        cortex.set_purpose("cycle")              # labels the call in figures
         raw = _complete_cutting(cfg["llm"]["composer"], system, user,
                                 _schema_without(cortex.proposal_schema(), _blocked),
                                 lambda m, **k: log(m, drive=drive, **k))
@@ -2926,6 +2947,7 @@ def main():
                 else:
                     try:
                         try:
+                            cortex.set_purpose("rewrite")
                             _raw2 = _complete_cutting(
                                 cfg["llm"]["composer"], system, user + _ask,
                                 _schema_without(cortex.proposal_schema(),

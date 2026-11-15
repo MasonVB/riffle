@@ -491,6 +491,7 @@ def extract(state, cfg, exchange, source):
     import random as _r
     from agent import cortex
     try:
+        cortex.set_purpose("memory extract")
         out = cortex.complete(cfg["llm"]["triage"], EXTRACT_PROMPT,
                               exchange[:6000], timeout=900)
     except Exception:
@@ -747,6 +748,7 @@ def reflect(state, cfg, log=None):
         # attempts in three. At least 1,000 here, whatever config.yaml says.
         _tri = dict(cfg["llm"]["triage"])
         _tri["max_tokens"] = max(int(_tri.get("max_tokens") or 0), 1000)
+        cortex.set_purpose("reflection")
         out = cortex.complete(_tri, REFLECT_PROMPT,
                               _already + "\n\n" + _rest, timeout=900)
     except Exception as e:
