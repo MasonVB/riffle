@@ -98,13 +98,61 @@ def dash_url(cfg):
     return f"http://{host}/" if int(port) == 80 else f"http://{host}:{port}/"
 
 
+def announce_questions(state, cfg, log):
+    """Push riffle's open questions you have not been told about (audit F29).
+
+    Questions were announced nowhere: no push, and only a message in the chat
+    log, which scrolls out and is archived by a clear. On the box three sat
+    unanswered for up to five weeks and riffle, at its limit of three, could
+    ask nothing more. `questions.seen` (a column nothing used) now records
+    that a question was pushed, so each is pushed once."""
+    n = cfg.get("notify") or {}
+    if not n.get("enabled"):
+        return 0
+    try:
+        rows = state.db.execute(
+            "SELECT id, question FROM questions WHERE answered_at IS NULL"
+            " AND COALESCE(seen,0)=0 ORDER BY id").fetchall()
+    except Exception:
+        return 0                      # no questions table yet
+    if not rows or not in_window(cfg):
+        return 0
+    base = dash_url(cfg)
+
+    def _compose(k):
+        return ("\n\n".join(f"#{r['id']}: {html.escape(r['question'][:k])}" for r in rows[:3])
+                + f'\n\n<a href="{base}">Answer on the dashboard &#8594;</a>')
+    k = 600
+    msg = _compose(k)
+    while len(msg) > 1000 and k > 40:
+        k = int(k * 0.8)
+        msg = _compose(k)
+    ok, detail = send(cfg, "riffle is asking you" if len(rows) == 1
+                      else f"riffle is asking you {len(rows)} questions",
+                      msg, url=base)
+    if ok:
+        state.db.execute(f"UPDATE questions SET seen=1 WHERE id IN "
+                         f"({','.join('?' * len(rows))})", [r["id"] for r in rows])
+        state.db.commit()
+        log(f"notified you about {len(rows)} open question(s)")
+        return len(rows)
+    log(f"pushover failed for the open questions ({detail})", level="warn")
+    return 0
+
+
 def announce_pending(state, cfg, log):
     """Notify about queued proposals not yet announced. Call once per cycle.
+
+    Open questions go first, by announce_questions.
 
     Handles both the fresh case and the backlog case with the same code: the
     query is 'queued and not yet notified', so a proposal made at 03:00 and one
     made a moment ago are treated identically once the window is open.
     """
+    try:
+        announce_questions(state, cfg, log)
+    except Exception as e:
+        log(f"could not announce open questions: {e}", level="warn")
     n = cfg.get("notify") or {}
     if not n.get("enabled"):
         return 0

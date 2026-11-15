@@ -673,8 +673,10 @@ async function poll(){
       : Math.min(highestDone, lowestUnfinished - 1);
     waitingCards = d.waiting_ids || [];
     const q = document.getElementById('p-queue');
-    q.textContent = d.queued + ' waiting';
-    q.className = 'pill' + (d.queued ? ' hot' : '');
+    // Questions count as waiting too (2026-11-14): they had no place here.
+    const nWait = (d.queued || 0) + (d.questions || 0);
+    q.textContent = nWait + ' waiting';
+    q.className = 'pill' + (nWait ? ' hot' : '');
     document.getElementById('p-caps').textContent = d.caps;
     renderAlarms(d.alarms_list);
     const st = document.getElementById('p-state');

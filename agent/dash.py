@@ -361,7 +361,42 @@ class Handler(BaseHTTPRequestHandler):
                 if _mm.get("action_id") in _pids:
                     _waiting.append(m["id"])
 
+        # OPEN QUESTIONS ARE WAITING ON YOU TOO (2026-11-14). A question was
+        # one message in the chat log and nothing more. The page loads the
+        # newest 400 messages, about two days of riffle's reports, and the
+        # clear button archives everything, so on the box all three open
+        # questions (asked 10-08, 11-07 and 11-08) had scrolled out or been
+        # cleared, and you were never shown one. riffle meanwhile sat at its
+        # limit of three and could ask nothing more. Queued proposals had the
+        # same weakness once (re-sent below by id); questions never got it.
+        #
+        # Every open question's card is now sent on every poll, archived or
+        # not, and counts in "waiting"; and a pending proposal's card is sent
+        # even if a clear archived it.
+        from agent.state import open_questions as _oq
+        _openq = {r["id"] for r in _oq(s)}
+        if _openq:
+            for m in s.db.execute("SELECT id, meta FROM messages"
+                                  " WHERE role='question' ORDER BY id"):
+                try:
+                    _qm = json.loads(m["meta"] or "{}")
+                except ValueError:
+                    continue
+                if int(_qm.get("qid") or 0) in _openq:
+                    _waiting.append(m["id"])
+        _waiting = sorted(set(_waiting))
+        have = {m["id"] for m in out}
+        for _mid in _waiting:
+            if _mid not in have:
+                m = s.db.execute("SELECT * FROM messages WHERE id=?", (_mid,)).fetchone()
+                if m:
+                    out.append({"id": m["id"], "role": m["role"], "content": m["content"],
+                                "meta": json.loads(m["meta"]) if m["meta"] else {},
+                                "done": True, "ts": m["ts"]})
+        out.sort(key=lambda x: x["id"])
+
         return {"messages": out, "queued": len(s.queued()),
+                "questions": len(_openq),
                 "waiting_ids": _waiting,
                 "alarms_list": alarm_list,
                 "model_restarting": type(self)._restarting,
@@ -513,8 +548,14 @@ class Handler(BaseHTTPRequestHandler):
         # otherwise share a stamp and merge into one batch in history.
         import datetime as _dt
         stamp = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        # Not what is still waiting on you (2026-11-14): an open question, or
+        # a proposal still queued or sending. Clearing the screen should not
+        # hide the things you have yet to answer.
         cur = s.db.execute(
-            "UPDATE messages SET archived_at=? WHERE archived_at IS NULL", (stamp,))
+            "UPDATE messages SET archived_at=? WHERE archived_at IS NULL"
+            " AND NOT (role IN ('question','proposal') AND"
+            " COALESCE(json_extract(meta,'$.status'),'open') IN ('open','queued','sending'))",
+            (stamp,))
         s.db.commit()
         n = cur.rowcount
         s.log(f"you cleared the chat; {n} message(s) moved to history")
@@ -862,6 +903,25 @@ class Handler(BaseHTTPRequestHandler):
                                   error=f"already voted on that "
                                         f"(action #{_dupe['id']})")
                 return {"error": "already voted on that target"}
+
+        # SIGNED BY THE CYCLE, NOT SENT FROM HERE (audit F8; your decision,
+        # 2026-11-14). Sent from this process a seal or an attestation went
+        # out unsigned: riffle-dash.service has NoNewPrivileges=true, which
+        # refuses the sudo that reaches riffle-sign. So putting seal and
+        # attestation on queue, the safer setting, gave the weaker record.
+        # Now they are marked approved and handed to the next cycle, which
+        # can sign, the way local actions are. `send_by: cycle` is what the
+        # cycle looks for: a row it left `approved` itself (on auto, before a
+        # crash) carries no such mark and is never sent a second time.
+        if a["kind"] in cycle_mod.SIGNED_BY_CYCLE:
+            s.set_status(aid, "approved", {"by": "you", "send_by": "cycle"})
+            self._update_card(aid, status="approved",
+                              sent_at=self._local_time(),
+                              ref="waiting for the next cycle to sign and send it")
+            s.log(f"you approved {a['kind']} #{aid}; the next cycle will sign "
+                  f"and send it", drive=a["drive"])
+            request_cycle_run(s, f"approved {a['kind']} #{aid}")
+            return {"ok": True}
 
         s.set_status(aid, "sending")
         self._update_card(aid, status="sending")

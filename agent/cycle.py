@@ -741,9 +741,12 @@ def main():
     # next wake: a second payout binding, a second close. Now it is recorded
     # as unknown and reported, the way the dashboard treats an interrupted send.
     try:
+        # Seals and attestations you approved run here too (_send_approved_signed),
+        # so one cut off mid-send is recorded the same way.
+        _rk = tuple(LOCAL_KINDS) + SIGNED_BY_CYCLE
         for _row in state.db.execute(
                 "SELECT id, kind FROM actions WHERE status='running' AND kind IN ("
-                + ",".join("?" * len(LOCAL_KINDS)) + ")", LOCAL_KINDS).fetchall():
+                + ",".join("?" * len(_rk)) + ")", _rk).fetchall():
             state.set_status(_row["id"], "unknown",
                              {"interrupted": True,
                               "note": "cut off mid-run by a crash or reset; "
@@ -831,6 +834,7 @@ def main():
             if state.db.execute("SELECT ended_at FROM cycles WHERE id=?",
                                 (_acid,)).fetchone()["ended_at"] is None:
                 state.end_cycle(_acid, "executed", f"approved {_row['kind']}")
+    _send_approved_signed(state, writer, log)
     # --- how often riffle wakes ------------------------------------------
     # The timer now fires every 5 minutes and this decides whether it is
     # actually time. The interval has to be settable from the dashboard, and
@@ -3735,6 +3739,100 @@ def main():
                       f"Cycle {cid} \u00b7 the registry refused my {kind}: {e}")
             state.end_cycle(cid, "failed", str(e)[:500])
     return 0
+
+
+# What you approve on the dashboard and the CYCLE sends, because only the cycle
+# can reach the signer (audit F8). See dash.Handler.decide and below.
+SIGNED_BY_CYCLE = ("seal", "attestation")
+
+
+def _send_approved_signed(state, writer, log):
+    """Sign and send the seals and attestations you approved.
+
+    AUDIT 2026-11-10, F8, and your decision of 2026-11-14. Approved on the
+    dashboard they were sent by the dashboard, whose unit refuses sudo, so
+    every one went out unsigned while one riffle sent by itself was signed.
+    The dashboard now marks them `approved` with `send_by: cycle` and asks
+    for a cycle; this sends them, under the cycle lock, before anything else
+    the cycle does.
+
+    Only rows carrying that mark. The cycle's own auto path also leaves a row
+    `approved` if it dies mid-send (audit F10), and such a row may well have
+    landed: sending it again would put the same seal on the record twice.
+
+    Each is `running` while it is sent, so a crash leaves it to the sweep
+    above (marked unknown, not sent again). Once the registry has answered,
+    nothing that follows can turn it back to failed (the dashboard's F11)."""
+    try:
+        rows = state.db.execute(
+            "SELECT * FROM actions WHERE status='approved' AND kind IN ("
+            + ",".join("?" * len(SIGNED_BY_CYCLE)) + ")"
+            " AND json_extract(response, '$.send_by') = 'cycle' ORDER BY id",
+            SIGNED_BY_CYCLE).fetchall()
+    except Exception as e:
+        log(f"could not look for approved seals and attestations: {e}", level="warn")
+        return
+    from agent.dash import update_card
+    for r in rows:
+        kind, aid, drive = r["kind"], r["id"], r["drive"] or "operator"
+        try:
+            p = json.loads(r["payload"] or "{}")
+        except ValueError:
+            p = {}
+        acid = state.begin_cycle(drive, approval=True)
+        state.set_status(aid, "running", {"send_by": "cycle", "started_by_cycle": acid})
+        day = utcnow()[:10]
+        try:
+            resp = execute(writer, kind, p)
+        except HttpError as e:
+            if getattr(e, "status", None) == 0:
+                state.set_status(aid, "unknown", {"error": str(e)})
+                _count_uncertain_send(state, day, kind, e)
+                _how, _oc = "got no answer", "unknown-outcome"
+            else:
+                state.set_status(aid, "failed", {"error": str(e)})
+                _how, _oc = "was refused", "failed"
+            try:
+                update_card(state, aid, status="unknown" if _oc != "failed" else "failed",
+                            error=str(e)[:200])
+            except Exception:
+                pass
+            log(f"the {kind} you approved (#{aid}) {_how}: {e}", level="error", drive=drive)
+            state.say("error", f"The {kind} you approved (#{aid}) {_how} from the "
+                               f"registry: {e}"
+                      + (". It may or may not have landed; check before approving "
+                         "it again." if _oc != "failed" else ""))
+            state.end_cycle(acid, _oc, str(e)[:500])
+            continue
+        except Exception as e:
+            # Not an answer from the registry: whether it left cannot be told.
+            state.set_status(aid, "unknown", {"error": f"{type(e).__name__}: {e}"})
+            try:
+                update_card(state, aid, status="unknown",
+                            error=f"{type(e).__name__}: {e}"[:200])
+            except Exception:
+                pass
+            log(f"sending the {kind} you approved (#{aid}) failed: "
+                f"{type(e).__name__}: {e}", level="error", drive=drive)
+            state.end_cycle(acid, "unknown-outcome", f"{type(e).__name__}: {e}"[:500])
+            continue
+        state.set_status(aid, "executed", resp)
+        try:
+            resp = resp or {}
+            state.cap_bump((resp.get("now_utc") or day)[:10], kind)
+            _report_unsigned(state, acid, kind, aid, resp,
+                             lambda m, **k: log(m, drive=drive, **k))
+            ref = resp.get("id") or resp.get("seal_id") or resp.get("attestation_id") or ""
+            _signed = not resp.get("unsigned_because")
+            update_card(state, aid, status="executed", sent_at=utcnow(),
+                        ref=(f"#{ref} " if ref else "")
+                        + ("signed" if _signed else "UNSIGNED"))
+            log(f"sent the {kind} you approved (#{aid}), "
+                + ("signed" if _signed else "UNSIGNED"), drive=drive)
+        except Exception as e:
+            log(f"the {kind} you approved (#{aid}) was sent, but recording it "
+                f"failed: {type(e).__name__}: {e}", level="warn", drive=drive)
+        state.end_cycle(acid, "executed", f"approved {kind} #{aid}")
 
 
 # Messages that mean the request never left this machine: nothing can have
