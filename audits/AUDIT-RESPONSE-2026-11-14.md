@@ -149,3 +149,28 @@ Should an approved seal or attestation be sent by the next cycle, which can sign
 2. F38 with F10, plus a decision on the 12 old ghost rows.
 3. F42, then F7, then F8 once you have decided.
 4. F9, F11, F13, F14, F16, then the Low findings and the remaining suite faults.
+
+## 9. Addendum, batch 2 (later on 2026-11-14)
+
+**F8, fixed, as the operator decided.** A seal or attestation approved on the dashboard is no longer sent by the dashboard. It is marked `approved` with `send_by: cycle`, and a cycle is requested. That cycle sends it under the lock, before anything else it does, and can reach the signer (`cycle._send_approved_signed`).
+
+- **Rows left `approved` by the cycle's own auto path** carry no such mark, and are never sent again. Those are the F10 ghosts, which may have landed.
+- **A row cut off mid-send** is `running`, and is swept to `unknown` like an interrupted local action.
+- **Once the registry has answered,** no bookkeeping error can turn the row back to failed.
+
+**New, found on the box: questions never reached the operator.** Three questions had waited up to five weeks, and none had been seen. A question was only a chat message:
+
+- the page's first load is the newest 400 messages, about two days;
+- the clear button archived it;
+- nothing re-sent it or counted it as waiting.
+
+Every open question's card is now sent on every poll, archived or not, and counts in the "waiting" pill, which jumps to it. A clear no longer archives an open question, or a proposal still queued or sending.
+
+**F29, fixed.** Each open question is pushed once, recorded in the previously unused `questions.seen` column.
+
+**Tests.**
+- New: `dashboard/test_an_open_question_is_always_on_the_page_counted_as_waiting_and_pushed_once.py`.
+- Rewritten for F8: `signing_and_payouts/test_an_unsigned_send_is_reported_...`.
+- 226 tests: 213 pass, 13 skip, 0 differ. Both fail on the previous code.
+
+**Layout.** The audits are now in `audits/`, and the tests in `tests/tests.zip`. The tests README says so.
