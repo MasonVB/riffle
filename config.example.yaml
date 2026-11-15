@@ -117,7 +117,16 @@ cycle:
   # 62,000 with the composer's window at 24,576 tokens (audit round 3, V2):
   # ~19,100 tokens on the wire, ~5,400 left against max_tokens 4,000. Raise
   # it only once the composer is running with the larger window.
-  max_prompt_chars: 62000
+  #
+  # 105,000 with the window at 49,152 (2026-11-15, 64 GB on the box): ~32,400
+  # tokens by gate 4's count, ~16,700 left. Set by cycle TIME, not memory: a
+  # cold read of the whole prompt must finish inside the composer call's
+  # 1,800 s at ~21 tokens a second (~1,420 s for ~30,000 tokens), with room
+  # for the answer. The block caps
+  # (cycle._BUDGETS) are set above what each block measured on the box, so an
+  # ordinary cycle cuts nothing; the journal's "cap cuts" lines say when one
+  # does. If the running composer holds less, the cycle uses what it holds.
+  max_prompt_chars: 105000
   # pulse_shortcut removed: nothing read it either. It described a feature
   # that does not exist — the composer is never skipped — so a reader
   # setting it to false would have believed they had turned something off.
@@ -268,7 +277,7 @@ web:
   url: "http://127.0.0.1:8888"   # searxng only
   api_key: ""
   max_tool_calls: 6
-  # Shared across ALL lookups in one answer. The window is 20,480
+  # Shared across ALL lookups in one answer. The window is 49,152
   # tokens; leave room for the reply.
   tool_char_budget: 16000
   budget_seconds: 420            # wall clock for one answer's research
