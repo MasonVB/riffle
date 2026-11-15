@@ -23,6 +23,7 @@ Order of operations, and why:
 import fcntl
 import hashlib
 import argparse
+import datetime
 import json
 import os
 import re
@@ -835,6 +836,11 @@ def main():
                                 (_acid,)).fetchone()["ended_at"] is None:
                 state.end_cycle(_acid, "executed", f"approved {_row['kind']}")
     _send_approved_signed(state, writer, log)
+    try:
+        _settle_uncertain(state, cfg, reader, writer, log)
+    except Exception as _e:
+        log(f"could not settle the sends with no answer: {type(_e).__name__}: {_e}",
+            level="warn")
     # --- how often riffle wakes ------------------------------------------
     # The timer now fires every 5 minutes and this decides whether it is
     # actually time. The interval has to be settable from the dashboard, and
@@ -3720,15 +3726,35 @@ def main():
         # So an unknown outcome is recorded as unknown and says where to
         # look. riffle can then check rather than assume, and will not send
         # the same comment twice because the duplicate check sees the row.
-        if getattr(e, "status", None) == 0:
+        if getattr(e, "status", None) == 0 and _never_left(e):
+            # IT NEVER LEFT, SO IT IS NOT UNKNOWN (audit F38). Recorded as
+            # unknown, the row counted as sent in every duplicate check and
+            # filed its inbox item as answered, and nothing ever changed it:
+            # a reply riffle wrote was never sent and could never be. A
+            # request that failed to resolve or reach the host did not go
+            # anywhere: failed, which every check treats as not sent.
+            state.set_status(aid, "failed", {"error": str(e), "never_left": True})
+            log(f"{kind} #{aid} never left the box ({e}); nothing was sent",
+                level="warn", drive=drive)
+            state.say("error",
+                      f"Cycle {cid} \u00b7 my {kind} never left the box: {e}. "
+                      f"Nothing was sent, so it can be sent again.")
+            state.end_cycle(cid, "never-sent", str(e)[:500])
+        elif getattr(e, "status", None) == 0:
             state.set_status(aid, "unknown", {"error": str(e)})
             _count_uncertain_send(state, day, kind, e)
             log(f"{kind} #{aid}: no answer from the registry ({e}). It may or "
                 f"may not have been applied.", level="error", drive=drive)
-            state.say("error",
-                      f"Cycle {cid} \u00b7 my {kind} got no answer from the "
-                      f"registry: {e}. I do not know whether it landed \u2014 "
-                      f"check the square before I try again.")
+            # A CARD, so there is something to settle it on (audit F38): this
+            # was a line of text, and the buttons live on cards.
+            state.say("proposal", rationale,
+                      {"kind": kind, "drive": drive, "action_id": aid, "cycle": cid,
+                       "status": "unknown", "auto": True, "sent_at": utcnow(),
+                       "error": f"{e}"[:200] + (
+                           " \u2014 I will look for it on the square next cycle"
+                           if kind in ("comment", "post", "porch", "vote", "tag")
+                           else " \u2014 check the square and say what you find"),
+                       "payload": json.dumps(payload, indent=2)})
             state.end_cycle(cid, "unknown-outcome", str(e)[:500])
         else:
             state.set_status(aid, "failed", {"error": str(e)})
@@ -3744,6 +3770,8 @@ def main():
 # What you approve on the dashboard and the CYCLE sends, because only the cycle
 # can reach the signer (audit F8). See dash.Handler.decide and below.
 SIGNED_BY_CYCLE = ("seal", "attestation")
+# Two a cycle, counted in update.sh gate 6; any more go next cycle.
+_SIGNED_PER_CYCLE = 2
 
 
 def _send_approved_signed(state, writer, log):
@@ -3767,8 +3795,8 @@ def _send_approved_signed(state, writer, log):
         rows = state.db.execute(
             "SELECT * FROM actions WHERE status='approved' AND kind IN ("
             + ",".join("?" * len(SIGNED_BY_CYCLE)) + ")"
-            " AND json_extract(response, '$.send_by') = 'cycle' ORDER BY id",
-            SIGNED_BY_CYCLE).fetchall()
+            " AND json_extract(response, '$.send_by') = 'cycle' ORDER BY id LIMIT ?",
+            SIGNED_BY_CYCLE + (_SIGNED_PER_CYCLE,)).fetchall()
     except Exception as e:
         log(f"could not look for approved seals and attestations: {e}", level="warn")
         return
@@ -3785,6 +3813,14 @@ def _send_approved_signed(state, writer, log):
         try:
             resp = execute(writer, kind, p)
         except HttpError as e:
+            if getattr(e, "status", None) == 0 and _never_left(e):
+                # Never left: still approved, so the next cycle sends it.
+                state.set_status(aid, "approved", {"by": "you", "send_by": "cycle",
+                                                   "last_error": str(e)})
+                log(f"the {kind} you approved (#{aid}) could not leave the box "
+                    f"({e}); the next cycle will try again", level="warn", drive=drive)
+                state.end_cycle(acid, "never-sent", str(e)[:500])
+                continue
             if getattr(e, "status", None) == 0:
                 state.set_status(aid, "unknown", {"error": str(e)})
                 _count_uncertain_send(state, day, kind, e)
@@ -3835,10 +3871,187 @@ def _send_approved_signed(state, writer, log):
         state.end_cycle(acid, "executed", f"approved {kind} #{aid}")
 
 
+# --- sends nobody can confirm, settled against the square ---------------------
+#
+# AUDIT F38 AND F10 (2026-11-10, second pass 2026-11-14). A send with no
+# answer was `unknown` for good: every duplicate check counted it as sent, the
+# inbox filed the comment it answered as answered, the dashboard would not
+# dismiss it and could not approve it again, and nothing ever changed it. And
+# a send the cycle recorded as `approved` and then died before making stayed
+# `approved` for good (twelve on the box, from September), with the same
+# effects. Both are settled here, at the start of a cycle, under the lock:
+#
+#   an `approved` row of a square-reaching kind that is not waiting for this
+#   cycle (send_by: cycle) was being sent by a cycle that is gone: unknown;
+#   an unknown comment or post is looked for in riffle's own history on the
+#   registry (GET /api/me/history), a porch line on that day's porch: found,
+#   it is executed; not found, with the record read to the end, it is failed;
+#   an unknown vote or tag is failed: the registry refuses a second one, so
+#   treating one that landed as not sent costs nothing;
+#   anything else (seal, attestation, flag, submission) is left for you to
+#   settle with the buttons on its card.
+_SETTLE_EVERY_S = 900
+# Bounded, and counted in update.sh gate 6 (the cycle's worst-case wait):
+# four pages of your own history, two days of porch at four pages each.
+_SETTLE_PAGES = 4
+_SETTLE_PORCH_DAYS = 2
+
+
+def _iso_ms(iso):
+    try:
+        return int(datetime.datetime.fromisoformat(
+            str(iso).replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _same_text(a, b):
+    na, nb = " ".join(str(a or "").split()), " ".join(str(b or "").split())
+    return bool(na) and na[:300] == nb[:300]
+
+
+def _settle_uncertain(state, cfg, reader, writer, log):
+    ghosts = state.db.execute(
+        "SELECT id, kind FROM actions WHERE status='approved' AND kind NOT IN ("
+        + ",".join("?" * len(LOCAL_KINDS)) + ")"
+        " AND COALESCE(json_extract(response, '$.send_by'), '') <> 'cycle'",
+        LOCAL_KINDS).fetchall()
+    for g in ghosts:
+        state.set_status(g["id"], "unknown",
+                         {"error": "the cycle sending this stopped before the "
+                                   "registry answered", "ghost": True})
+        log(f"{g['kind']} #{g['id']} was left mid-send by a cycle that stopped; "
+            f"now unknown, to be checked against the square", level="warn")
+    rows = state.db.execute(
+        "SELECT * FROM actions WHERE status='unknown'"
+        " AND kind IN ('comment','post','porch','vote','tag') ORDER BY id").fetchall()
+    if not rows:
+        return
+    _last = state.note("settle_checked_at")
+    if _last and (time.time() - float(_last)) < _SETTLE_EVERY_S and not ghosts:
+        return
+    state.note("settle_checked_at", str(time.time()))
+    me = _my_handle(cfg)
+    now_ms = int(time.time() * 1000)
+
+    hist = {"comments": [], "posts": [], "complete": {"comments": False, "posts": False}}
+    need = {k for k in ("comment", "post") if any(r["kind"] == k for r in rows)}
+    if need:
+        start = min(_iso_ms(r["created_at"]) for r in rows
+                    if r["kind"] in need) - 120_000
+        cur = {"comments": start, "posts": start}
+        for _ in range(_SETTLE_PAGES):
+            try:
+                h = writer.my_history(posts_since=cur["posts"], comments_since=cur["comments"],
+                                      votes_seq=10 ** 15, tags_seq=10 ** 15) or {}
+            except Exception as e:
+                log(f"could not read your own history to settle sends: {e}", level="warn")
+                break
+            hist["comments"] += h.get("comments") or []
+            hist["posts"] += h.get("posts") or []
+            more = False
+            for k in ("comments", "posts"):
+                if h.get(f"{k}_has_more") and h.get(f"next_{k}_since") is not None:
+                    cur[k] = h[f"next_{k}_since"]
+                    more = True
+                else:
+                    hist["complete"][k] = True
+            if not more:
+                break
+    porch_days = {}
+
+    def porch_lines(day):
+        if day in porch_days:
+            return porch_days[day]
+        if len(porch_days) >= _SETTLE_PORCH_DAYS:
+            return [], False                       # left for a later cycle
+        lines, since, done = [], None, False
+        for _ in range(_SETTLE_PAGES):
+            try:
+                r = reader.get("/api/porch", day=day, since=since) or {}
+            except Exception as e:
+                log(f"could not read the porch for {day}: {e}", level="warn")
+                break
+            lines += r.get("lines") or []
+            if r.get("truncated") and r.get("next_since"):
+                since = r["next_since"]
+            else:
+                done = True
+                break
+        porch_days[day] = (lines, done)
+        return porch_days[day]
+
+    from agent.dash import update_card
+    for r in rows:
+        kind, aid = r["kind"], r["id"]
+        try:
+            p = json.loads(r["payload"] or "{}")
+        except ValueError:
+            p = {}
+        age_ms = now_ms - _iso_ms(r["created_at"])
+        found, settled = None, None
+        if kind in ("vote", "tag"):
+            settled = (f"no answer came back; a {kind} that landed is refused if "
+                       f"sent again, so it is treated as not sent")
+        elif kind == "comment":
+            for c in hist["comments"]:
+                if (str(c.get("post_id")) == str(p.get("post_id"))
+                        and _same_text(c.get("body"), p.get("body"))):
+                    found = f"c{c.get('id')}"
+                    break
+            if not found and hist["complete"]["comments"] and age_ms > 600_000:
+                settled = "not in your own history on the registry"
+        elif kind == "post":
+            for c in hist["posts"]:
+                if _same_text(c.get("title"), p.get("title")):
+                    found = f"#{c.get('id')}"
+                    break
+            if not found and hist["complete"]["posts"] and age_ms > 600_000:
+                settled = "not in your own history on the registry"
+        elif kind == "porch":
+            day = str(r["created_at"])[:10]
+            if age_ms > 29 * 86_400_000:
+                settled = ("too old to check (the porch keeps a day's lines for "
+                           "thirty days); treated as not sent")
+            else:
+                lines, done = porch_lines(day)
+                for ln in lines:
+                    if str(ln.get("author")) == me and _same_text(ln.get("body"), p.get("body")):
+                        found = f"porch:{ln.get('id')}"
+                        break
+                if not found and done and age_ms > 600_000:
+                    settled = f"not on the porch for {day}"
+        if found:
+            state.set_status(aid, "executed", {"settled": "found on the square", "ref": found})
+            what = f"it is there ({found})"
+        elif settled:
+            state.set_status(aid, "failed", {"settled": settled})
+            what = f"not sent: {settled}"
+        else:
+            continue
+        try:
+            update_card(state, aid, status="executed" if found else "failed",
+                        ref=found or "", error="" if found else settled)
+        except Exception:
+            pass
+        log(f"{kind} #{aid}, which got no answer: {what}", drive=r["drive"])
+        state.say("report", f"The {kind} I sent on {str(r['created_at'])[:16]} "
+                            f"(#{aid}) got no answer from the registry. I checked: {what}.")
+
+
 # Messages that mean the request never left this machine: nothing can have
 # reached the registry, so nothing is counted against the day.
 _NEVER_LEFT = ("name resolution", "Name or service not known", "Connection refused",
-               "No route to host", "Network is unreachable")
+               "No route to host", "Network is unreachable",
+               # Audit F36: these mean the same, and were counted as possibly
+               # sent. A certificate is checked before any request is written.
+               "No address associated with hostname",
+               "CERTIFICATE_VERIFY_FAILED", "certificate verify failed")
+
+
+def _never_left(err):
+    """True when the error says the request never left this machine."""
+    return any(s in str(err) for s in _NEVER_LEFT)
 
 
 def _count_uncertain_send(state, day, kind, err):
@@ -3852,7 +4065,7 @@ def _count_uncertain_send(state, day, kind, err):
     counting one that did costs a refused send. A failure to resolve or reach
     the host is the exception: the request never left.
     """
-    if any(s in str(err) for s in _NEVER_LEFT):
+    if _never_left(err):
         return False
     state.cap_bump(day, kind)
     return True

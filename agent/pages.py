@@ -341,7 +341,30 @@ function statusLine(p){
     return '<div class=sentline title="' + esc(p.sent_at || '') + '">' +
            '&#10005; Rejected ' + esc(shortTime(p.sent_at)) +
            ' &middot; not sent</div>';
+  // No answer came back (audit F38): say what you find on the square.
+  if(p.status === 'unknown' && p.action_id)
+    return '<div class="sentline bad">? no answer from the registry' +
+           (p.error ? ' &middot; ' + esc(p.error) : '') + '</div>' +
+           '<div class=btns><button class=go onclick="settle(' + p.action_id +
+           ',true,this)">it is on the square</button>' +
+           '<button class=no onclick="settle(' + p.action_id +
+           ',false,this)">it is not there</button></div>';
   return '<div class=when>' + esc(p.status || '') + '</div>';
+}
+async function settle(aid, landed, btn){
+  const box = btn.parentElement;
+  box.innerHTML = '<div class=sentline>saving&hellip;</div>';
+  let ok = false;
+  try {
+    const r = await fetch('/api/resolve', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: aid, landed: landed})});
+    const j = await r.json().catch(() => ({}));
+    ok = r.ok && !j.error;
+    if(!ok) box.innerHTML = '<div class="sentline bad">' + esc(j.error || 'not saved') + '</div>';
+  } catch(err) { box.innerHTML = '<div class="sentline bad">could not reach riffle</div>'; }
+  if(ok) box.innerHTML = '<div class=sentline>&#10003; ' +
+    (landed ? 'recorded as sent' : 'recorded as not sent') + '</div>';
 }
 function toggleMenu(e){
   e.stopPropagation();
@@ -674,7 +697,7 @@ async function poll(){
     waitingCards = d.waiting_ids || [];
     const q = document.getElementById('p-queue');
     // Questions count as waiting too (2026-11-14): they had no place here.
-    const nWait = (d.queued || 0) + (d.questions || 0);
+    const nWait = (d.queued || 0) + (d.questions || 0) + (d.unsettled || 0);
     q.textContent = nWait + ' waiting';
     q.className = 'pill' + (nWait ? ' hot' : '');
     document.getElementById('p-caps').textContent = d.caps;

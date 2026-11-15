@@ -240,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith(("/api/goal/", "/api/memory/",
                                  "/api/policy/", "/api/project/",
                                  "/api/instruction/", "/api/interval",
-                                 "/api/answer", "/api/dismiss")):
+                                 "/api/answer", "/api/dismiss", "/api/resolve")):
             if _goals_routes(self):
                 return
             # 404 HERE, not below. _goals_routes has already read rfile for
@@ -345,8 +345,10 @@ class Handler(BaseHTTPRequestHandler):
         # incremental, so render() is never called for older messages and the
         # list stayed empty. The server knows which actions are pending and
         # which message carries each one; it should just say.
+        # And `unknown` (audit F38): a send with no answer waits for you to
+        # say what you found, unless the cycle settles it first.
         _pending = s.db.execute(
-            "SELECT id FROM actions WHERE status IN ('queued','sending')"
+            "SELECT id FROM actions WHERE status IN ('queued','sending','unknown')"
             " ORDER BY id").fetchall()
         _pids = {r["id"] for r in _pending}
         _waiting = []
@@ -416,6 +418,8 @@ class Handler(BaseHTTPRequestHandler):
 
         return {"messages": out, "queued": len(s.queued()),
                 "questions": len(_openq),
+                "unsettled": s.db.execute("SELECT COUNT(*) FROM actions"
+                                          " WHERE status='unknown'").fetchone()[0],
                 "waiting_ids": _waiting,
                 "alarms_list": alarm_list,
                 "model_restarting": type(self)._restarting,
@@ -986,6 +990,14 @@ class Handler(BaseHTTPRequestHandler):
                 # Counted against the day unless it never left, and a "spent"
                 # refusal believed: the cycle's path does the same (2026-11-09).
                 _eday = utcnow()[:10]
+                # Never left: failed, which every check reads as not sent (F38).
+                if getattr(e, "status", None) == 0 and cycle_mod._never_left(e):
+                    s.set_status(aid, "failed", {"error": str(e), "never_left": True})
+                    self._update_card(aid, status="failed",
+                                      error=f"never left the box: {e}"[:200])
+                    s.log(f"{a['kind']} #{aid} never left the box ({e}); nothing "
+                          f"was sent", level="warn", drive=a["drive"])
+                    return
                 if getattr(e, "status", None) == 0:
                     s.set_status(aid, "unknown", {"error": str(e)})
                     cycle_mod._count_uncertain_send(s, _eday, a["kind"], e)
@@ -1535,6 +1547,31 @@ def _goals_routes(h):
                             f"(#{aid}). It was not sent and I will not retry "
                             f"it. If it was wrong in a way I should know about, "
                             f"tell me and I will not write that again.")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/resolve":
+            # YOU SETTLE A SEND NOBODY COULD CONFIRM (audit F38). A send with no
+            # answer could not be dismissed (rightly: it may be on the square)
+            # and could not be approved again (decide claims queued rows only),
+            # so the card said "check the square" and offered no way to record
+            # what you found. The cycle settles comments, posts, porch lines,
+            # votes and tags by itself; a seal, attestation, flag or submission
+            # it cannot look up, and you can.
+            aid = int(b.get("id") or 0)
+            row = s.action(aid) if aid else None
+            if not row or row["status"] != "unknown":
+                return h._json({"error": "that one is not waiting to be settled"}) or True
+            landed = bool(b.get("landed"))
+            s.set_status(aid, "executed" if landed else "failed",
+                         {"settled": "you checked: " + ("it is on the square" if landed
+                                                        else "it is not there"),
+                          "by": "you"})
+            h._update_card(aid, status="executed" if landed else "failed",
+                           sent_at=h._local_time(),
+                           ref="you found it on the square" if landed else "",
+                           error="" if landed else "you checked: it is not on the square")
+            s.log(f"you settled {row['kind']} #{aid}: "
+                  + ("it is on the square" if landed else "it is not there"),
+                  drive=row["drive"])
             return h._json({"ok": True}) or True
         if u.path == "/api/answer":
             # Imported here rather than relying on _state from a sibling
