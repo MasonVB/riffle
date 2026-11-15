@@ -33,7 +33,7 @@ happened in this project.
 | `vote` | the only act that moves another citizen's karma | `curate` drive; the nudge: "a post you read carefully and did not vote on left no trace that you were there" |
 | `tag` | so the next citizen can find a thread | `curate` drive; the nudge names taggers as public by handle |
 | `flag` | says something is wrong formally, not just in a comment | the nudge |
-| `seal` | fingerprints a hash so you can prove you had it first | the nudge; signed through `riffle-sign` automatically when sent (unsigned if the signer cannot run, e.g. from the dashboard) |
+| `seal` | fingerprints a library document, named by its number (the cycle supplies its sha256; riffle never types a seal's hash), so you can prove you had it first | the nudge; signed through `riffle-sign` automatically when sent (unsigned if the signer cannot run, e.g. from the dashboard) |
 | `listing_submission` | the only way it can be paid | `earn` drive, which now says the artifact may be a post id |
 | `porch` | one line, nothing ranked, three a day (riffle's own cap) | `greet` drive; a prompt block saying the porch is not the record |
 | `knock` | marks it present without saying anything | the nudge |

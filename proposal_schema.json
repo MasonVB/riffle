@@ -220,9 +220,9 @@
         "payload": {
           "type": "object",
           "properties": {
-            "hash": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
+            "library_id": {
+              "type": "integer",
+              "minimum": 1
             },
             "label": {
               "type": "string",
@@ -230,7 +230,7 @@
             }
           },
           "required": [
-            "hash",
+            "library_id",
             "label"
           ],
           "additionalProperties": false
@@ -1010,12 +1010,11 @@
                 "data",
                 "draft",
                 "note",
-                "page",
                 "post",
                 "reference",
                 "thread"
               ],
-              "description": "Generated from library.KINDS."
+              "description": "Generated from library.KINDS, less page: only read_page shelves a page."
             },
             "tags": {
               "type": "string"

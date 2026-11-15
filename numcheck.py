@@ -359,7 +359,56 @@ def low_signal(d, raw):
     return 0 <= v <= 12 or 1900 <= v <= 2100
 
 
-def check(draft_path, source_paths, derive_cap=400):
+def _declared_leaves(obj, path=""):
+    """(name, value) for every leaf of a declared-sources object, named by its
+    path, so a value that is not found can be named the way it was written."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _declared_leaves(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from _declared_leaves(v, f"{path}[{i}]")
+    elif isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        yield path, obj
+    elif isinstance(obj, str):
+        yield path, obj
+
+
+def declared_numbers(declared, corpus_set):
+    """Split what the WRITER declared into what can be found and what cannot.
+
+    THE WRITER'S OWN `sources` ARE NOT A SOURCE (audit 2026-11-10, F1). They
+    went into the corpus as a file of their own, so a figure was VERBATIM as
+    soon as the writer typed it twice in one reply: 4,210 of 7,391 receipts,
+    56.96%, listed in `sources` and in nothing that was ever read, passed.
+    The check then tested whether the field was filled in, not whether the
+    number was real. The same hole was closed for hashes in U3.
+
+    A declared value now counts only when it is found among the sources
+    themselves (the stated sources and the context). Found, it is an operand
+    the writer says it used, so a derivation may start from it; that is the
+    one thing `sources` is good for, since derivations are otherwise allowed
+    only from cited documents. Not found, it is returned by name, so the
+    report can say which one and the writer learns why.
+
+    Returns (kept numbers, [(name, value), ...] not found)."""
+    kept, missing = [], []
+    for name, v in _declared_leaves(declared or {}):
+        if isinstance(v, (int, float)):
+            vals = [dec(repr(v) if isinstance(v, float) else str(v))]
+        else:
+            vals = [dec(m.group(2)) for m in NUM_RE.finditer(v)]
+            if not vals:
+                continue          # a quote, a label, a hash: not a number
+        vals = [normalize(x) for x in vals if x is not None]
+        if vals and all(x in corpus_set for x in vals):
+            kept.extend(vals)
+        else:
+            missing.append((name, v))
+    return kept, missing
+
+
+def check(draft_path, source_paths, derive_cap=400, declared=None):
     numbers, hexes, dates, files = load_sources(source_paths)
 
     # CITED SOURCES FIRST, then the prompt, then by size.
@@ -400,12 +449,20 @@ def check(draft_path, source_paths, derive_cap=400):
             continue
         _n, _, _, _ = load_sources([_f])
         _cited.extend(_n)
+    corpus_set = {normalize(n) for n in numbers}
+    _kept, _missing = declared_numbers(declared, corpus_set)
+    _cited.extend(_kept)
     corpus_list = sorted({normalize(n) for n in _cited},
                          key=lambda x: abs(x))[:derive_cap * 4]
-    corpus_set = {normalize(n) for n in numbers}
 
     text = open(draft_path, "r", errors="replace").read()
-    findings = []
+    # Reported, never failing on their own: a declared value nobody wrote is
+    # harmless unless a figure leans on it, and then THAT figure fails.
+    findings = [dict(line=0, kind="declared", token=str(name),
+                     status="NOT-FOUND", low=True,
+                     note=f"you listed {name} = {str(v)[:60]} in sources, and "
+                          f"nothing you read carries it")
+                for name, v in _missing]
 
     for lineno, line in enumerate(text.splitlines(), 1):
         masked = HANDLE_RE.sub(lambda m: " " * len(m.group(0)), line)
@@ -564,11 +621,21 @@ def main():
     ap.add_argument("--agent", action="store_true",
                     help="machine-generated draft: every bare numeral is a claim, "
                          "only years are exempt")
+    ap.add_argument("--declared", metavar="FILE",
+                    help="JSON the WRITER declared as its sources: not itself a "
+                         "source; each value counts only if a real source carries "
+                         "it, and then only as an operand for a derivation")
     a = ap.parse_args()
     global AGENT_MODE
     AGENT_MODE = a.agent
 
-    findings, files, nnum, nhex = check(a.draft, a.sources)
+    declared = None
+    if a.declared:
+        try:
+            declared = json.load(open(a.declared))
+        except (OSError, ValueError):
+            declared = None
+    findings, files, nnum, nhex = check(a.draft, a.sources, declared=declared)
     # AMBIGUOUS FAILS IN AGENT MODE.
     #
     # AMBIGUOUS means "several operand pairs in the corpus produce this
@@ -594,8 +661,8 @@ def main():
                               failing=len(bad)), indent=2, default=str))
         sys.exit(1 if bad else 0)
 
-    order = {"MALFORMED": 0, "UNBACKED": 1, "AMBIGUOUS": 2, "DERIVED": 3,
-             "DECLARED": 4, "VERBATIM": 5}
+    order = {"MALFORMED": 0, "UNBACKED": 1, "AMBIGUOUS": 2, "NOT-FOUND": 3,
+             "DERIVED": 4, "DECLARED": 5, "VERBATIM": 6}
     print(f"numcheck: {a.draft}")
     print(f"sources: {len(files)} file(s), {nnum} distinct values, {nhex} hex tokens\n")
     shown = sorted(findings, key=lambda f: (order[f["status"]], f["line"]))

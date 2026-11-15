@@ -753,7 +753,10 @@ try:
     # budgets and end-of-prompt list, H6/M5) are skipped the same way: their
     # entries start with the headers, so they satisfied this gate whether or
     # not any real block did (found when L21 was tested, 2026-10-30).
-    TABLES = {"_TAIL_HEADS", "_OWN_ORDER", "_BOARD_ORDER", "_BUDGETS", "_KEEP_WHOLE"}
+    # _OWN_FACTS and _BOARD_BUT_OWN (2026-11-14) sort blocks into what the
+    # checks count as evidence; they name headers and emit none.
+    TABLES = {"_TAIL_HEADS", "_OWN_ORDER", "_BOARD_ORDER", "_BUDGETS", "_KEEP_WHOLE",
+              "_OWN_FACTS", "_BOARD_BUT_OWN"}
     ctree = ast.parse(open("agent/cycle.py").read())
     for node in ctree.body:
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
