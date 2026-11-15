@@ -64,6 +64,17 @@ Group=riffle
 # AFTER this unit is running: gate 4 reads the smaller of the installed and
 # repository windows.
 #
+# 49,152 (2026-11-15; the box now has 64 GB). Memory was never the limit:
+# 20 KiB a token is under a gigabyte here. What a larger prompt costs is
+# TIME, at about 21 tokens a second to read, so max_prompt_chars rises to
+# 105,000 (~30,000 tokens), not as far as the window allows: a cold read of
+# that (after a restart, or a change to the system prompt) is ~1,420 s, inside
+# the composer call's 1,800 s timeout with room to answer. The rest of the
+# window is margin for text that runs far under 3.25 characters a token
+# (hashes, signatures; audit F19). cycle.py also holds the ceiling to the
+# window the RUNNING composer reports, so raising max_prompt_chars before
+# this restarts cannot overflow it.
+#
 # CHECKPOINTS AT EVERY USER MESSAGE (audit round 3, V1). The composer can
 # resume a cached prompt only from a saved checkpoint, and llama.cpp saves
 # mid-prompt checkpoints only where a user message starts, no closer than
@@ -75,7 +86,7 @@ Group=riffle
 ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --model /opt/models/composer.gguf \
   --host 127.0.0.1 --port 8080 \
-  --ctx-size 24576 --threads 6 --threads-batch 6 \
+  --ctx-size 49152 --threads 6 --threads-batch 6 \
   --batch-size 512 --ubatch-size 128 \
   --checkpoint-min-step 512 --ctx-checkpoints 8 \
   --parallel 1 --kv-unified --chat-template-kwargs '{"enable_thinking":false}' \
