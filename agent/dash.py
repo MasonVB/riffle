@@ -385,8 +385,27 @@ class Handler(BaseHTTPRequestHandler):
                 if int(_qm.get("qid") or 0) in _openq:
                     _waiting.append(m["id"])
         _waiting = sorted(set(_waiting))
+        # And questions answered in the last day, so the card turns to
+        # "answered" on every device, not only the one you answered from
+        # (2026-11-15: answered cards stayed at "sending..." because only
+        # open questions were re-sent).
+        _recent_q = set()
+        try:
+            _done = {r["id"] for r in s.db.execute(
+                "SELECT id FROM questions WHERE answered_at IS NOT NULL"
+                " AND answered_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 day')")}
+            if _done:
+                for m in s.db.execute("SELECT id, meta FROM messages"
+                                      " WHERE role='question' ORDER BY id"):
+                    try:
+                        if int(json.loads(m["meta"] or "{}").get("qid") or 0) in _done:
+                            _recent_q.add(m["id"])
+                    except (ValueError, TypeError):
+                        continue
+        except Exception:
+            pass
         have = {m["id"] for m in out}
-        for _mid in _waiting:
+        for _mid in sorted(set(_waiting) | _recent_q):
             if _mid not in have:
                 m = s.db.execute("SELECT * FROM messages WHERE id=?", (_mid,)).fetchone()
                 if m:

@@ -761,7 +761,17 @@ async function sendAnswer(qid, btn){
     const j = await r.json().catch(() => ({}));
     ok = r.ok && !j.error;
   } catch(err) { ok = false; }
-  if(!ok){ btn.disabled = false; btn.textContent = 'not sent \u2014 try again'; }
+  if(!ok){ btn.disabled = false; btn.textContent = 'not sent \u2014 try again'; return; }
+  // SAY IT LANDED, HERE (2026-11-15). Success left the button at "sending..."
+  // and waited for a poll to redraw the card as answered; but a poll re-sends
+  // only OPEN questions, so an answered one was never redrawn and every
+  // answer on the box read "sending..." though it was saved.
+  const card = btn.closest('.card');
+  if(box) box.remove();
+  if(btn.parentElement) btn.parentElement.outerHTML =
+    '<div class=answered>' + esc(text) + '</div>' +
+    '<div class=sentline>&#10003; answered just now</div>';
+  if(card) card.dataset.sig = '';
 }
 async function decide(id, verdict, btn){
   // Swap the buttons out immediately. The round trip includes an HTTPS call to
