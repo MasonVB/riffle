@@ -174,3 +174,30 @@ Every open question's card is now sent on every poll, archived or not, and count
 - 226 tests: 213 pass, 13 skip, 0 differ. Both fail on the previous code.
 
 **Layout.** The audits are now in `audits/`, and the tests in `tests/tests.zip`. The tests README says so.
+
+## 10. Addendum, batch 3 (2026-11-15): F10, F38, F36
+
+**F38, fixed.**
+- **A send that never left the box is now `failed`**, which every check reads as not sent. That covers name resolution, a refused connection, an unreachable network, and a certificate failure. Before, it was `unknown` for good. On a cycle send it ends `never-sent`. An approved seal or attestation that could not leave stays approved, for the next cycle.
+- **A send with no answer is settled at the start of the next cycle,** under the lock, at most every 15 minutes. Anything sent less than 10 minutes ago is left `unknown`, since it may still be arriving.
+  - Comments and posts are looked for in riffle's own registry history (`GET /api/me/history`): found means `executed`, not found with the history read to its end means `failed`.
+  - Porch lines are looked for on that UTC day's porch.
+  - Votes and tags become `failed`, because the registry refuses a second one.
+  - Seals, attestations, flags and submissions wait for the operator, whose card now has "it is on the square" and "it is not there" buttons (`POST /api/resolve`).
+  - A cycle's no-answer send now gets a card; before, it got a line of text.
+  - Unsettled sends count in the "waiting" pill.
+
+**F10, fixed.** At the start of a cycle, any `approved` row of a square-reaching kind is treated as a ghost and becomes `unknown`, so it is settled as above. The exceptions are local kinds, and rows marked `send_by: cycle`.
+
+**F36.** `_NEVER_LEFT` now also has "No address associated with hostname" and certificate-verification failures. Connect timeouts are not included: urllib does not tell them apart from a timeout after sending.
+
+**Bounds.** Each cycle reads at most 4 pages of history and 2 porch days of 4 pages each, and makes at most 2 approved signed sends. Gate 6 counts them, mirrored from the code: the worst-case wait goes from 20,270 s to 21,020 s, against the unit's 21,600 s.
+
+**Limits.**
+- A porch line sent just before midnight UTC and landing after it is looked for on the wrong day. It would be marked not sent, wrongly.
+- A comment is matched on post id and the first 300 characters of its body, whitespace-normalised. A registry that rewrites a body (it does not today) would make one look missing.
+
+**Tests.**
+- New: `send_checks/test_a_send_with_no_answer_is_settled_against_the_square.py`.
+- The box-audit `send-*` cases print the reply's status.
+- 227 tests: 214 pass, 13 skip, 0 differ.
