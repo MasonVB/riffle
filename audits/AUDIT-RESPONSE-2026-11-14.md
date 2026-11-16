@@ -233,3 +233,42 @@ The gate the audit proposed (every header must have a budget and an order entry)
 - New: `prompt/test_an_ordinary_box_cycle_sends_every_block_whole.py` and `prompt/test_the_prompt_ceiling_is_held_to_the_running_composers_window.py`.
 - Seven recordings were re-made, each checked (see the tests README).
 - 229 tests.
+
+## 12. Addendum, batch 5 (2026-11-15): F9, F11, F13, F14, F16, F42
+
+**F9, fixed.**
+- The reject button (chat card and ACT page) asks for an optional reason. Cancel aborts the reject; an empty answer rejects with no reason.
+- The next prompt has a block, YOUR OPERATOR TURNED THESE DOWN: the last 3 days' rejections, each with what it was and his reason. It sits in the tail, after `</board>`; the reason passes through `_detag`.
+- A post, comment, porch line, attestation, flag or listing submission matching one of those (same title, or ≥55% of its body's words) is refused as `rejected-before`, and riffle is told why.
+- A card cleared with dismiss after it *failed* or was *refused* is not counted: that was not a judgement on what it said. Dismissing a *queued* card counts as a rejection.
+- The dismiss message no longer promises "I will not retry it"; it points to the card's buttons.
+
+**F11, fixed.** In the dashboard's send worker, once the registry accepts, the row is `executed` and stays so. A failure in the bookkeeping after it is logged ("was sent, but recording what followed failed"), not turned into `failed`. The secret is read inside the `try`, so a missing secret ends `failed`, not stuck at `sending`.
+
+**F13, fixed.** The pass commits before the continuity call. No model call with a write open.
+
+**F14, two of three routes fixed; the fourth (by reading) is not.**
+- A memory the pass writes while any board-kind memory was among what it was shown is stored as `board`.
+- YOUR LAST REFUSAL quotes only the first line of the check's message, so a refusal that appends a thread's replies no longer carries them outside `<board>`.
+- `_detag` now uses `<\s*(/?)\s*board\b[^>]*>`, so attributes, spaces and capitals are caught.
+- Not done: the reflection pass's `me:` lines from front-page titles.
+
+**F16, fixed for your words only.**
+- An operator memory whose figures (digit runs, on/off/yes/no) differ from an otherwise matching one is stored as a new row beside it.
+- It does not retire the old row: the same words with another number are as often a different thing as a correction.
+- riffle's own memories are still merged as before. Applying the rule to them made reflection memories with changing numbers pile up and change WHAT YOU REMEMBER every cycle, which broke the prompt cache. The suite caught that, and I narrowed the rule.
+
+**F42, fixed.**
+- Pinned memories are not candidates. The pin route moves the memory to long term, and the pass moves any pinned before this fix.
+- The pass refuses to drop an operator memory.
+- Drops are capped at 8 a day (`memory.max_drops_per_day`, default 8; not in config.example.yaml).
+- The report shows each dropped memory's text.
+- Unpinning leaves the memory in long term.
+
+**Also.** THE GATES' numcheck line now says a figure must be in something riffle read, and that listing it in sources does not back it. That is +99 characters in every prompt.
+
+**Tests.**
+- New: `cycle/test_a_rejection_reaches_riffle_with_its_reason_and_a_repeat_is_refused.py`, `memory/test_the_daily_pass_keeps_what_the_operator_pinned_or_said_and_does_not_launder_board_words.py` and `dashboard/test_a_send_that_landed_stays_sent_when_what_follows_fails.py`. Each shows the bug on 30ef918.
+- Five recordings were re-made (the +99).
+- The audit's own repros for these findings all show the fixes.
+- 240 tests: 227 pass, 13 skip, 0 differ.
