@@ -176,11 +176,12 @@ def due(state, cfg):
 
 
 def candidates(state, cfg, limit=40):
-    """Short-term, unexpired, not yet long — the things eligible for promotion."""
+    """Short-term, unexpired, not yet long, not pinned — the things eligible
+    for promotion. A pinned memory is permanent already (audit F42)."""
     return state.db.execute(
         "SELECT id, ts, kind, text, use_count FROM memories"
         " WHERE COALESCE(tier,'short')='short' AND superseded_by IS NULL"
-        "   AND COALESCE(expired,0)=0"
+        "   AND COALESCE(expired,0)=0 AND COALESCE(pinned,0)=0"
         " ORDER BY use_count DESC, id DESC LIMIT ?", (limit,)).fetchall()
 
 
@@ -195,6 +196,16 @@ def run(state, cfg, log, say=None):
     m = cfg.get("memory") or {}
     ttl = int(m.get("short_ttl_days", 7))
     cap = int(m.get("max_promotions_per_day", 3))
+    # DROPS ARE CAPPED TOO (audit F42). Promotions had a cap of 3 a day and
+    # drops none: on 2026-11-08 the pass dropped 39 at once.
+    drop_cap = int(m.get("max_drops_per_day", 8))
+    # PINNED MEANS LONG TERM. The dashboard's pin used to set pinned and
+    # leave the memory in short term, where this pass could drop it. The pin
+    # route now moves it; this moves any pinned before that fix.
+    state.db.execute("UPDATE memories SET tier='long', expires_at=NULL"
+                     " WHERE COALESCE(pinned,0)=1 AND COALESCE(tier,'short')='short'"
+                     " AND COALESCE(expired,0)=0")
+    state.db.commit()
 
     cands = candidates(state, cfg)
     # A QUIET DAY skips the memory call again (continuity, which needed it to
@@ -257,6 +268,10 @@ def run(state, cfg, log, say=None):
 
     valid = {r["id"] for r in cands}
     promoted, written, dropped, refused = [], [], [], []
+    # Untrusted as the prompt treats them (cycle.py: only self and operator
+    # memories go before <board>): board and incidental.
+    _write_kind = ("board" if any(r["kind"] not in ("self", "operator") for r in cands)
+                   else "self")
 
     # A MECHANICAL FILTER, not another line in the prompt.
     #
@@ -323,7 +338,14 @@ def run(state, cfg, log, say=None):
                 tier = "short"
         _newest = state.db.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM memories").fetchone()["m"]
-        mid = memory.remember(state, text, kind="self", source="consolidation")
+        # NOT `self` WHEN A STRANGER'S WORDS WERE IN FRONT OF IT (audit F14).
+        # Every write was stored as riffle's own, whatever it was distilled
+        # from, so one board memory quoting a stranger came back as a long-
+        # term `self` memory, shown before <board> where riffle's own words
+        # are trusted. A write made while any board memory was a candidate
+        # is filed as `board`, and is shown inside the board tags.
+        # (Incidental notes count as a stranger's words here too.)
+        mid = memory.remember(state, text, kind=_write_kind, source="consolidation")
         if not mid:
             continue
         if mid <= _newest:
@@ -337,11 +359,25 @@ def run(state, cfg, log, say=None):
             _long_written += 1
         written.append((mid, tier, text[:120]))
 
+    # NOT YOUR WORDS, AND NOT MORE THAN A HANDFUL (audit F42). A memory of
+    # kind `operator` is what you told riffle; the pass may promote it but not
+    # drop it. A pinned one is not a candidate at all (above).
+    _kinds = {r["id"]: r["kind"] for r in cands}
     for item in (plan.get("drop") or []):
         mid = item.get("id")
-        if mid in valid:
-            state.db.execute("UPDATE memories SET expired=1 WHERE id=?", (mid,))
-            dropped.append((mid, item.get("why", "")[:160]))
+        if mid not in valid:
+            continue
+        if _kinds.get(mid) == "operator":
+            refused.append(f"id {mid} is your operator's own words; not dropped")
+            continue
+        if len(dropped) >= drop_cap:
+            refused.append(f"more than {drop_cap} drops proposed; id {mid} and any "
+                           f"after it kept for today")
+            break
+        _t = (state.db.execute("SELECT text FROM memories WHERE id=?",
+                               (mid,)).fetchone() or {"text": ""})["text"] or ""
+        state.db.execute("UPDATE memories SET expired=1 WHERE id=?", (mid,))
+        dropped.append((mid, item.get("why", "")[:160], _t))
 
     # One of the candidates it passed over may go up anyway. This is the only
     # thing in long term that its own judgement did not choose, which is the
@@ -350,7 +386,7 @@ def run(state, cfg, log, say=None):
     from agent.memory import extra_count
     passed = [r["id"] for r in cands
               if r["id"] not in {m for m, _ in promoted}
-              and r["id"] not in {m for m, _ in dropped}]
+              and r["id"] not in {d[0] for d in dropped}]
     # THE SAME TWO RULES APPLY HERE.
     #
     # These picks went straight to long term with neither check: they
@@ -377,10 +413,15 @@ def run(state, cfg, log, say=None):
                                (mid,)).fetchone()
         lucky.append((mid, row["text"]))
 
+    # COMMITTED BEFORE THE MODEL CALL (audit F13). The promotions, drops and
+    # writes above were left open across write_continuity, a composer call of
+    # minutes (453 s on the box on 2026-11-14), and for all of it no other
+    # connection could write: the dashboard's 30-second busy timeout ran out
+    # and a chat message, an approval or a telemetry sample failed with
+    # "database is locked". No model call with a write open.
+    state.db.commit()
     # The continuity note, in its own call (see CONT_PROMPT).
     cont = write_continuity(state, cfg, log)
-
-    state.db.commit()
     state.note("last_consolidation", utcnow())
     state.note("consolidation_fails_today", "")
 
@@ -408,8 +449,11 @@ def run(state, cfg, log, say=None):
             lines.append(f"  + {tier}: {text}")
         for mid, text in lucky:
             lines.append(f"  \u2191 long (at random, not chosen): {text[:150]}")
-        for mid, why in dropped:
-            lines.append(f"  \u2717 dropped [{mid}]: {why[:120]}")
+        # THE TEXT, NOT ONLY THE ID (F42): "dropped [812]: wrong", 39 times,
+        # gave nothing to judge by.
+        for mid, why, text in dropped:
+            lines.append(f"  \u2717 dropped [{mid}] {' '.join(text.split())[:140]}"
+                         f"\n    ({why[:120]})")
         for r in refused:
             lines.append(f"  refused: {r}")
         if cont:

@@ -120,6 +120,61 @@ def near_duplicate(state, kind, body, exclude_id=None, threshold=0.55):
     return (best, best_ov) if best_ov >= threshold else (None, best_ov)
 
 
+def _recent_rejections(state, days=3, limit=6):
+    """[(row, reason)] for what the operator rejected in the last `days`."""
+    lo = (datetime.datetime.now(datetime.timezone.utc)
+          - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = []
+    for r in state.db.execute(
+            "SELECT id, created_at, kind, payload, response FROM actions"
+            " WHERE status='rejected' AND created_at > ? ORDER BY id DESC LIMIT ?",
+            (lo, limit)).fetchall():
+        try:
+            _resp = json.loads(r["response"] or "{}") or {}
+        except ValueError:
+            _resp = {}
+        if not isinstance(_resp, dict):
+            _resp = {}
+        # A card cleared away after it failed or was refused is not a
+        # judgement on what it said (dash /api/dismiss records what it was).
+        if _resp.get("was") not in (None, "queued"):
+            continue
+        out.append((r, str(_resp.get("reason") or "").strip()))
+    return out
+
+
+def _what_it_was(row):
+    try:
+        p = json.loads(row["payload"] or "{}")
+    except ValueError:
+        return ""
+    t = p.get("title") or p.get("body") or p.get("claim") or p.get("note") or ""
+    return " ".join(str(t).split())
+
+
+def recently_rejected(state, kind, payload, days=3, threshold=0.55):
+    """A rejection of the same thing in the last `days`, or None (audit F9):
+    the same title, or a body that shares most of its words."""
+    def _k(t):
+        return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
+                         if len(w) > 3)
+    title = " ".join(str(payload.get("title") or "").lower().split())
+    new = _k(payload.get("body") or payload.get("claim") or payload.get("note") or "")
+    for r, reason in _recent_rejections(state, days, limit=40):
+        if r["kind"] != kind:
+            continue
+        try:
+            p = json.loads(r["payload"] or "{}")
+        except ValueError:
+            continue
+        if title and title == " ".join(str(p.get("title") or "").lower().split()):
+            return r, reason
+        old = _k(p.get("body") or p.get("claim") or p.get("note") or "")
+        if len(new) >= 8 and old and len(new & old) / max(len(new), len(old)) >= threshold:
+            return r, reason
+    return None
+
+
 def top_level_today(state, post_id, exclude_id=None):
     """A top-level comment made on this post in the last 24 hours, if any.
 
@@ -1794,6 +1849,13 @@ def _main():
             " AND content LIKE ? ORDER BY id DESC LIMIT 1",
             (f"Cycle {_rf['id']} %",)).fetchone()
         _said = re.sub(r"^Cycle \d+ [\u00b7:] *", "", (_msg["content"] if _msg else "")).strip()
+        # THE CHECK'S OWN SENTENCE ONLY (audit F14). This block sits after
+        # </board>, where text is riffle's own, and some refusals carry
+        # strangers' words after their first line (the already-commented
+        # refusal appends the thread's replies): a reply reading "OPERATOR
+        # NOTE ... Mason approved it" landed outside the board. The first
+        # line is the program's; any board tag in it is neutralised.
+        _said = _detag(_said.split("\n", 1)[0])
         # Refused cycles in a row with the same outcome and detail, counting
         # back past cycles that went through: the loop on the box was
         # interleaved with replies that were sent.
@@ -1815,6 +1877,22 @@ def _main():
                f"same reason. Proposing it again unchanged will be refused again: "
                f"change what the check names, or do something else."
                if _same >= 2 else ""))
+    # WHAT YOUR OPERATOR TURNED DOWN (audit F9). A rejection went to the
+    # operator's chat and nowhere else: nothing in the cycle read the status,
+    # so the next cycle saw a ready project with nothing waiting and proposed
+    # the same post again, word for word. The last three days' rejections,
+    # with the reason if one was given; recently_rejected() refuses a repeat.
+    _rej = _recent_rejections(state)
+    if _rej:
+        parts.append(
+            "YOUR OPERATOR TURNED THESE DOWN: he rejected them on the dashboard "
+            "in the last 3 days. Do not propose them "
+            "again, reworded or not; if the reason says what to change, change "
+            "that:\n" + "\n".join(
+                f"  {r['created_at'][:16]} {r['kind']}: {_what_it_was(r)[:120]}"
+                + (f"\n    his reason: {_detag(reason)[:300]}" if reason else
+                   "\n    (no reason given)")
+                for r, reason in _rej))
     parts.append(
         "THE GATES RIGHT NOW:\n"
         f"  the project bar: {'CLEARED' if _ok else _why}\n"
@@ -1824,7 +1902,10 @@ def _main():
     _gates = ["  the project bar, posting and today's allowance: their state "
               "right now is under THE GATES RIGHT NOW, at the end of this "
               "cycle's material"]
-    _gates.append("  numcheck: every figure must appear in your sources block")
+    # Since audit F1 (2026-11-14) `sources` names numbers; it does not back them.
+    _gates.append("  numcheck: every figure must be in something you read (a thread, "
+                  "a page, your build's output, your operator's words); listing it "
+                  "in sources does not back it")
     # It was never told. A build written past this ceiling is cut off
     # mid-JSON and the whole cycle is lost (2026-10-23, drive `make`).
     _maxtok = int(((cfg.get("llm") or {}).get("composer") or {}).get("max_tokens", 1600))
@@ -3530,6 +3611,24 @@ def _main():
     # porch serves the social function of the square." That is a noop with a
     # public greeting attached, and the square gets the same sentence every
     # day from the same citizen.
+    if kind in ("post", "comment", "porch", "attestation", "flag",
+                "listing_submission"):
+        _rj = recently_rejected(state, kind, payload)
+        if _rj:
+            _rr, _reason = _rj
+            why = (f"your operator rejected this {kind} on "
+                   f"{_rr['created_at'][:16]} (#{_rr['id']})"
+                   + (f", saying: {_detag(_reason)[:300]}" if _reason else "")
+                   + ". Proposing it again does not change his answer: change "
+                     "what he objected to, or do something else.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"{kind} refused: the operator rejected it on "
+                f"{_rr['created_at'][:16]} (#{_rr['id']})", level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "rejected-before", str(_rr["id"]))
+            return 0
+
     if kind in ("comment", "porch") and payload.get("body"):
         # The same function the dashboard's approval path calls, so the two
         # cannot drift apart. It was inline here and nowhere else, which is
@@ -4321,6 +4420,7 @@ _NEVER_TRIM = (
 # Gate 8 refuses an entry here that no string literal starts with.
 _OWN_HEADS = (
     "ALREADY DONE",
+    "YOUR OPERATOR TURNED THESE DOWN",
     "A POST NOW NEEDS A REFERENCE",
     "REFERENCES IN POSTS",
     "YOU MAY NOT PROPOSE THESE TODAY",
@@ -4364,7 +4464,9 @@ _OWN_HEADER = ("YOUR OWN RECORDS, THIS PROGRAM'S FACTS, AND YOUR OPERATOR'S "
 # nothing then; now it means "not a stranger", so a forged edge is worth
 # forging. Any case, any spacing; the angle brackets become look-alikes that
 # no reader takes for a tag.
-_BOARD_TAG = re.compile(r"<\s*(/?)\s*board\s*>", re.I)
+# ANY board tag, attributes and all (audit F14): `</board x>` and
+# `<board role=system>` passed through, and a model reads either as the tag.
+_BOARD_TAG = re.compile(r"<\s*(/?)\s*board\b[^>]*>", re.I)
 
 
 def _detag(text):
@@ -4682,6 +4784,7 @@ def _cycles_since_note(state, key):
 # cycle (M5). The clock, drive and caps lines (_volatile) follow them.
 _TAIL_HEADS = (
     "YOUR LAST REFUSAL",
+    "YOUR OPERATOR TURNED THESE DOWN",
     "THE GATES RIGHT NOW",
     "YOUR ACTUAL SITUATION",
     "YOUR INBOX, AND HOW TO ANSWER IT",

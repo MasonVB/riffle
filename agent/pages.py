@@ -798,6 +798,13 @@ async function sendAnswer(qid, btn){
   if(card) card.dataset.sig = '';
 }
 async function decide(id, verdict, btn){
+  // A REJECTION CAN SAY WHY (audit F9): riffle is shown it, and a repeat of
+  // the same proposal is refused. Cancel leaves the proposal as it was.
+  let reason = '';
+  if(verdict !== 'approve'){
+    reason = prompt('Reject. Why? riffle will see this (optional):', '');
+    if(reason === null) return;
+  }
   // Swap the buttons out immediately. The round trip includes an HTTPS call to
   // the square, and a button that stays live while the work happens invites a
   // second press.
@@ -814,7 +821,7 @@ async function decide(id, verdict, btn){
   try{
     const r = await fetch('/api/decide',
       {method:'POST', headers:{'Content-Type':'application/json'},
-       body: JSON.stringify({id:id, verdict:verdict})});
+       body: JSON.stringify({id:id, verdict:verdict, reason:reason})});
     const d = await r.json().catch(() => ({}));
     if(!r.ok || (d && d.error)){
       alert('Not done: ' + ((d && d.error) || ('HTTP ' + r.status)));
@@ -1503,6 +1510,11 @@ async function go(v){
   // vote, a transport failure that left the result unknown. The one page
   // you use to approve something from your phone was the one place that
   // could not tell you it had failed.
+  let reason = '';
+  if(v !== 'approve'){
+    reason = prompt('Reject. Why? riffle will see this (optional):', '');
+    if(reason === null) return;
+  }
   const body = document.getElementById('body');
   body.innerHTML = '<div class=done>' +
     (v === 'approve' ? 'sending&hellip;' : 'rejecting&hellip;') + '</div>';
@@ -1510,7 +1522,7 @@ async function go(v){
   try{
     const r = await fetch('/api/decide', {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({id: id, verdict: v})});
+      body: JSON.stringify({id: id, verdict: v, reason: reason})});
     const out = await r.json();
     if(out && out.error){
       body.innerHTML = '<div class=done>&#10005; ' + esc(out.error) + '</div>';

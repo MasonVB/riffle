@@ -308,7 +308,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.run_cycle())
         if u.path == "/api/decide":
             return self._json(self.decide(int(body.get("id", 0)),
-                                          str(body.get("verdict", "reject"))))
+                                          str(body.get("verdict", "reject")),
+                                          str(body.get("reason") or "")[:600]))
         self._json({"error": "not found"}, 404)
 
     # ---- view model ------------------------------------------------------
@@ -749,7 +750,7 @@ class Handler(BaseHTTPRequestHandler):
     def _update_card(self, aid, **fields):
         update_card(self.state, aid, **fields)
 
-    def decide(self, aid, verdict):
+    def decide(self, aid, verdict, reason=""):
         """Claim the action, then decide it.
 
         CLAIMED IN ONE STATEMENT (L10, audit 2026-10-27). This read the
@@ -766,22 +767,27 @@ class Handler(BaseHTTPRequestHandler):
         if cur.rowcount != 1:
             return {"error": "not queued"}
         try:
-            return self._decide_claimed(aid, verdict)
+            return self._decide_claimed(aid, verdict, reason)
         except BaseException:
             s.db.execute("UPDATE actions SET status='queued' WHERE id=?"
                          " AND status='sending'", (aid,))
             s.db.commit()
             raise
 
-    def _decide_claimed(self, aid, verdict):
+    def _decide_claimed(self, aid, verdict, reason=""):
         s = self.state
         a = s.action(aid)
         payload = json.loads(a["payload"])
 
         if verdict != "approve":
-            s.set_status(aid, "rejected")
-            self._update_card(aid, status="rejected", sent_at=self._local_time())
-            s.log(f"you rejected {a['kind']} #{aid}", drive=a["drive"])
+            # THE REASON REACHES RIFFLE (audit F9): its next prompt lists what
+            # you turned down, with this, and a repeat is refused.
+            reason = " ".join(str(reason or "").split())[:600]
+            s.set_status(aid, "rejected", {"by": "you", "reason": reason})
+            self._update_card(aid, status="rejected", sent_at=self._local_time(),
+                              ref=(f"why: {reason[:120]}" if reason else ""))
+            s.log(f"you rejected {a['kind']} #{aid}"
+                  + (f": {reason[:200]}" if reason else ""), drive=a["drive"])
             return {"ok": True}
 
         # Local actions change the agent or its workspace, not the square.
@@ -969,11 +975,21 @@ class Handler(BaseHTTPRequestHandler):
         self._update_card(aid, status="sending")
 
         def worker():
-            data = os.path.expanduser(self.cfg["data_dir"])
-            secret = open(os.path.join(data,
-                                       f"{self.cfg['handle']}.secret")).read().strip()
+            # LANDED IS FINAL (audit F11). Everything after a successful send
+            # (the cap, the card, the log, on_posted, the follow-up cycle) sat
+            # in the same `try` as the send, so if any of it raised, the catch-
+            # all below marked a comment the registry HAD received as failed:
+            # invisible to the duplicate checks, its cooldown never started,
+            # free to be sent again. And the secret was read before the `try`,
+            # so a missing secret killed the thread with the row at `sending`,
+            # the exact failure that catch-all exists to prevent.
+            landed = False
             try:
+                data = os.path.expanduser(self.cfg["data_dir"])
+                secret = open(os.path.join(data,
+                                           f"{self.cfg['handle']}.secret")).read().strip()
                 resp = execute(Writer(self.cfg["base"], secret), a["kind"], payload)
+                landed = True
                 s.set_status(aid, "executed", resp)
                 # Unsigned, said out loud (U6): from here the signer cannot run.
                 cycle_mod._report_unsigned(s, None, a["kind"], aid, resp,
@@ -1031,6 +1047,16 @@ class Handler(BaseHTTPRequestHandler):
                 s.log(f"the registry refused {a['kind']} #{aid}: {e}",
                       level="error", drive=a["drive"])
             except BaseException as e:
+                if landed:
+                    # Sent, and recorded as sent; only the bookkeeping after
+                    # it failed. Said, never turned into `failed`.
+                    try:
+                        s.log(f"{a['kind']} #{aid} was sent, but recording what "
+                              f"followed failed: {type(e).__name__}: {e}",
+                              level="warn", drive=a["drive"])
+                    except Exception:
+                        pass
+                    return
                 # CATCH EVERYTHING ELSE TOO.
                 #
                 # This caught only HttpError. A timeout, a DNS failure, a
@@ -1575,14 +1601,17 @@ def _goals_routes(h):
                     "error": "that one may already be on the square. It was "
                              "sent and the reply was lost, so dismissing it "
                              "would let riffle send it again. Check the "
-                             "square: if it is not there, approve it again; "
-                             "if it is, nothing more is needed."}) or True
+                             "square and use its card's buttons: \"it is on "
+                             "the square\" or \"it is not there\"."}) or True
             if row["status"] == "sending":
                 return h._json({
                     "error": "that one is being sent right now. Wait for it "
                              "to land or fail — dismissing it would tell you "
                              "it was not sent while it still might be."}) or True
-            s.set_status(aid, "rejected", {"by": "you", "how": "discarded"})
+            # `was` keeps what it had been: riffle is told about a proposal
+            # you turned down, not a failed or refused card you cleared away.
+            s.set_status(aid, "rejected", {"by": "you", "how": "discarded",
+                                           "was": row["status"]})
             # h, not self. This endpoint lives in _goals_routes(h), a module
             # level function with no self in scope — so pressing discard
             # raised NameError every time and the card never changed. Both
@@ -1707,9 +1736,11 @@ def _goals_routes(h):
             # Pinning brings an expired memory back (L12, audit 2026-10-27):
             # it set pinned and left expired, so the memory stayed hidden
             # from recall and was still purged later. Pinned means permanent.
+            # And LONG TERM (audit F42): left in short term, a pinned memory
+            # stayed a candidate for the daily pass, which could drop it.
             if b.get("pinned"):
                 s.db.execute("UPDATE memories SET pinned=1, expired=0,"
-                             " expires_at=NULL WHERE id=?", (int(b["id"]),))
+                             " expires_at=NULL, tier='long' WHERE id=?", (int(b["id"]),))
             else:
                 s.db.execute("UPDATE memories SET pinned=0 WHERE id=?",
                              (int(b["id"]),))

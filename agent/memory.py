@@ -111,6 +111,16 @@ def remember(state, text, kind="operator", source=None, pinned=0,
     def _key(t):
         return frozenset(w for w in re.findall(r"[a-z0-9#]+", t.lower())
                          if len(w) > 3)
+    # THE FIGURES ARE COMPARED APART (audit F16). Words of three letters or
+    # fewer, and so numbers under four digits, are not in _key, so "the
+    # deadline is November 20" and "... November 30" were one memory: the
+    # correction was thrown away as a duplicate, the old date kept, and the
+    # caller told the save worked. U14 did this for negation; this is the
+    # same hole for numbers, dates and on/off.
+    def _facts(t):
+        return frozenset(re.findall(r"\d+(?:[.,:/]\d+)*", t)
+                         + [w for w in re.findall(r"[a-z]+", t.lower())
+                            if w in ("on", "off", "yes", "no")])
     incoming = _key(text)
     neg = _negated(text)
     contradicts = None
@@ -136,6 +146,20 @@ def remember(state, text, kind="operator", source=None, pinned=0,
                 continue
             overlap = len(incoming & other) / max(len(incoming), len(other))
             if overlap >= 0.6:
+                if kind == "operator" and _facts(text) != _facts(row["text"]):
+                    # Your words with a different figure are not a duplicate:
+                    # stored. Not used to retire the older one, because the
+                    # same words with another number are as often a different
+                    # thing (post 11504, post 11505) as a correction, and
+                    # retiring a fact is not undoable.
+                    #
+                    # YOURS ONLY (2026-11-15). riffle's own reflections write
+                    # "posting is closed for 5.1 hours", then 6.2, every cycle;
+                    # folding those together is what keeps short term from
+                    # filling with stale counts, and kept apart they changed
+                    # WHAT YOU REMEMBER every cycle, which ended the composer's
+                    # reusable opening there (found by the cache tests).
+                    continue
                 return row["id"]
     # Everything arrives in short term. Promotion is a decision made later,
     # with a day's distance and against competition — not at the moment of
