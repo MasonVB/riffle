@@ -343,3 +343,50 @@ The suite holds the gate to the audit's three drifts. It does not check that a c
 - New: `build/test_the_disk_budget_counts_the_builds_own_bytes.py`, `memory/test_the_memory_search_index_is_rebuilt_once_and_when_it_drifts.py` and `web/test_a_port_or_user_name_does_not_lose_the_written_by_anyone_label.py`. Each shows the fault on the previous version.
 - `gate PYUNIT` is new, and `gates fail when they must` has five new cases.
 - 262 tests: 249 pass, 13 skip, 0 differ.
+
+## 15. Addendum, batch 8 (2026-11-17): F18, F20, F21, F24, F27, F28, F30, F32, F33, F34
+
+**F18, fixed.** After the merge, update.sh `exec`s the merged update.sh with `RIFFLE_AFTER_MERGE` set to the commit it started from. The new copy skips the fetch, the lock and the merge, and runs its own gates against its own tree. `exec` keeps the process id, so the lock helper, which watches that id, still holds the cycle lock. Taking the lock again would have had the helper wait 15 minutes on the lock it already held. **This deploy itself still runs the previous update.sh.** I ran its gates against this tree, and all 13 pass. From the next deploy on, a gate and the code it mirrors can change together.
+
+**F20, fixed.** An alarm verdict on any page of the witness walk, or on a first run with no mark, now alarms and notifies you as on the first page. The log line says which page, and whether the walk started from a mark or from the start.
+
+**F21, fixed.** The stuck failsafe measures the last send by `executed_at`, not by when the action was proposed. With nothing ever sent, it counts from riffle's first cycle and says "I have never sent anything", where before it could never fire.
+
+**F24, fixed.**
+- A request carrying the secret goes through an opener that does not follow redirects. A 3xx comes back as an error naming where it pointed, and is never followed.
+- Reads carry no secret and still follow redirects.
+- `_req_conditional` guards its error-body read, as `_req` does.
+
+**F27, fixed.** `riffle-restart-composer.service` first touches both lock files as riffle (`runuser -u riffle -- touch`), then takes them with `flock`. `touch` changes only an existing file's time, so a lock already held is not disturbed. `install` or `cp` would have replaced the file. The step is prefixed `-`, so a missing data directory doesn't stop the unit.
+
+**F28, fixed.**
+- `deepen` is drawn, and boosted during the cooldown, only if it still exists.
+- A weight from the goals page must be a finite number from 0 to 1. The page itself offers 0.02 to 0.5.
+- On the previous code a NaN weight raised a database error.
+
+**F30, fixed.**
+- `/api/decide` answers 400 to a non-number id.
+- Discarding an `accepted` or `running` local action is refused, with the reason.
+- Approving a `remember` never pins it. The card says it asked for a pin, which is yours to give.
+- A change to a goal's restrictions is written to `drive_changes`, the goals' history.
+
+**F32, fixed.** Rows riffle sees as the registry's JSON use the registry's names: `body_truncated` and `body_length`, the registry's own value where the row carries one. `body_full_chars` is gone from them.
+
+**F33, fixed.**
+- When identical bytes are shelved from a new source, that source is recorded in `library_aliases`. The file is still stored once.
+- The page-read checks (links, references), the replication check (F43) and the evidence the figure check reads now look at aliases too.
+- This also closes the batch 6 limit: a build output matching a document riffle had shelved first now counts as the build's.
+
+**F34, fixed.**
+- A body under 12 words is caught when it repeats one of the last 60 of its kind word for word, in any order. Overlap on so few words would be noise, so only an exact word set counts.
+- The window is 60, up from 15.
+- A second reply to the same comment is left to the one-reply check, whose refusal names the comment.
+
+**Limits.**
+- The private `/tmp` and lock fixes (F40 last batch, F27 here) were not run under real systemd.
+- `/usr/sbin/runuser` is assumed (util-linux on Debian).
+- F19 (count real tokens), F22, F23, F25, F26, F31, F35 and the drift notes are still open, as are F45 and F17, which need your decision.
+
+**Tests.**
+- New: `deploy/test_the_merged_update_sh_runs_its_own_gates.sh`, `send_checks/test_the_secret_never_follows_a_redirect.py`, `deploy/test_the_composer_restart_never_creates_a_lock_file_as_root.py`, `witness/test_a_broken_chain_alarms_on_any_page_and_on_a_first_run.py` and `cycle/test_small_faults_from_the_first_audit_stay_fixed.py`. Each shows its fault on the previous version.
+- 275 tests: 262 pass, 13 skip, 0 differ.
