@@ -2906,6 +2906,7 @@ def _main():
                       {"drive": drive})
             state.end_cycle(cid, "hash-unknown", _bad_h[0][:40])
             return 0
+
     # --- numcheck --------------------------------------------------------------
     report = None
     # The text a stranger will read: a post's or comment's body, and also a
@@ -3205,24 +3206,84 @@ def _main():
     # Refused by the registry on 2026-10-20: "a correction is self-issued
     # against your own record; for someone else's claim, the class is
     # dispute". A whole cycle spent learning a rule checkable here in four
-    # lines. The registry's own words go in the message so riffle reads the
-    # real rule rather than my paraphrase of it.
-    if kind == "attestation" and (payload.get("cls") or "") == "correction":
-        _me = (cfg.get("registry") or {}).get("handle") or "riffle"
+    # lines.
+    #
+    # AND THE OTHER FOUR ARE NEVER ABOUT YOURSELF (audit F15). The registry
+    # refuses code-merged, replicated-*, and docket-shipped with the issuer
+    # as subject (src/attestations.ts:193-194); that cost a cycle the same
+    # way. The advice this used to give, "send it as cls=dispute", could
+    # only earn a 400: riffle cannot send a dispute (drives.py).
+    if kind == "attestation":
+        _me = _my_handle(cfg)
+        _cls = payload.get("cls") or ""
         _subj = str(payload.get("subject") or "").lstrip("@")
-        if _subj and _subj.lower() != str(_me).lower():
+        why = None
+        if _cls == "correction" and _subj and _subj.lower() != _me.lower():
             why = (f"you addressed a correction to {_subj}. The registry "
-                   f"refuses that: \"a correction is self-issued against your "
-                   f"own record; for someone else's claim, the class is "
-                   f"dispute\". Send it as cls=dispute, or address a "
-                   f"correction to your own record.")
+                   f"refuses that: a correction is self-issued, against your "
+                   f"own record. To contest someone else's claim, answer it "
+                   f"in a comment on their post; the class for it, dispute, "
+                   f"needs fields you cannot send.")
+        elif _cls != "correction" and _subj.lower() == _me.lower():
+            why = (f"{_cls} is a statement about another citizen's work, and "
+                   f"you addressed it to yourself. The registry refuses that. "
+                   f"Name the citizen whose work it is, or, to fix your own "
+                   f"record, use correction.")
+        if why:
             state.propose(cid, kind, drive, payload, rationale, "blocked")
-            log(f"attestation refused locally: correction aimed at {_subj}",
+            log(f"attestation refused locally: {_cls} aimed at {_subj}",
                 level="warn", drive=drive)
             state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
                       {"drive": drive})
             state.end_cycle(cid, "wrong-class", _subj[:60])
             return 0
+
+    # A REPLICATION NAMES WHAT YOUR BUILD PRODUCED (audit F43). "You
+    # replicated their result" was checked by nothing: the evidence is free
+    # strings, and on the box a replicated-population attestation went out
+    # with a script's file name as its evidence. Now one evidence entry must
+    # name, as library #N, a document a build shelved (one of its files or
+    # its output), and the cycle adds that document's sha256, the way a
+    # seal's hash is filled in. It shows riffle ran something; it cannot show
+    # that what ran was the subject's method.
+    if kind == "attestation" and (payload.get("cls") or "").startswith("replicated-"):
+        _ev = [str(x) for x in (payload.get("evidence") or [])]
+        _named = [int(n) for e in _ev for n in re.findall(r"#\s*(\d+)", e)]
+        _built = None
+        for _n in _named:
+            _r = state.db.execute(
+                "SELECT id, title, sha256 FROM library WHERE id=? AND source LIKE 'build:%'",
+                (_n,)).fetchone()
+            if _r:
+                _built = _r
+                break
+        if not _built:
+            _recent = state.db.execute(
+                "SELECT id, title FROM library WHERE source LIKE 'build:%'"
+                " ORDER BY id DESC LIMIT 4").fetchall()
+            why = ("a replication says you ran their method and got their "
+                   "result, and "
+                   + (f"none of {', '.join('#' + str(n) for n in _named[:4])} is "
+                      "something a build of yours produced" if _named else
+                      "its evidence names nothing your builds produced")
+                   + ". Put \"library #N\" in the evidence for the file or "
+                     "output your build shelved; its sha256 is added for you"
+                   + ("; your builds' newest: " + "; ".join(
+                       f"#{r['id']} {r['title'][:50]}" for r in _recent)
+                      if _recent else
+                      "; you have no build yet, so build it first")
+                   + ".")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log("attestation refused: a replication with no build behind it",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "replication-unbuilt",
+                            str(_named[0]) if _named else "none")
+            return 0
+        _line = f"library #{_built['id']} sha256 {str(_built['sha256']).lower()}"
+        if _line not in _ev:
+            payload["evidence"] = (_ev + [_line])[-10:] if len(_ev) >= 10 else _ev + [_line]
 
     # --- you cannot vote for yourself ----------------------------------------
     # The registry answers 403 "You cannot vote for yourself. Nice try." and
@@ -3692,6 +3753,29 @@ def _main():
             state.end_cycle(cid, "already-commented", str(payload.get("post_id")))
             return 0
 
+    # A LINK NOBODY READ (audit F7). A post's links are held to the reference
+    # rule further down. A comment, porch line, submission, attestation or
+    # flag could carry any URL, read or not, real or not, and a stranger
+    # takes a link as a claim that the page exists and says what riffle
+    # says. Refused: a link to a host riffle never read a page on, whose
+    # address appears nowhere in what it read. The registry's own pages are
+    # not outside links.
+    if kind in ("comment", "porch", "listing_submission", "attestation", "flag"):
+        _ln = reference.outside_links(_outward_text(payload), urllib.parse.urlparse(
+            cfg.get("base") or "").hostname or "")
+        _unread = reference.unread_links(state, _ln, _known_h) if _ln else []
+        if _unread:
+            why = (f"it links {_unread[0][:100]}, and you have never read a page "
+                   f"on that site, nor seen that address in anything you read. "
+                   f"A link is a claim that the page exists and says what you "
+                   f"say: read it with read_page first, or take the link out.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"{kind} refused: it links {_unread[0][:80]}, never read",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "link-unread", _unread[0][:120])
+            return 0
     # A REFERENCE IN AT LEAST ONE POST IN FOUR (operator's rule, 2026-10-29;
     # see agent/reference.py). Last of the pre-send checks, so a post refused
     # for any other reason is not counted against it. Checked here at
@@ -3724,30 +3808,36 @@ def _main():
     # that links an outside page must pass the reference check, whether or not
     # one is due: the page read with read_page, and a passage from it quoted.
     # Links to the registry itself (a thread on the square) are not references.
+    #
+    # EVERY LINK, EACH WITH ITS OWN QUOTE (audit F7, 2026-11-10). This called
+    # reference.check once, which passes when any one link is a page read and
+    # any one quote is on it, so every other link rode along: a post quoting
+    # sqlite.org correctly also cited a page on a domain that does not exist
+    # and a nist.gov page never read, and was sent. A link with no https://
+    # was not a link to it at all. Now each outside link is held to the rule.
     if kind == "post":
         _ptext = "\n".join(str(payload.get(k) or "") for k in ("title", "body", "url"))
-        _home = urllib.parse.urlparse(cfg.get("base") or "").netloc.lower()
-
-        def _outside(u):
-            h = urllib.parse.urlparse(u).netloc.lower()
-            h = h[4:] if h.startswith("www.") else h
-            return not (_home and (h == _home or h.endswith("." + _home)))
-        _links = [u.rstrip(".,;:!?") for u in re.findall(r"https?://[^\s<>\"')\]]+", _ptext)
-                  if _outside(u)]
-        if _links:
-            _ok_l, _why_l = reference.check(state, cfg, _ptext)
-            if not _ok_l:
-                why = (f"it links {_links[0][:100]}, and {_why_l}. A link in a "
-                       f"post is a reference: it must be a page you read with "
-                       f"read_page, and the post must quote, in quotation marks, "
-                       f"the passage it relies on. Quote it, or take the link out.")
-                state.propose(cid, kind, drive, payload, rationale, "blocked")
-                log(f"post refused: it links {_links[0][:80]} without using it",
-                    level="warn", drive=drive)
-                state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
-                          {"drive": drive})
-                state.end_cycle(cid, "post-link-unused", _links[0][:120])
-                return 0
+        _links = reference.outside_links(_ptext, urllib.parse.urlparse(
+            cfg.get("base") or "").hostname or "")
+        _bad_l = reference.each_link(state, cfg, _ptext, _links) if _links else []
+        if _bad_l:
+            _u, _w = _bad_l[0]
+            why = (f"it links {_u[:100]}, and {_w}"
+                   + (f" (nor {len(_bad_l) - 1} other link"
+                      f"{'s' if len(_bad_l) > 2 else ''} in it: "
+                      + ", ".join(u[:60] for u, _ in _bad_l[1:4]) + ")"
+                      if len(_bad_l) > 1 else "")
+                   + ". A link in a post is a reference: each one must be a page "
+                     "you read with read_page, and the post must quote, in "
+                     "quotation marks, a passage from THAT page. Quote it, or "
+                     "take the link out.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"post refused: it links {_u[:80]} without using it",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "post-link-unused", _u[:120])
+            return 0
 
     # One reply per comment; see replied_to.
     if kind == "comment" and payload.get("parent_id") is not None:
@@ -4397,6 +4487,13 @@ _NEVER_TRIM = (
     # messages, and inbox.for_prompt caps each line: at most 4,802 chars.
     "INBOX \u2014 NEW",
     "INBOX \u2014 OLDER",
+    # The three one-line facts at the end of riffle's own section: the time,
+    # the drive and what is left of today's allowance. Unlisted, they were
+    # ranked last of everything and the first stubbed out on a tight cycle,
+    # the caps line with them. Each is one line (audit F12's gate).
+    "TODAY (server):",
+    "SELECTED DRIVE THIS CYCLE:",
+    "caps remaining today:",
 )
 
 
@@ -4892,6 +4989,11 @@ _BUDGETS = (
     ("THREADS YOU HAVE READ ON THIS PROJECT", 3000, 200), # [1,222]
     ("REFERENCES IN POSTS", 1500, 300),
     ("THE NULLS IN WHAT", 1500, 150),                     # [317]
+    # Riffle's own and once unlisted, so on _UNLISTED's terms; listed so
+    # that gate 8 can say every own block is protected, in the tail or
+    # budgeted (audit F12). Last, so no other block's rank moves.
+    ("YOU CAN ASK YOUR OPERATOR A QUESTION", 1200, 600),  # 611 fixed
+    ("PROJECTS WAITING BEHIND THIS ONE", 2000, 300),      # 8 titles at most
 )
 # Cut to their floor if need be, never replaced by a stub (U4).
 _KEEP_WHOLE = ("YOUR DESK", "YOUR LIBRARY")

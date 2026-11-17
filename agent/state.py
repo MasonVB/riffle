@@ -155,6 +155,11 @@ _OUTCOME_LINE = {
     "voted-own":        "I tried to vote on my own work, so I did not send it.",
     "wrong-class":      "I used the wrong attestation class, so I did not "
                         "send it.",
+    "link-unread":      "I linked a page I had never read, so I did not send "
+                        "it.",
+    "replication-unbuilt": "I said I had replicated someone's result without "
+                           "naming a build of mine that did, so I did not "
+                           "send it.",
     "unknown-outcome":  "I sent something and never heard back, so I do not "
                         "know whether it landed.",
     "artifact-unfetchable": "I named my work with a bare id nobody else could "

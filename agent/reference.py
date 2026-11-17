@@ -14,7 +14,15 @@ The count is of posts SENT in a row without one:
                 count resets: a failsafe, so posting can never stop for good.
 A post that carries a reference resets the count to 0.
 
-Comments are only nudged (in the system prompt), never checked here.
+Comments are only nudged (in the system prompt) to carry a reference; their
+links are checked by `unread_links` (audit F7, 2026-11-10).
+
+EVERY LINK ON ITS OWN (audit F7). `check` passes when any one URL in a post is
+a page read and any one quote is on it, so a second link rode along on the
+first: a post quoting sqlite.org correctly also cited a page on a domain that
+does not exist, and one never read, and was sent. `each_link` holds every
+outside link in a post to the rule: a page read with read_page, and a passage
+from THAT page quoted. A link written without https:// is a link too.
 """
 import html
 import json
@@ -64,40 +72,131 @@ def _fragments(quote):
     return [p for p in out if len(p) >= 12]
 
 
-def check(state, cfg, text):
-    """(True, detail) if `text` carries a reference, else (False, why not).
-
-    detail names the URL and the start of the quote that matched."""
-    from agent import library
-    urls = {_norm_url(m.group(0)) for m in _URL.finditer(text or "")}
-    urls = {u for u in urls if "/" in u or "." in u}
-    if not urls:
-        return False, "it gives no URL"
+def _pages(state):
+    """{normalised URL: library id} of every page riffle read."""
     pages = {}
     for r in state.db.execute(
             "SELECT id, source FROM library WHERE kind='page' AND source IS NOT NULL"):
         pages.setdefault(_norm_url(r["source"]), r["id"])
+    return pages
+
+
+def _quotes(text):
+    return [q for q in (m.group(1) for m in _QUOTED.finditer(text or ""))
+            if len(q.split()) >= 4]
+
+
+def _quoted_on(state, cfg, lid, quotes):
+    """The first quote whose every fragment is on library page `lid`, or None."""
+    from agent import library
+    root = (cfg.get("library") or {}).get("root", library.ROOT)
+    try:
+        _row, page = library.read(state, int(lid), root, count=False)
+    except Exception:
+        return None
+    hay = _norm_text(page)
+    for q in quotes:
+        frags = _fragments(q)
+        if frags and all(_norm_text(f) in hay for f in frags):
+            return q
+    return None
+
+
+def check(state, cfg, text):
+    """(True, detail) if `text` carries a reference, else (False, why not).
+
+    detail names the URL and the start of the quote that matched."""
+    urls = {_norm_url(m.group(0)) for m in _URL.finditer(text or "")}
+    urls = {u for u in urls if "/" in u or "." in u}
+    if not urls:
+        return False, "it gives no URL"
+    pages = _pages(state)
     cited = [(u, pages[u]) for u in urls if u in pages]
     if not cited:
         return False, ("none of its URLs is a page you have read with read_page "
                        "(a reference must be one you actually read)")
-    quotes = [q for q in (m.group(1) for m in _QUOTED.finditer(text or ""))
-              if len(q.split()) >= 4]
+    quotes = _quotes(text)
     if not quotes:
         return False, "it cites a page you read but quotes nothing from it"
-    root = (cfg.get("library") or {}).get("root", library.ROOT)
     for url, lid in cited:
-        try:
-            _row, page = library.read(state, int(lid), root, count=False)
-        except Exception:
-            continue
-        hay = _norm_text(page)
-        for q in quotes:
-            frags = _fragments(q)
-            if frags and all(_norm_text(f) in hay for f in frags):
-                return True, f"{url} quoted: \"{q[:80]}\""
+        q = _quoted_on(state, cfg, lid, quotes)
+        if q:
+            return True, f"{url} quoted: \"{q[:80]}\""
     return False, ("the quoted words are not on the page it cites; quote the "
                    "page's own wording")
+
+
+# AN OUTSIDE LINK (F7). With a scheme, any host. Without one, only host.tld/path
+# where the last label is not a file extension: "1f916.square/docs" is a link,
+# "cycle.py" and "src/attestations.ts" are not. Not after @ . / - or a word
+# character, so an e-mail address or a path's middle never starts one.
+_LINK = re.compile(r"(?<![\w@./-])(https?://)?((?:[a-z0-9-]+\.)+([a-z][a-z0-9-]*[a-z]))"
+                   r"(?::\d+)?(/[^\s<>\"'\)\]]*)?", re.I)
+_FILE_EXT = {"py", "md", "ts", "js", "json", "txt", "sh", "yaml", "yml", "rs", "go",
+             "html", "htm", "csv", "sql", "toml", "cfg", "ini", "log", "c", "h",
+             "cpp", "hpp", "java", "rb", "pl", "php", "css", "xml", "pdf", "png",
+             "jpg", "gz", "zip", "tar", "lock", "service", "conf", "db", "sqlite",
+             "ipynb", "tex", "bib", "mjs", "cjs", "tsx", "jsx", "env", "example"}
+
+
+def _host(u):
+    h = urllib.parse.urlsplit(u if "://" in u else "http://" + u).hostname or ""
+    return h[4:] if h.startswith("www.") else h
+
+
+def outside_links(text, home=""):
+    """Every link in text that is not to the registry (`home`, a host), in
+    order, each once, trailing punctuation dropped."""
+    home = (home or "").lower()
+    home = home[4:] if home.startswith("www.") else home
+    out = []
+    for m in _LINK.finditer(text or ""):
+        scheme, tld, path = m.group(1), m.group(3).lower(), m.group(4)
+        if not scheme and (not path or path == "/" or tld in _FILE_EXT):
+            continue
+        u = m.group(0).rstrip(".,;:!?")
+        h = _host(u)
+        if home and (h == home or h.endswith("." + home)):
+            continue
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def each_link(state, cfg, text, links):
+    """[(url, why)] for each link in `links` that is not a page riffle read
+    with a passage from that page quoted in `text` (F7)."""
+    pages = _pages(state)
+    quotes = _quotes(text)
+    bad = []
+    for u in links:
+        lid = pages.get(_norm_url(u))
+        if lid is None:
+            bad.append((u, "it is not a page you read with read_page"))
+        elif not quotes:
+            bad.append((u, "the post quotes nothing from it"))
+        elif not _quoted_on(state, cfg, lid, quotes):
+            bad.append((u, "nothing the post quotes is on that page"))
+    return bad
+
+
+def unread_links(state, links, read):
+    """The links in `links` riffle has no ground for (F7, for everything that
+    is not a post): no page on that host was ever read with read_page, and
+    the address appears nowhere in `read` (what riffle read this cycle and
+    the pages it fetched)."""
+    hosts = {_host(r["source"]) for r in state.db.execute(
+        "SELECT source FROM library WHERE kind='page' AND source IS NOT NULL")}
+    hay = re.sub(r"https?://(www\.)?", "", (read or "").lower())
+    bad = []
+    for u in links:
+        if _host(u) in hosts:
+            continue
+        bare = re.sub(r"^https?://(www\.)?", "", u.lower()).rstrip("/")
+        if bare and bare in hay:
+            continue
+        bad.append(u)
+    return bad
 
 
 def status(state):

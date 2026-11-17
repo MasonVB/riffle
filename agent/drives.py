@@ -245,12 +245,17 @@ SCHEMA = {
     # This allowed "observation", which the registry has never accepted, and
     # filled it in whenever no class was given, so such an attestation could
     # only be refused. No default now: the grammar makes riffle choose.
+    #
+    # FIVE OF THE SEVEN (audit F15). `dispute` and `retract` need
+    # target_attestation_id, and dispute also withdraw_when (registry
+    # src/attestations.ts:205-229). riffle sends neither, so either class
+    # could only earn a 400 and a lost cycle. Out of the grammar until the
+    # fields exist; bin/riffle-sign keeps all seven, as the registry does.
     "attestation": (["subject", "claim", "cls"], ["evidence"],
                     lambda p: {"cls": _enum(p["cls"],
                                             ("code-merged", "replicated-total",
                                              "replicated-population",
-                                             "docket-shipped", "correction",
-                                             "dispute", "retract")),
+                                             "docket-shipped", "correction")),
                                "subject": _s(p["subject"], 1, 64, "subject"),
                                # The registry's CLAIM_MAX is 500; 501-1000
                                # passed here and was refused there.
