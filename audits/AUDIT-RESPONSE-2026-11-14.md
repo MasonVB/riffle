@@ -272,3 +272,46 @@ The gate the audit proposed (every header must have a budget and an order entry)
 - Five recordings were re-made (the +99).
 - The audit's own repros for these findings all show the fixes.
 - 240 tests: 227 pass, 13 skip, 0 differ.
+
+## 13. Addendum, batch 6 (2026-11-16): F7, F15, F43's code half, F12's gate
+
+**F7, fixed.**
+- **Posts.** Every outside link in a post is checked on its own: it must be a page read with `read_page`, and the post must quote a passage from *that* page. A link with no `https://` (`1f916.square/docs`) counts. The refusal names each failing link.
+- **Comments, porch lines, submissions, attestations and flags.** A link is refused (`link-unread`) when riffle never read a page on that site and the address appears nowhere in what it read. The registry's own pages are exempt.
+- **Order.** This check runs after the hash and figure checks, so those still speak first.
+- **System prompt.** Its link paragraph now states both rules.
+
+**F15, fixed.**
+- `dispute` and `retract` are out of the grammar and the gate until riffle can send `target_attestation_id` and `withdraw_when`. `bin/riffle-sign` keeps all seven classes, as the registry does.
+- A `code-merged`, `replicated-*` or `docket-shipped` attestation addressed to riffle itself is refused locally (`wrong-class`).
+- The refusal for a correction aimed at someone else no longer says "send it as cls=dispute". It says to answer their claim in a comment.
+- The system prompt lists the five classes, says which are about others, and no longer points to "fetch guide".
+
+**F43, code half, fixed.**
+- A `replicated-total` or `replicated-population` attestation must name, as `library #N`, a document a build shelved: one of its files or its output. Otherwise it is refused (`replication-unbuilt`), and riffle is told its builds' newest.
+- The cycle adds `library #N sha256 <hash>` to the evidence, as a seal's hash is filled in.
+- **Limit:** this shows that a build ran and produced that document. It cannot show that what ran was the subject's method.
+- The settings half stands: keep `attestation: queue`.
+
+**F12's gate, written.** Gate 8 now refuses a deploy in four cases:
+- One of riffle's own blocks is in none of `_NEVER_TRIM`, `_TAIL_HEADS` or `_BUDGETS`.
+- A board block is in `_OWN_ORDER`, or one of riffle's own blocks is in `_BOARD_ORDER`.
+- A `_KEEP_WHOLE` or `_CUT_MIDDLE` entry has no budget.
+- An entry in any table is a header nothing emits.
+
+Before passing, the gate found five unbudgeted blocks:
+- "YOU CAN ASK YOUR OPERATOR A QUESTION" and "PROJECTS WAITING BEHIND THIS ONE" now have budgets, listed last so no other block's rank moves.
+- The time, drive and caps lines are protected. On a tight cycle they had been the first blocks stubbed out.
+
+The suite holds the gate to the audit's three drifts. It does not check that a cap is above what its block measures on the box.
+
+**Limits.**
+- A site's bare name with no path (`sqlite.org`) is not treated as a link.
+- Outside posts, any page on a site riffle read passes, read or not. That is the audit's lesser rule.
+- A document first shelved by riffle with `library_put` and later rebuilt byte for byte keeps its first row, which has no build source, so naming it in a replication is refused.
+- The system prompt changed, so the first cycle after deploy re-reads it cold, about 1,400 s, inside the 1,800 s timeout.
+
+**Tests.**
+- New: `send_checks/test_every_link_is_a_page_riffle_read.py` and `send_checks/test_attestations_go_to_the_right_subject_and_a_replication_names_its_build.py`. Each case shows the bug on the current version.
+- Three gate 8 cases were added to `gates fail when they must`.
+- 254 tests: 241 pass, 13 skip, 0 differ.
