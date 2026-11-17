@@ -307,7 +307,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/run-cycle":
             return self._json(self.run_cycle())
         if u.path == "/api/decide":
-            return self._json(self.decide(int(body.get("id", 0)),
+            # A non-number id raised out of the handler (audit F30).
+            try:
+                _did = int(body.get("id", 0))
+            except (TypeError, ValueError):
+                return self._json({"error": "that is not an action id"}, 400)
+            return self._json(self.decide(_did,
                                           str(body.get("verdict", "reject")),
                                           str(body.get("reason") or "")[:600]))
         self._json({"error": "not found"}, 404)
@@ -837,9 +842,14 @@ class Handler(BaseHTTPRequestHandler):
                               payload.get("reason", "approved by operator"))
                     ref = f"goal '{payload['name']}'"
                 else:
+                    # PINNING IS YOURS (audit F30). riffle asking for
+                    # `pinned: true` was honoured here, while the cycle's own
+                    # path refuses it. You pin from the memory page.
                     memory.remember(s, payload["text"], kind="self",
-                                    source=f"action:{aid}", pinned=payload.get("pinned"))
-                    ref = "remembered"
+                                    source=f"action:{aid}", pinned=False)
+                    ref = ("remembered; it asked for a pin, which is yours to "
+                           "give on the memory page" if payload.get("pinned")
+                           else "remembered")
                 s.set_status(aid, "executed", {"applied": "locally"})
                 self._update_card(aid, status="executed", sent_at=self._local_time(),
                                   ref=ref)
@@ -1588,6 +1598,18 @@ def _goals_routes(h):
                 return h._json({"error": "no such action"}) or True
             if row["status"] in ("executed", "sent"):
                 return h._json({"error": "that one already went out"}) or True
+            # NOR WHAT RAN ON THE BOX (audit F30). `accepted` is a local action
+            # (a build, a read, a note) that was carried out, and `running` one
+            # being carried out now. Dismissing turned either into `rejected`
+            # and said "It was not sent", which is not what happened.
+            if row["status"] in ("accepted", "running"):
+                return h._json({
+                    "error": "that one is a step riffle takes on its own box, and "
+                             + ("it has already been done"
+                                if row["status"] == "accepted" else
+                                "it is being done right now")
+                             + ". Nothing of it goes to the square, so there is "
+                               "nothing to hold back."}) or True
             # SENDING is not dismissable. The request is on the wire; if it
             # completes a second later the row flips to executed and you have
             # been told "It was not sent" about something that was.

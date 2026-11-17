@@ -417,9 +417,11 @@ def for_prompt(items, body_chars=300):
              "body": body[:body_chars]}
         if d.get("comment_id") is None and d.get("mention_id") is not None:
             o["mention_id"] = d["mention_id"]
+        # The registry's names (audit F32): body_full_chars is not one, and
+        # riffle once cited it to a citizen as an API field.
         if len(body) > body_chars:
             o["body_truncated"] = True
-            o["body_full_chars"] = len(body)
+            o["body_length"] = d.get("body_length") or len(body)
         ms = d.get("created_ms")
         if isinstance(ms, int):
             o["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000))

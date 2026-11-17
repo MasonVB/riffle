@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS library (
 );
 CREATE INDEX IF NOT EXISTS library_read ON library(last_read);
 CREATE INDEX IF NOT EXISTS library_sha  ON library(sha256);
+-- Other sources of the same bytes (audit F33): see put().
+CREATE TABLE IF NOT EXISTS library_aliases (
+  id          INTEGER PRIMARY KEY,
+  lib_id      INTEGER NOT NULL,
+  kind        TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  UNIQUE (lib_id, source)
+);
 """
 
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -121,12 +130,25 @@ def put(state, title, body, kind="note", tags="", summary="", source="",
         raise ValueError(f"{len(raw)} bytes is over the {MAX_DOC} per-document limit")
 
     digest = hashlib.sha256(raw).hexdigest()
+    ensure(state, root)
     dupe = state.db.execute(
-        "SELECT id, title FROM library WHERE sha256=?", (digest,)).fetchone()
+        "SELECT id, title, kind, source FROM library WHERE sha256=?", (digest,)).fetchone()
     if dupe:
+        # THE NEW SOURCE IS KEPT (audit F33, 2026-11-10). The same bytes from
+        # a second source returned the first row and dropped where they came
+        # from: two URLs serving the same text (a consent page, a mirror) left
+        # the second with no page row, so a post citing it was refused as
+        # "not a page you have read"; a build whose output matched a document
+        # riffle had shelved itself kept that row, with no build source, so a
+        # replication naming it was refused. The file is still stored once.
+        src = str(source or "")[:300]
+        if src and (src != (dupe["source"] or "") or kind != dupe["kind"]):
+            state.db.execute(
+                "INSERT OR IGNORE INTO library_aliases (lib_id,kind,source,created_at)"
+                " VALUES (?,?,?,?)", (dupe["id"], kind, src, _now()))
+            state.db.commit()
         return dupe["id"], []
 
-    ensure(state, root)
     day = _now()[:10]
     os.makedirs(os.path.join(root, day), exist_ok=True)
     name = f"{_slug(title)}-{digest[:8]}.txt"
@@ -141,6 +163,26 @@ def put(state, title, body, kind="note", tags="", summary="", source="",
          str(source)[:300], len(raw), digest, _now(), 1 if pinned else 0))
     state.db.commit()
     return cur.lastrowid, prune(state, root, cap)
+
+
+def sources(state, kinds=None):
+    """(id, kind, source) of every document AND every other source of the same
+    bytes (library_aliases), newest first. What a check asking "was this
+    page read" or "did a build produce this" must look at (audit F33)."""
+    q = ("SELECT id, kind, source FROM library"
+         " UNION ALL SELECT lib_id AS id, kind, source FROM library_aliases")
+    try:
+        rows = state.db.execute(f"SELECT * FROM ({q}) ORDER BY id DESC").fetchall()
+    except Exception:          # no alias table yet: a store put() never ran on
+        rows = state.db.execute(
+            "SELECT id, kind, source FROM library ORDER BY id DESC").fetchall()
+    return [r for r in rows if kinds is None or r["kind"] in kinds]
+
+
+def from_build(state, doc_id):
+    """True if a build shelved this document, as itself or as another source."""
+    return any(r["id"] == int(doc_id) and str(r["source"] or "").startswith("build:")
+               for r in sources(state))
 
 
 def find(state, query, limit=10, root=ROOT):
@@ -247,6 +289,7 @@ def forget(state, doc_id, root=ROOT):
     except OSError:
         pass
     state.db.execute("DELETE FROM library WHERE id=?", (row["id"],))
+    state.db.execute("DELETE FROM library_aliases WHERE lib_id=?", (row["id"],))
     state.db.commit()
     return True
 
@@ -285,6 +328,7 @@ def prune(state, root=ROOT, cap=MAX_BYTES):
         except OSError:
             pass
         state.db.execute("DELETE FROM library WHERE id=?", (row["id"],))
+        state.db.execute("DELETE FROM library_aliases WHERE lib_id=?", (row["id"],))
         state.db.commit()
         dropped.append(row["title"])
     return dropped

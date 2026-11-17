@@ -24,6 +24,7 @@ Three protections on the agent's own hand:
 Weights are NORMALISED at selection time, so raising everything is a no-op and
 only relative priority is real.
 """
+import math
 import datetime as dt
 import json
 
@@ -191,15 +192,27 @@ def policy_problems(state, cfg, kind, p):
     return out
 
 
+def _sane(w):
+    """A weight anyone may set: a finite number from 0 to 1 (audit F28,
+    2026-11-10). Negative, NaN and infinite weights were stored from the
+    goals page; pick_drive sums them, so one such weight broke the draw for
+    every goal. The page's own controls offer 0.02 to 0.5."""
+    try:
+        w = round(float(w), 4)
+    except (TypeError, ValueError):
+        raise Rejected("weight must be a number")
+    if not math.isfinite(w) or not (0 <= w <= 1):
+        raise Rejected(f"weight must be a number from 0 to 1; got {w}")
+    return w
+
+
 def set_weight(state, cfg, name, new_weight, actor, reason):
-    """actor is 'you' or 'agent'. Bounds apply only to the agent."""
+    """actor is 'you' or 'agent'. The policy's bounds apply only to the agent;
+    _sane applies to both."""
     row = state.db.execute("SELECT * FROM drives WHERE name=?", (name,)).fetchone()
     if not row:
         raise Rejected(f"no goal named {name!r}")
-    try:
-        new = round(float(new_weight), 4)
-    except (TypeError, ValueError):
-        raise Rejected("weight must be a number")
+    new = _sane(new_weight)
     old = row["weight"]
 
     if actor == "agent":
@@ -247,7 +260,7 @@ def add(state, cfg, name, weight, description, actor, reason, forbids_list=None)
     if state.db.execute("SELECT COUNT(*) c FROM drives").fetchone()["c"] >= 16:
         raise Rejected("16 goals is enough; a desire table nobody reads is not a desire table")
     p = policy(cfg)
-    w = round(float(weight), 4)
+    w = _sane(weight)
     if actor == "agent":
         if not p["agent_may_add"]:
             raise Rejected("the agent proposes new goals; it does not add them. "

@@ -136,10 +136,24 @@ def set_restrictions(state, drive, only, never, actor="you"):
                            (drive,)).fetchone()
     if not row:
         raise ValueError(f"no drive named {drive!r}")
+    new_sel = json.dumps(only) if only else None
+    new_forb = json.dumps(never) if never else None
     state.db.execute("UPDATE drives SET selects=?, forbids=? WHERE name=?",
-                     (json.dumps(only) if only else None,
-                      json.dumps(never) if never else None, drive))
-    state.db.commit()   # the audit triggers on `drives` record the detail
+                     (new_sel, new_forb, drive))
+    # RECORDED IN THE GOALS' HISTORY (audit F30, 2026-11-10). This committed
+    # with the comment "the audit triggers on `drives` record the detail".
+    # There are no triggers in the schema, so a change to what a goal may do
+    # left only a chat line. drive_changes is where weight and lock changes
+    # already go; the goals page lists it.
+    for field, old, new in (("selects", row["selects"], new_sel),
+                            ("forbids", row["forbids"], new_forb)):
+        if (old or None) != new:
+            state.db.execute(
+                "INSERT INTO drive_changes (ts,name,field,old,new,actor,reason)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (utcnow(), drive, field, str(old or ""), str(new or ""), actor,
+                 "set from the settings page"))
+    state.db.commit()
     return only, never
 
 

@@ -98,20 +98,35 @@ def near_duplicate(state, kind, body, exclude_id=None, threshold=0.55):
     def _k(t):
         return frozenset(w for w in re.findall(r"[a-z0-9]+", (t or "").lower())
                          if len(w) > 3)
+
+    def _all(t):
+        return frozenset(re.findall(r"[a-z0-9]+", (t or "").lower()))
+    # A SHORT ONE IS CHECKED TOO (audit F34, 2026-11-10). Under 12 words of
+    # four letters or more this returned nothing at all, so a short porch line
+    # or comment could be repeated verbatim. Overlap on so few words is noise,
+    # so a short body counts only when it is the SAME words as one before,
+    # in any order. And the last 60 of a kind, not 15.
     new = _k(body)
-    if len(new) < 12:
+    short = len(new) < 12
+    new_all = _all(body)
+    if short and len(new_all) < 3:
         return None, 0.0
     best, best_ov = None, 0.0
     for r in state.db.execute(
             "SELECT id, created_at, payload FROM actions WHERE kind=?"
             " AND status IN ('sent','sending','executed','approved','queued','unknown')"
-            " ORDER BY id DESC LIMIT 15", (kind,)):
+            " ORDER BY id DESC LIMIT 60", (kind,)):
         if exclude_id is not None and r["id"] == exclude_id:
             continue
         try:
-            old = _k(json.loads(r["payload"]).get("body") or "")
+            _ob = json.loads(r["payload"]).get("body") or ""
         except Exception:
             continue
+        if short:
+            if _all(_ob) == new_all:
+                return r, 1.0
+            continue
+        old = _k(_ob)
         if not old:
             continue
         ov = len(new & old) / max(len(new), len(old))
@@ -552,15 +567,31 @@ def do_witness(state, reader, log, max_pages=8):
                 # longer hashes to what was saved. (An "incomplete" answer
                 # here means the mark MATCHED: the registry reports a mismatch
                 # ahead of incomplete.)
-                if walked == 1 and prior[name]:
-                    if verdict == "alarm":
-                        alarms.append(name)
-                        notify.alarm(state, _CFG or {}, f"{name} chain: {detail}", log)
+                #
+                # AND ON EVERY PAGE (audit F20, 2026-11-10). An alarm was acted
+                # on only on the first page with a saved mark; a broken chain
+                # on a later page, or on a first run with no mark, fell
+                # through to "did not verify this pass" at warn level.
+                # witness.py treats the same verdicts as alarms on any page.
+                # A later page carries the head the page before reached as
+                # its _expect, so a mismatch there is a break in the chain.
+                if verdict == "alarm" and name not in alarms:
+                    alarms.append(name)
+                    notify.alarm(state, _CFG or {}, f"{name} chain: {detail}", log)
+                    if walked == 1 and prior[name]:
                         # The id from THIS chain, not identity's.
                         log(f"ALARM on {name}: {detail}. The segment witnessed at "
                             f"id {prior[name]['through_id']} no longer hashes to "
                             f"what was saved.", level="alarm", drive="witness")
-                    elif verdict == "inconclusive":
+                    else:
+                        log(f"ALARM on {name}: {detail}, on page {walked} of the "
+                            f"walk "
+                            + (f"forward from the mark at id {prior[name]['through_id']}"
+                               if prior[name] else "from the start (no mark saved yet)")
+                            + ". The chain does not verify.",
+                            level="alarm", drive="witness")
+                elif walked == 1 and prior[name]:
+                    if verdict == "inconclusive":
                         log(f"{name}: INCONCLUSIVE ({detail}) — the registry could "
                             f"not say whether the saved mark still holds",
                             level="warn", drive="witness")
@@ -1348,7 +1379,12 @@ def _main():
     # `deepen` is always available, but what it may DO depends on whether
     # there is anything to deepen. Without this it drew "work on the project"
     # with no project and wrote a comment instead.
-    available.add("deepen")
+    #
+    # A GOAL YOU DELETED STAYS DELETED (audit F28, 2026-11-10). This added
+    # `deepen` whatever the goal table said, and the cooldown below put it
+    # back at 0.25 x 3 when it was gone. Only a deepen that exists is drawn.
+    if "deepen" in live_weights:
+        available.add("deepen")
     # While posting is closed there is one useful thing to do, so weight it that
     # way rather than relying on the model to notice.
     # ...unless the project is already ready, in which case deepening it is
@@ -1358,10 +1394,10 @@ def _main():
     # saying the project was complete and there was nothing to deepen, which
     # was an accurate reading of two instructions that disagreed.
     _ready_now, _ = project.ready(state, cfg)
-    if cooling and "deepen" in available and not _ready_now:
+    if cooling and "deepen" in available and "deepen" in live_weights and not _ready_now:
         live_weights = dict(live_weights)
         focus = float((cfg.get("projects") or {}).get("cooldown_focus", 3.0))
-        live_weights["deepen"] = live_weights.get("deepen", 0.25) * focus
+        live_weights["deepen"] = live_weights["deepen"] * focus
     drive = drives.pick_drive(cfg, available, weights_override=live_weights) or "understand"
 
     # --- the failsafe: when nothing has happened for long enough, ask --------
@@ -1391,11 +1427,21 @@ def _main():
         # is the very state this failsafe exists to notice; counting it as
         # movement meant a queue full of unapproved work read as a healthy
         # agent. 'unknown' counts because it may well have landed.
+        #
+        # WHEN IT WAS SENT, NOT WHEN IT WAS PROPOSED (audit F21, 2026-11-10).
+        # A post proposed Monday and approved Wednesday counted as Monday's.
+        # And with nothing ever sent, MAX was NULL and the failsafe could
+        # never fire: the most stuck case of all. Then the time counts from
+        # riffle's first cycle.
         _moved = state.db.execute(
-            "SELECT MAX(created_at) m FROM actions"
+            "SELECT MAX(COALESCE(executed_at, created_at)) m FROM actions"
             " WHERE status IN ('sent','executed','unknown')").fetchone()
+        _never = not (_moved and _moved["m"])
+        if _never:
+            _moved = state.db.execute(
+                "SELECT MIN(started_at) m FROM cycles").fetchone()
     except Exception:
-        _recent, _moved = [], None
+        _recent, _moved, _never = [], None, False
     if len(_recent) >= _stuck_n and _moved and _moved["m"]:
         import datetime as _dt3
         _since = (_dt3.datetime.now(_dt3.timezone.utc)
@@ -1437,8 +1483,10 @@ def _main():
             if not _already:
                 _outs = ", ".join(r["outcome"] or "?" for r in _recent[:8])
                 _pr2 = project.active(state)
-                _q = (f"I have not sent anything to the square for "
-                      f"{_since:.0f} hours. My last {len(_recent)} cycles "
+                _q = ((f"I have never sent anything to the square, in "
+                       f"{_since:.0f} hours of running. " if _never else
+                       f"I have not sent anything to the square for "
+                       f"{_since:.0f} hours. ") + f"My last {len(_recent)} cycles "
                       f"ended: {_outs}. "
                       + (f"My open project is '{_pr2['title']}' and it is "
                          f"{project.ready(state, cfg)[1]}. " if _pr2 else
@@ -2404,9 +2452,13 @@ def _main():
         row = {"id": p.get("id"), "title": p.get("title"),
                "author": p.get("author"), "votes": p.get("votes"),
                "comments": p.get("comments"), "body": body[:_per]}
-        if len(body) > _per:
+        # THE REGISTRY'S NAMES ONLY (audit F32, 2026-11-10). This added
+        # `body_full_chars`, the very field riffle once cited to a citizen as
+        # the API's (see THE FIELDS THE API ACTUALLY RETURNS above), in a row
+        # shown as the registry's JSON. The registry calls it body_length.
+        if len(body) > _per or p.get("body_truncated"):
             row["body_truncated"] = True
-            row["body_full_chars"] = len(body)
+            row["body_length"] = p.get("body_length") or len(body)
         if p.get("id") in _voted["post"]:
             # Straight after the id (U7): a front page cut to its floor
             # loses the end of a row first.
@@ -3251,16 +3303,19 @@ def _main():
         _named = [int(n) for e in _ev for n in re.findall(r"#\s*(\d+)", e)]
         _built = None
         for _n in _named:
-            _r = state.db.execute(
-                "SELECT id, title, sha256 FROM library WHERE id=? AND source LIKE 'build:%'",
-                (_n,)).fetchone()
-            if _r:
-                _built = _r
-                break
+            if library.from_build(state, _n):         # or a build alias (F33)
+                _built = state.db.execute(
+                    "SELECT id, title, sha256 FROM library WHERE id=?", (_n,)).fetchone()
+                if _built:
+                    break
         if not _built:
-            _recent = state.db.execute(
-                "SELECT id, title FROM library WHERE source LIKE 'build:%'"
-                " ORDER BY id DESC LIMIT 4").fetchall()
+            _bids = []
+            for _r in library.sources(state):
+                if str(_r["source"] or "").startswith("build:") and _r["id"] not in _bids:
+                    _bids.append(_r["id"])
+            _recent = [state.db.execute("SELECT id, title FROM library WHERE id=?",
+                                        (_i,)).fetchone() for _i in _bids[:4]]
+            _recent = [r for r in _recent if r]
             why = ("a replication says you ran their method and got their "
                    "result, and "
                    + (f"none of {', '.join('#' + str(n) for n in _named[:4])} is "
@@ -3690,7 +3745,12 @@ def _main():
             state.end_cycle(cid, "rejected-before", str(_rr["id"]))
             return 0
 
-    if kind in ("comment", "porch") and payload.get("body"):
+    # (A second reply to the same comment is left to the one-reply check
+    # below, whose refusal names the comment: since short bodies are checked
+    # too (F34), this one would otherwise catch it first, less usefully.)
+    if kind in ("comment", "porch") and payload.get("body") and not (
+            kind == "comment" and payload.get("parent_id") is not None
+            and replied_to(state, payload["parent_id"])):
         # The same function the dashboard's approval path calls, so the two
         # cannot drift apart. It was inline here and nowhere else, which is
         # why approving a queued comment skipped it entirely.
@@ -4790,10 +4850,14 @@ def _evidence(state, cfg, parts):
         pass
     try:
         _root = (cfg.get("library") or {}).get("root", library.ROOT)
-        for r in state.db.execute(
-                "SELECT id, kind, source FROM library WHERE kind IN ('page','data')"
-                " ORDER BY id DESC LIMIT 60"):
+        # Aliases too (F33): the same text reached from a fetch counts as
+        # fetched, even if riffle had shelved those bytes first. Once each.
+        _seen_ids = set()
+        for r in library.sources(state, ("page", "data"))[:60]:
+            if r["id"] in _seen_ids:
+                continue
             if _fetched_doc(r):
+                _seen_ids.add(r["id"])
                 _row, _text = library.read(state, int(r["id"]), _root, count=False)
                 add((_text or "")[:20000])
     except Exception:

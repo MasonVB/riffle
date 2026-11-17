@@ -25,6 +25,22 @@ class HttpError(Exception):
         self.status, self.body = status, body
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Returns no new request, so a 3xx comes back as an HTTPError."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# A REQUEST CARRYING THE SECRET IS NEVER REDIRECTED (audit F24, 2026-11-10).
+# urllib follows redirects and keeps the Authorization header across hosts:
+# a 302 from a stand-in registry to another host name delivered
+# `Bearer <secret>` there. The registry has no reason to redirect a write, so
+# Writer's requests go through an opener that does not follow, and a 3xx is
+# an error naming where it pointed. Reader's GETs carry no secret and still
+# follow.
+_NO_REDIRECT = urllib.request.build_opener(_NoRedirect)
+
+
 def _req(url, method="GET", body=None, token=None, timeout=45):
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(url, data=data, method=method,
@@ -33,11 +49,17 @@ def _req(url, method="GET", body=None, token=None, timeout=45):
         r.add_header("Content-Type", "application/json")
     if token:
         r.add_header("Authorization", "Bearer " + token)
+    _open = _NO_REDIRECT.open if token else urllib.request.urlopen
     try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
+        with _open(r, timeout=timeout) as resp:
             raw = resp.read().decode()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
+        if token and 300 <= e.code < 400:
+            _to = e.headers.get("Location") if e.headers else None
+            raise HttpError(e.code, f"the registry answered with a redirect to "
+                                    f"{_to!r}; not followed, since the request "
+                                    f"carries the secret")
         # Reading the error body can fail too (a timeout or reset mid-read,
         # bytes that are not UTF-8). Raised inside this handler, that escaped
         # as a plain OSError or ValueError past every `except HttpError`
@@ -94,7 +116,12 @@ def _req_conditional(url, etag=None, timeout=45):
     except urllib.error.HTTPError as e:
         if e.code == 304:
             return 304, None, (e.headers.get("ETag") if e.headers else etag)
-        raw = e.read().decode()
+        # Guarded as in _req (L7): only _req had it (audit F24).
+        try:
+            raw = e.read().decode()
+        except (OSError, ValueError) as e2:
+            raise HttpError(e.code, f"(the error body could not be read: "
+                                    f"{type(e2).__name__})")
         try:
             raise HttpError(e.code, json.loads(raw))
         except json.JSONDecodeError:

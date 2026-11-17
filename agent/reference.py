@@ -74,10 +74,11 @@ def _fragments(quote):
 
 def _pages(state):
     """{normalised URL: library id} of every page riffle read."""
+    from agent import library
     pages = {}
-    for r in state.db.execute(
-            "SELECT id, source FROM library WHERE kind='page' AND source IS NOT NULL"):
-        pages.setdefault(_norm_url(r["source"]), r["id"])
+    for r in library.sources(state, ("page",)):     # aliases too (F33)
+        if r["source"]:
+            pages.setdefault(_norm_url(r["source"]), r["id"])
     return pages
 
 
@@ -185,8 +186,9 @@ def unread_links(state, links, read):
     is not a post): no page on that host was ever read with read_page, and
     the address appears nowhere in `read` (what riffle read this cycle and
     the pages it fetched)."""
-    hosts = {_host(r["source"]) for r in state.db.execute(
-        "SELECT source FROM library WHERE kind='page' AND source IS NOT NULL")}
+    from agent import library
+    hosts = {_host(r["source"]) for r in library.sources(state, ("page",))
+             if r["source"]}
     hay = re.sub(r"https?://(www\.)?", "", (read or "").lower())
     bad = []
     for u in links:
