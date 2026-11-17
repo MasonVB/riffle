@@ -620,19 +620,24 @@ try:
              2 * (60 + 45)),
         ]
         worst = sum(w for _, w in waits)
-        unit = open("systemd/riffle-cycle.service").read()
-        m = re.search(r"^TimeoutStartSec=([0-9]+)", unit, re.M)
-        if not m:
-            bad.append("no TimeoutStartSec in systemd/riffle-cycle.service")
-        else:
+        # BOTH UNITS (audit F44, 2026-11-14). This read riffle-cycle.service
+        # only. A forced run (the dashboard's button, a request) goes through
+        # riffle-run-cycle.service, which is the one that waits on the cycle
+        # lock, and nothing checked its limit.
+        for path in ("systemd/riffle-cycle.service", "systemd/riffle-run-cycle.service"):
+            unit = open(path).read()
+            m = re.search(r"^TimeoutStartSec=([0-9]+)", unit, re.M)
+            if not m:
+                bad.append(f"no TimeoutStartSec in {path}")
+                continue
             limit = int(m.group(1))
-            print(f"  systemd/riffle-cycle.service allows {limit}s; the worst "
+            print(f"  {path} allows {limit}s; the worst "
                   f"path one cycle can take is {worst}s")
             if worst > limit:
                 for name, w in waits:
                     print(f"    {w:6}s  {name}")
-                bad.append(f"systemd kills the cycle at {limit}s and its waits "
-                           f"can reach {worst}s")
+                bad.append(f"systemd kills the cycle at {limit}s ({path}) and "
+                           f"its waits can reach {worst}s")
 except BaseException as e:
     bad.append(f"the timeout check could not run: {type(e).__name__}: {e}")
 for b in bad:
@@ -641,6 +646,60 @@ sys.exit(1 if bad else 0)
 PYWAIT
 then
   echo "!! the cycle can wait longer than systemd allows; rolling back"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
+# --- gate 14: the two cycle units run a cycle under the same sandbox ------
+#
+# systemd/riffle-run-cycle.service, the unit a forced run uses, says its
+# privilege directives are "byte-identical to the timer unit on purpose" and
+# "If this block ever drifts from riffle-cycle.service, that bug comes back":
+# cycles started from the dashboard once ran under the dash's sandbox, and
+# build, sign and read_page failed with no reason. Nothing checked it (audit
+# F44, 2026-11-14). Every directive line must match, apart from the four
+# differences the unit's own header names (its description, --force, the
+# request-flag cleanup, the start limit) and the timer unit's [Install].
+if ! python3 - <<'PYUNIT'
+import sys
+
+
+def directives(path):
+    out = []
+    for line in open(path):
+        t = line.strip()
+        if t and not t.startswith(("#", ";")):
+            out.append(t)
+    return out
+
+
+ALLOWED = ("Description=", "ExecStartPre=", "StartLimitIntervalSec=", "WantedBy=")
+bad = []
+try:
+    a = directives("systemd/riffle-cycle.service")
+    b = directives("systemd/riffle-run-cycle.service")
+    a = [x for x in a if not x.startswith(ALLOWED) and x != "[Install]"]
+    b = [x for x in b if not x.startswith(ALLOWED) and x != "[Install]"]
+    b = [x[:-len(" --force")] if x.startswith("ExecStart=") and x.endswith(" --force")
+         else x for x in b]
+    for x in a:
+        if x not in b:
+            bad.append(f"riffle-cycle.service has {x!r}; riffle-run-cycle.service does not")
+    for x in b:
+        if x not in a:
+            bad.append(f"riffle-run-cycle.service has {x!r}; riffle-cycle.service does not")
+    if not bad and a != b:
+        bad.append("the two units have the same directives in a different order")
+    if not any(x.startswith("ExecStart=") for x in b):
+        bad.append("riffle-run-cycle.service has no ExecStart")
+except BaseException as e:
+    bad.append(f"the unit comparison could not run: {type(e).__name__}: {e}")
+for x in bad:
+    print(f"  UNITS: {x}")
+sys.exit(1 if bad else 0)
+PYUNIT
+then
+  echo "!! the two cycle units have drifted apart; rolling back"
   git reset --hard "$BEFORE"
   exit 1
 fi
