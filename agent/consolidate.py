@@ -206,6 +206,14 @@ def run(state, cfg, log, say=None):
                      " WHERE COALESCE(pinned,0)=1 AND COALESCE(tier,'short')='short'"
                      " AND COALESCE(expired,0)=0")
     state.db.commit()
+    # The search index, rebuilt once and whenever it drifts (audit F39).
+    try:
+        _ix = memory.repair_index(state)
+        if _ix:
+            log(f"memory pass: search index rebuilt: it had {_ix[0]} rows "
+                f"for {_ix[1]} memories")
+    except Exception as e:
+        log(f"memory pass: the search index could not be rebuilt: {e}", level="warn")
 
     cands = candidates(state, cfg)
     # A QUIET DAY skips the memory call again (continuity, which needed it to

@@ -264,6 +264,34 @@ def rebuild_index(state):
     return n
 
 
+# THE INDEX REPAIRED, NOT JUST REPAIRABLE (audit F39, 2026-11-14). The two
+# old faults (forget passing the wrong text, the daily purge not touching the
+# index) left words behind; rebuild_index was written to clean them up and
+# nothing called it. The box had 1,007 index rows for 999 memories, and words
+# left by a delete with the wrong text do not show in that count at all, since
+# FTS5 drops the row's size record whatever text it is given. So: rebuilt once
+# (the note below), and again whenever the two counts differ.
+_INDEX_NOTE = "memory_index_rebuilt"
+
+
+def repair_index(state):
+    """Rebuild the search index if it was never rebuilt or no longer has one
+    row per memory. Returns (index rows before, rows after), or None if
+    nothing was done. Called by the daily memory pass."""
+    if not _ensure_fts(state):
+        return None
+    try:
+        n_idx = state.db.execute("SELECT COUNT(*) FROM memories_fts_docsize").fetchone()[0]
+    except Exception:
+        n_idx = -1
+    n_mem = state.db.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    if state.note(_INDEX_NOTE) and n_idx == n_mem:
+        return None
+    n = rebuild_index(state)
+    state.note(_INDEX_NOTE, utcnow())
+    return n_idx, n
+
+
 def _terms(q):
     words = [w for w in re.findall(r"[A-Za-z0-9_#]{3,}", (q or "").lower())
              if w not in STOP]

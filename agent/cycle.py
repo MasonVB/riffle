@@ -5473,13 +5473,13 @@ def apply_read_page(state, cfg, cid, p, drive, log):
     text = out.get("text") or ""
     lcfg = cfg.get("library") or {}
     _tag, _warn = source_label(out["url"])
-    title = (f"{urllib.parse.urlparse(out['url']).netloc}: "
+    title = (f"{urllib.parse.urlparse(out['url']).hostname}: "
              f"{url.rsplit('/', 1)[-1][:80] or 'page'}"
              + (f" [{_tag}]" if _tag else ""))
     try:
         did, _ = library.put(
             state, title, text, kind="page",
-            tags=urllib.parse.urlparse(out["url"]).netloc
+            tags=(urllib.parse.urlparse(out["url"]).hostname or "")
                  + (f" {_tag.replace(' ', '-')}" if _tag else ""),
             summary=(p.get("why") or "")[:600], source=out["url"],
             root=lcfg.get("root", library.ROOT),
@@ -5521,14 +5521,24 @@ PREPRINT_HOSTS = {
 
 
 def source_label(url):
-    """("short tag", "sentence for riffle"), or ("", "") for a reviewed host."""
-    host = urllib.parse.urlparse(url or "").netloc.lower()
-    if host in OPEN_EDIT_HOSTS:
+    """("short tag", "sentence for riffle"), or ("", "") for a reviewed host.
+
+    THE HOST, NOT THE NETLOC (audit F41, 2026-11-14). This looked up netloc,
+    which carries a port or a user name when the URL does, while the reader
+    checks hostname: https://en.wikipedia.org:443/wiki/Water was read, and
+    shelved with no warning. The reader now refuses such URLs as well; this
+    holds either way. www. is matched with or without."""
+    try:
+        host = (urllib.parse.urlparse(url or "").hostname or "").lower()
+    except ValueError:
+        host = ""
+    hosts = {host, host[4:] if host.startswith("www.") else "www." + host}
+    if hosts & OPEN_EDIT_HOSTS:
         return ("written by anyone",
                 "This page is written by anyone (an open wiki or open upload): "
                 "treat it as someone's claim and check a figure from it against "
                 "a reviewed source.")
-    if host in PREPRINT_HOSTS:
+    if hosts & PREPRINT_HOSTS:
         return ("unreviewed preprint",
                 "This is an unreviewed preprint: treat it as its authors' claim "
                 "and check a figure from it against a reviewed source.")
@@ -5583,7 +5593,10 @@ def apply_search_web(state, cfg, cid, p, drive, log):
     results, note = web.search(cfg, q, n=10)
 
     def _host(u):
-        return urllib.parse.urlparse(u or "").netloc.lower()
+        try:
+            return (urllib.parse.urlparse(u or "").hostname or "").lower()
+        except ValueError:
+            return ""
     keep = [r for r in (results or [])
             if _host(r.get("url")) == site or _host(r.get("url")).endswith("." + site)]
     if not results and note:
