@@ -315,3 +315,31 @@ The suite holds the gate to the audit's three drifts. It does not check that a c
 - New: `send_checks/test_every_link_is_a_page_riffle_read.py` and `send_checks/test_attestations_go_to_the_right_subject_and_a_replication_names_its_build.py`. Each case shows the bug on the current version.
 - Three gate 8 cases were added to `gates fail when they must`.
 - 254 tests: 241 pass, 13 skip, 0 differ.
+
+## 14. Addendum, batch 7 (2026-11-16): F39, F40, F41, F44
+
+**F39, fixed.** The daily memory pass now calls `memory.repair_index`. It rebuilds the search index the first time it runs (behind a note key) and again whenever the index stops having exactly one entry per memory. The count alone could not be relied on: a delete given the wrong text still removes the entry's size record, so the words it leaves behind never show in a count. Hence the one unconditional rebuild. The pass logs "search index rebuilt: it had N rows for M memories".
+
+**F40, fixed.**
+- `riffle-build` now measures the build's own bytes: its work directory, plus its private `/tmp` and `/var/tmp`, counted as allocated blocks. `PrivateTmp=yes` puts those under `systemd-private-*-<unit>`, and `/var/tmp` is on the main disk. The audit's fix (walk the work directory) would have missed them.
+- A disk below the 1 GiB floor still stops a build, but the message now says the disk is full and how much the build itself had written, and tells riffle to tell you.
+- The once-a-second check and the last look after the build are kept.
+
+**F41, fixed.**
+- `source_label` goes by hostname, matched with or without `www.`.
+- The reader refuses a URL with a user name, or with a port other than 443. Port 443 itself is allowed and labelled.
+- The library's page titles and tags, and search's site filter, use hostname too.
+
+**F44, fixed.**
+- Gate 6 reads `TimeoutStartSec` from both cycle units.
+- New gate 14 (PYUNIT) requires every directive line of `riffle-run-cycle.service` to match `riffle-cycle.service`, apart from the four differences its header names (description, `--force`, the request-flag cleanup, the start limit) and the timer unit's `[Install]`.
+- While comparing the units I found `riffle-run-cycle.service`'s comments saying "four helpers" while listing three. They now say three. No directive changed.
+
+**Not in this batch.** F45 (the allowlist document and the reader disagree) and F17 (open-edit pages on allowed hosts) need decisions about which sites riffle may read. That is the operator's call, so I have left both.
+
+**Deploy note.** update.sh does not install `bin/riffle-build` or `bin/riffle-reader`, on purpose. It prints the `sudo install` line for each when they are behind. Until those two are installed, F40 and the reader half of F41 are fixed in the repo only.
+
+**Tests.**
+- New: `build/test_the_disk_budget_counts_the_builds_own_bytes.py`, `memory/test_the_memory_search_index_is_rebuilt_once_and_when_it_drifts.py` and `web/test_a_port_or_user_name_does_not_lose_the_written_by_anyone_label.py`. Each shows the fault on the previous version.
+- `gate PYUNIT` is new, and `gates fail when they must` has five new cases.
+- 262 tests: 249 pass, 13 skip, 0 differ.
