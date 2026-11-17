@@ -731,7 +731,8 @@ then
   exit 1
 fi
 
-# --- gate 8: every protected prompt header is a header something emits ----
+# --- gate 8: every prompt header table names blocks something emits, ------
+# --- and every one of riffle's own blocks is protected, tail or budgeted ----
 #
 # _NEVER_TRIM protects prompt blocks from the trimmer by matching the first
 # 400 characters of each block against a list of header strings. P9 reworded
@@ -795,15 +796,66 @@ try:
             bad.append(f"{k!r} is in {n} and no string literal starts with "
                        f"it. Either the header was renamed and the list was "
                        f"not, or the entry is dead.")
+
+    # THE FITTER'S TABLES AGREE WITH EACH OTHER (audit F12, 2026-11-10).
+    # ANSWERS FROM YOUR OPERATOR had no budget, so it was ranked last and cut
+    # to its header first; MEMORIES THAT CARRY sat in the tables with nothing
+    # emitting it; THINGS YOU NOTED FROM, a board block, was in riffle's own
+    # order, where it could never match. Each was a table drifting from the
+    # blocks, and each made riffle see less than the prompt said it would.
+    from agent.cycle import (_TAIL_HEADS, _OWN_ORDER, _BOARD_ORDER, _BUDGETS,
+                             _KEEP_WHOLE, _CUT_MIDDLE)
+
+    def covers(h, ks):
+        return any(h.startswith(k) or k.startswith(h) for k in ks)
+    heads = tuple(h for h, _c, _f in _BUDGETS)
+    for h in _OWN_HEADS:
+        if not (covers(h, _NEVER_TRIM) or covers(h, _TAIL_HEADS) or covers(h, heads)):
+            bad.append(f"{h!r} is riffle's own block and is in none of "
+                       f"_NEVER_TRIM, _TAIL_HEADS or _BUDGETS: it falls to "
+                       f"_UNLISTED, ranked last, and is cut first.")
+    for k in _OWN_ORDER:
+        if not covers(k, _OWN_HEADS):
+            bad.append(f"{k!r} is in _OWN_ORDER but is not riffle's own block "
+                       f"(_OWN_HEADS), so it is sorted with the board and this "
+                       f"entry never matches.")
+    for k in _BOARD_ORDER:
+        if covers(k, _OWN_HEADS):
+            bad.append(f"{k!r} is in _BOARD_ORDER but is riffle's own block, "
+                       f"so this entry never matches.")
+    for n, ks in (("_KEEP_WHOLE", _KEEP_WHOLE), ("_CUT_MIDDLE", _CUT_MIDDLE)):
+        for k in ks:
+            if not covers(k, heads):
+                bad.append(f"{k!r} is in {n} and has no _BUDGETS entry, so it "
+                           f"is never cut at all and the entry does nothing.")
+    # Every entry of every table must be a header something emits, as the two
+    # lists above are held to.
+    tables = {"_TAIL_HEADS": _TAIL_HEADS, "_OWN_ORDER": _OWN_ORDER,
+              "_BOARD_ORDER": _BOARD_ORDER, "_BUDGETS": heads,
+              "_KEEP_WHOLE": _KEEP_WHOLE, "_CUT_MIDDLE": _CUT_MIDDLE}
+    lits = []
+    for path in glob.glob("agent/*.py"):
+        try:
+            tree = ctree if path == "agent/cycle.py" else ast.parse(open(path).read())
+        except (OSError, SyntaxError):
+            continue
+        lits += [nd.value.lstrip() for nd in ast.walk(tree)
+                 if isinstance(nd, ast.Constant) and isinstance(nd.value, str)
+                 and id(nd) not in own_nodes]
+    for n, ks in tables.items():
+        for k in ks:
+            if not any(l.startswith(k) for l in lits):
+                bad.append(f"{k!r} is in {n} and no string literal starts with "
+                           f"it: a renamed header or a dead entry.")
 except BaseException as e:
     bad.append(f"the protected-header check could not run: "
                f"{type(e).__name__}: {e}")
 for b in bad:
-    print(f"  ORPHAN PROTECTED HEADER {b}")
+    print(f"  PROMPT TABLE {b}")
 sys.exit(1 if bad else 0)
 PYTRIM
 then
-  echo "!! a protected prompt header matches nothing; rolling back"
+  echo "!! a prompt header table names a block wrongly; rolling back"
   git reset --hard "$BEFORE"
   exit 1
 fi

@@ -743,9 +743,7 @@
                 "replicated-total",
                 "replicated-population",
                 "docket-shipped",
-                "correction",
-                "dispute",
-                "retract"
+                "correction"
               ]
             },
             "evidence": {
