@@ -14,5 +14,15 @@ ExecStartPre=/bin/rm -f /var/lib/riffle/restart-composer.request
 # and holds both until the model answers its health check, so nothing starts
 # against a half-loaded server. A timer wake meanwhile is skipped; a forced
 # run waits.
+#
+# THE LOCK FILES ARE RIFFLE'S (audit F27, 2026-11-10). This unit runs as root,
+# and flock creates a lock file that does not exist yet: on a fresh install or
+# a restored data directory that made cycle.lock or composer.lock root's, and
+# the cycle, running as riffle, could not open them. So they are touched as
+# riffle first. touch on an existing file changes only its time, never which
+# file it is, so a lock already held stays held (unlike install or cp, which
+# replace the file). "-": if /var/lib/riffle does not exist yet, carry on;
+# flock then fails on its own and says why.
+ExecStartPre=-/usr/sbin/runuser -u riffle -- /usr/bin/touch /var/lib/riffle/cycle.lock /var/lib/riffle/composer.lock
 ExecStart=/usr/bin/flock /var/lib/riffle/cycle.lock /usr/bin/flock /var/lib/riffle/composer.lock /bin/sh -c 'systemctl restart llama-composer.service && until /usr/bin/curl -sf http://127.0.0.1:8080/health >/dev/null; do sleep 5; done'
 TimeoutStartSec=900
