@@ -5,14 +5,28 @@
 set -euo pipefail
 cd /opt/riffle
 
-BEFORE=$(git rev-parse HEAD)
-echo "at $BEFORE"
+# THE MERGED COPY RUNS THE GATES (audit F18, 2026-11-10). bash reads a
+# script as it goes, and git merge replaces this file with a new one, so
+# everything after the merge used to be the PREVIOUS version's code: its
+# gates, checked against the new tree. A commit changing a mirrored line
+# (gates 4 and 6 copy sixteen lines of code) and its gate together was
+# checked by the old gate, failed, and was rolled back every time, since the
+# new gate could only arrive with the commit that kept being rolled back.
+# Now, once merged, this script exec's the merged update.sh with
+# RIFFLE_AFTER_MERGE set to where it started. exec keeps the process id, so
+# the lock helper below, which watches that id, still holds the cycle lock.
+if [ -z "${RIFFLE_AFTER_MERGE:-}" ]; then
+  BEFORE=$(git rev-parse HEAD)
+  echo "at $BEFORE"
 
-git fetch --quiet origin
-UPSTREAM="origin/$(git rev-parse --abbrev-ref HEAD)"
-if [ "$(git rev-parse "$UPSTREAM")" = "$BEFORE" ]; then
-  echo "already up to date"
-  exit 0
+  git fetch --quiet origin
+  UPSTREAM="origin/$(git rev-parse --abbrev-ref HEAD)"
+  if [ "$(git rev-parse "$UPSTREAM")" = "$BEFORE" ]; then
+    echo "already up to date"
+    exit 0
+  fi
+else
+  BEFORE=$RIFFLE_AFTER_MERGE
 fi
 
 # NOT UNDER A RUNNING CYCLE (L9, audit 2026-10-27). The merge rewrote files
@@ -34,7 +48,9 @@ fi
 # runs our code as root, and never creates the lock file: one owned by root
 # would stop the cycle, which runs as riffle, from opening it.
 LOCK="${RIFFLE_CYCLE_LOCK:-/var/lib/riffle/cycle.lock}"
-if sudo test -e "$LOCK"; then
+if [ -n "${RIFFLE_AFTER_MERGE:-}" ]; then
+  :   # held since before the merge, by the helper watching this same pid
+elif sudo test -e "$LOCK"; then
   echo "  taking the cycle lock: no cycle starts until this deploy finishes"
   coproc LOCKER { sudo flock -w "${RIFFLE_LOCK_WAIT:-900}" "$LOCK" \
       sh -c 'echo held; while kill -0 "$1" 2>/dev/null; do sleep 1; done' _ "$$"; }
@@ -49,13 +65,16 @@ else
   echo "!! NO CYCLE LOCK at $LOCK: no cycle has run on this box yet, or the path is"
   echo "!! wrong. Deploying WITHOUT the lock."
 fi
-git merge --ff-only "$UPSTREAM"
-AFTER=$(git rev-parse HEAD)
-
-if [ "$BEFORE" = "$AFTER" ]; then
-  echo "already up to date"
-  exit 0
+if [ -z "${RIFFLE_AFTER_MERGE:-}" ]; then
+  git merge --ff-only "$UPSTREAM"
+  if [ "$BEFORE" = "$(git rev-parse HEAD)" ]; then
+    echo "already up to date"
+    exit 0
+  fi
+  echo "  merged; running the merged update.sh, so its own gates check its own code"
+  exec env RIFFLE_AFTER_MERGE="$BEFORE" bash ./update.sh
 fi
+AFTER=$(git rev-parse HEAD)
 echo "-> $AFTER"
 git --no-pager log --oneline "$BEFORE..$AFTER"
 
