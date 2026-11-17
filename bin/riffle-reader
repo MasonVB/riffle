@@ -230,6 +230,19 @@ def host_ok(url):
         return None, "that is not a URL"
     if p.scheme != "https":
         return None, f"scheme {p.scheme!r} refused; https only"
+    # NO USER NAME, NO OTHER PORT (audit F41, 2026-11-14). The check below is
+    # on hostname, so `https://en.wikipedia.org:443/...` or `https://x@host/`
+    # passed it with a netloc the cycle's labels did not recognise. riffle has
+    # no reason to write either; a stranger steering it to a page without the
+    # "written by anyone" warning does.
+    try:
+        port = p.port
+    except ValueError:
+        return None, "that URL's port is not a number"
+    if p.username is not None or p.password is not None:
+        return None, "a URL with a user name in it is refused"
+    if port not in (None, 443):
+        return None, f"port {port} refused; https on the standard port only"
     host = (p.hostname or "").lower()
     if not host:
         return None, "no host in that URL"

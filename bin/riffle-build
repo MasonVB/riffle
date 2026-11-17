@@ -77,8 +77,16 @@ TIMEOUT = 120
 OUTPUT_BUDGET = 16 * 1024 * 1024
 # DISK (M10, audit 2026-10-27). The work directory is on the main disk with
 # no size limit, so 120 seconds of writes could fill it. A build is stopped
-# if free space falls more than DISK_BUDGET below where it started, or below
+# if what IT wrote passes DISK_BUDGET, or if the disk's free space falls below
 # DISK_FLOOR; LimitFSIZE caps any single file as a second line.
+#
+# ITS OWN BYTES, NOT THE DISK'S (audit F40, 2026-11-14). The budget was read
+# off the whole filesystem's free space, so anything else on the disk moved
+# it: a flood passed while something else freed space, and a build that wrote
+# nothing was stopped, its directory deleted and riffle told "the build wrote
+# too much to disk", while something else wrote. Now the build's directories
+# are measured (_build_bytes). A disk below the floor still stops a build, and
+# says the disk is full, not that the build filled it.
 DISK_BUDGET = 2 * 1024 ** 3
 DISK_FLOOR = 1024 ** 3
 KEEP_FAILED = 20          # failed builds' directories kept, newest first
@@ -286,14 +294,22 @@ def main():
                        timeout=30)
 
     disk_reason = []
-    start_free = shutil.disk_usage(BUILD_ROOT).free
+    _mib = 1024 ** 2
 
     def disk_check():
-        free = shutil.disk_usage(BUILD_ROOT).free
-        if free < DISK_FLOOR or start_free - free > DISK_BUDGET:
+        used = _build_bytes(work, unit)
+        if used > DISK_BUDGET:
             disk_reason.append(
-                f"[stopped: the build wrote too much to disk; free space fell "
-                f"from {start_free // 1024 ** 2} MiB to {free // 1024 ** 2} MiB]")
+                f"[stopped: the build wrote too much to disk: {used // _mib} MiB, "
+                f"over its budget of {DISK_BUDGET // _mib} MiB]")
+            return True
+        free = shutil.disk_usage(BUILD_ROOT).free
+        if free < DISK_FLOOR:
+            disk_reason.append(
+                f"[stopped: the disk has only {free // _mib} MiB free, under the "
+                f"{DISK_FLOOR // _mib} MiB floor. The build itself had written "
+                f"{used // _mib} MiB, so something else filled the disk: tell "
+                f"your operator]")
             return True
         return False
 
@@ -308,9 +324,8 @@ def main():
     # flood through one run in ten. Measured once more now; over the budget,
     # it is a disk failure like any other, and its directory goes.
     if not disk_reason and disk_check():
-        disk_reason[0] = disk_reason[0].replace(
-            "[stopped: the build wrote", "[the build wrote").replace(
-            " MiB]", " MiB; it had already finished]")
+        disk_reason[0] = (disk_reason[0].replace("[stopped: ", "[", 1)[:-1]
+                          + "; it had already finished]")
         over = True
     out = out_b.decode("utf-8", "replace")
     err = err_b.decode("utf-8", "replace")
@@ -361,6 +376,37 @@ def main():
         except OSError:
             pass
     sys.exit(0 if result["ok"] else 1)
+
+
+def _build_bytes(work, unit):
+    """Bytes on disk under the build's directory and its private /tmp and
+    /var/tmp (PrivateTmp=yes puts those under systemd-private-*-<unit>
+    directories: /var/tmp is on the main disk, and outside `work`). Allocated
+    blocks, not file sizes, so a sparse file counts what it really holds."""
+    roots = [work]
+    for base in ("/var/tmp", "/tmp"):
+        try:
+            roots += [e.path for e in os.scandir(base)
+                      if e.name.startswith("systemd-private-")
+                      and f"-{unit}.service-" in e.name]
+        except OSError:
+            pass
+    total, stack = 0, list(roots)
+    while stack:
+        p = stack.pop()
+        try:
+            with os.scandir(p) as it:
+                for e in it:
+                    try:
+                        st = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if e.is_dir(follow_symlinks=False):
+                        stack.append(e.path)
+                    total += st.st_blocks * 512
+        except OSError:
+            continue
+    return total
 
 
 def run_bounded(cmd, cwd, timeout, keep_bytes, budget, stop, check=None):
