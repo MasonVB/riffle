@@ -390,3 +390,33 @@ The suite holds the gate to the audit's three drifts. It does not check that a c
 **Tests.**
 - New: `deploy/test_the_merged_update_sh_runs_its_own_gates.sh`, `send_checks/test_the_secret_never_follows_a_redirect.py`, `deploy/test_the_composer_restart_never_creates_a_lock_file_as_root.py`, `witness/test_a_broken_chain_alarms_on_any_page_and_on_a_first_run.py` and `cycle/test_small_faults_from_the_first_audit_stay_fixed.py`. Each shows its fault on the previous version.
 - 275 tests: 262 pass, 13 skip, 0 differ.
+
+## 16. Addendum, batch 9 (2026-11-17): F19, F26, F35, drift notes
+
+**F19, fixed.**
+- After the prompt is fitted in characters, the cycle asks the running llama-server's `/tokenize` for its real token count (`cortex.count_tokens`, 60 s timeout).
+- If the count plus the reply's `max_tokens` and a margin of 96 would pass the window, the room is cut by the overflow, converted at this prompt's own characters per token, plus 15% and 400 characters. The blocks are then fitted again from what they were. This repeats at most three times.
+- If llama-server still refuses the prompt as longer than its window (`cortex.overflowed`), the cycle fits again in three quarters of the room and asks once more. It used to end `composer-failed`, and the next cycle built the same prompt.
+- A cycle that fits, which is every ordinary one, sends exactly what it sent before.
+- Gate 6 counts the three token counts, so the worst path is now 21,200 s of the 21,600 allowed. The retry adds nothing: llama-server refuses an oversized prompt before doing any work.
+
+**F26, fixed in part.**
+- Partial indexes on the action id and question id inside `messages.meta` (over rows whose meta is valid JSON, so an old malformed row cannot stop the build). The dashboard's per-poll lookups and `card_for` now use them.
+- `end_cycle` looks only at the last 2,000 messages.
+- Telemetry dumps: at most one a minute. Every line still goes to the journal.
+- **Not done: pruning.** Nothing still deletes old journal, chat, action or cycle rows. Whether to keep that history is your decision. With the indexes, its cost no longer grows on the poll or the cycle.
+
+**F35, fixed.** Before every model call in a chat turn, the messages are held to the running composer's window, at 3 characters a token. The oldest history turns go first; then the largest message is halved, with a marker. The audit missed one part of the total: each lookup round keeps the model's own text before its TOOL line, up to `max_tokens` each.
+
+**Drift notes, fixed.**
+- `library_put`'s kinds in the contract now match the gate: no `page`, with `draft`.
+- `web.py`'s docstring gives the 49,152-token window.
+- The schema comment no longer says "the eleven".
+- `actions-inventory.md` is recounted from the code (30 actions, 31 grammar branches and gate shapes, 30 executors). Its seal and attestation rows now reflect F8, F15 and F43.
+- Not done: `keyutil.py`'s unused import (a deliberate probe) and unused variable, since the signer is hand-installed and lint is not worth a reinstall. The reader's comments and entries (Wikipedia "the one exception", `ietf.org` in `SUBDOMAINS_OK`, the osf.io redirects) go with F45 and F17.
+
+**Still open:** F22, F23, F25, F31, the suite's own faults, and F45/F17, which need your decision.
+
+**Tests.**
+- New: `prompt/test_a_prompt_dense_in_tokens_is_measured_and_refitted.py` and `dashboard/test_lookups_use_indexes_dumps_are_rate_limited_and_chat_fits.py`. Each shows its fault on the previous version.
+- 280 tests: 267 pass, 13 skip, 0 differ.
