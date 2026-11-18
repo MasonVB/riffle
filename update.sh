@@ -605,6 +605,10 @@ try:
         ("agent/cycle.py", "_SETTLE_PORCH_DAYS = 2"),
         ("agent/cycle.py", "_SIGNED_PER_CYCLE = 2"),
         ("agent/cycle.py", "text=True, timeout=60)"),
+        # 2026-11-17: the prompt's tokens, counted before the main call
+        # (audit F19), up to three times.
+        ("agent/cortex.py", "def count_tokens(llm_cfg, system, user, timeout=60):"),
+        ("agent/cycle.py", "for _try in range(3):"),
     )
     gone = [f"{p}: {line}" for p, line in MIRRORED if line not in src[p]]
     if gone:
@@ -637,6 +641,10 @@ try:
              (4 + 2 * 4) * 45),
             ("approved seals and attestations, two a cycle: signer and send",
              2 * (60 + 45)),
+            # A prompt the composer refuses as too long is asked once more,
+            # smaller (F19); the refusal comes before any work, so the retry
+            # is the main call's own time, already counted above.
+            ("counting the prompt's tokens, up to three times", 3 * 60),
         ]
         worst = sum(w for _, w in waits)
         # BOTH UNITS (audit F44, 2026-11-14). This read riffle-cycle.service
