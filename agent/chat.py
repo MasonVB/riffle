@@ -510,6 +510,45 @@ def _history(state, mid, question=None, n=10):
     return out
 
 
+def _fit_chat(msgs, llm_cfg, n_hist, log=None):
+    """Hold a chat turn's messages to what the composer's window takes.
+
+    ONE BUDGET FOR THE WHOLE TURN (audit F35, 2026-11-10). Each part had its
+    own cap (history ten turns of up to 4,000 characters, the record 16,000,
+    tool results 9,000 in all) and the total had none. Each lookup round also
+    keeps the model's own text before its TOOL line, up to max_tokens each.
+    A long exchange could pass the window, and the reply was a composer
+    error. Now, before every model call: the oldest history turns go first
+    (MY RECORD carries what happened), then the largest message is halved
+    with a marker, until it fits. At 3 characters a token, more cautious than
+    the cycle's 3.25, since chat carries tool output. n_hist is how many
+    messages after the system message are history; returns the new count.
+    """
+    from agent import cortex
+    n_ctx = cortex.composer_ctx(llm_cfg) or 24576
+    budget = int((n_ctx - int(llm_cfg.get("max_tokens", 1800)) - 96) * 3.0)
+    size = lambda: sum(len(m.get("content") or "") for m in msgs) + 16 * len(msgs)
+    dropped = 0
+    while size() > budget and n_hist > 0 and len(msgs) > 2:
+        del msgs[1]
+        n_hist -= 1
+        dropped += 1
+    halved = 0
+    while size() > budget and halved < 12:
+        i = max(range(len(msgs) - 1), key=lambda k: len(msgs[k].get("content") or ""))
+        c = msgs[i].get("content") or ""
+        if len(c) < 2000:
+            break
+        keep = len(c) // 2
+        msgs[i] = dict(msgs[i], content=c[:keep] + f"\n[...{len(c) - keep} characters "
+                       f"cut here to fit the context window]")
+        halved += 1
+    if log and (dropped or halved):
+        log(f"chat: held to the composer's window ({budget} chars): "
+            f"{dropped} oldest turn(s) left out, {halved} message(s) halved")
+    return n_hist
+
+
 def answer(state, cfg, question, day):
     """Run one chat turn. Writes an assistant message and streams into it."""
     mid = state.say("agent", "", done=False)
@@ -531,6 +570,8 @@ def answer(state, cfg, question, day):
                   f"sessions):\n{memory.as_context(recalled)}\n\nMY RECORD:\n{record}")
         msgs = [{"role": "system", "content": system}] + history + \
                [{"role": "user", "content": question}]
+        _n_hist = len(history)
+        _say = lambda t: state.log(t)
 
         tools_used = []
         # A count is not a bound. Six lookups with no size limit could fill the
@@ -548,6 +589,7 @@ def answer(state, cfg, question, day):
                 state.append_delta(mid, d)
 
             _meta = {}
+            _n_hist = _fit_chat(msgs, cfg["llm"]["composer"], _n_hist, _say)
             out = stream_completion(cfg["llm"]["composer"], msgs, on_delta,
                                     meta=_meta)
             if _meta.get("finish_reason") == "length":
@@ -569,6 +611,7 @@ def answer(state, cfg, question, day):
                           f"{int(spent)}s spent. Answer now from what you have, "
                           f"and say plainly what you could not establish."}]
                 state.append_delta(mid, "\n\n[research budget spent]\n\n")
+                _n_hist = _fit_chat(msgs, cfg["llm"]["composer"], _n_hist, _say)
                 out = stream_completion(cfg["llm"]["composer"], msgs, on_delta)
                 break
             tools_used.append(tool_line.strip())

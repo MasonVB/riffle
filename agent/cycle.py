@@ -2501,38 +2501,69 @@ def _main():
     figures.record_fit(state, cid, _ceiling, _nctx, _sys_chars, _tail_chars, _room,
                        _before_fit, parts,
                        lambda p: p.lstrip().split("\n", 1)[0][:44].rstrip(":"))
-    _own = sorted((_detag(x) for x in parts if _is_own(x)), key=_own_rank)
-    _board = sorted((_detag(x) for x in parts if not _is_own(x)), key=_board_rank)
-    # (`material`, the whole prompt joined, was what the figure check was
-    # given. It now gets _evidence: what riffle read, not what it wrote.)
     system = cortex.stable_prefix(cfg, _cont)
-    # THREE USER MESSAGES (V1, audit round 3): riffle's stable head, the rest
-    # of its own section, then the board and the end. Each message start is a
-    # checkpoint the composer can resume from (cortex.MESSAGE_BREAK), so a
-    # cycle re-reads from the first part that changed, not from the top. The
-    # marker's character is removed from every part first: a stranger's
-    # comment cannot cut riffle's prompt where it likes.
-    _nobreak = lambda t: t.replace("\u241e", "")
-    _own = [_nobreak(x) for x in _own]
-    _board = [_nobreak(x) for x in _board]
-    # FOUR, since 2026-11-07: the project (its block, next step, notes) moves
-    # only when riffle works on it, while its last build (sized by the drive),
-    # what it said and did, and its memories change nearly every cycle. With
-    # them in one message, all of it was re-read every cycle (6,500-9,000
-    # tokens on the box after the window grew); split, an unchanged project
-    # is reused too.
-    _head_heads = _OWN_ORDER[:_OWN_ORDER.index("YOUR PROJECT")]
-    _mid_heads = _OWN_ORDER[_OWN_ORDER.index("YOUR PROJECT"):_OWN_ORDER.index("YOUR LAST BUILD")]
-    _own_head = [x for x in _own if x.lstrip().startswith(_head_heads)]
-    _own_mid = [x for x in _own if x.lstrip().startswith(_mid_heads)]
-    _own_rest = [x for x in _own if not x.lstrip().startswith(_head_heads + _mid_heads)]
-    user = (_OWN_HEADER + "\n\n" + "\n\n".join(_own_head)
-            + cortex.MESSAGE_BREAK + "\n\n".join(_own_mid)
-            + cortex.MESSAGE_BREAK + "\n\n".join(_own_rest)
-            + cortex.MESSAGE_BREAK + "<board>\n" + "\n\n".join(_board) + "\n</board>\n\n"
-            + "\n\n".join(_nobreak(_detag(t)) for t in _tail) + "\n\n"
-            f"Choose ONE action for this cycle, driven by '{drive}'. "
-            f"Reply with the JSON object only.")
+
+    def _assemble(parts):
+        """The user message from fitted blocks."""
+        _own = sorted((_detag(x) for x in parts if _is_own(x)), key=_own_rank)
+        _board = sorted((_detag(x) for x in parts if not _is_own(x)), key=_board_rank)
+        # (`material`, the whole prompt joined, was what the figure check was
+        # given. It now gets _evidence: what riffle read, not what it wrote.)
+        # THREE USER MESSAGES (V1, audit round 3): riffle's stable head, the rest
+        # of its own section, then the board and the end. Each message start is a
+        # checkpoint the composer can resume from (cortex.MESSAGE_BREAK), so a
+        # cycle re-reads from the first part that changed, not from the top. The
+        # marker's character is removed from every part first: a stranger's
+        # comment cannot cut riffle's prompt where it likes.
+        _nobreak = lambda t: t.replace("\u241e", "")
+        _own = [_nobreak(x) for x in _own]
+        _board = [_nobreak(x) for x in _board]
+        # FOUR, since 2026-11-07: the project (its block, next step, notes) moves
+        # only when riffle works on it, while its last build (sized by the drive),
+        # what it said and did, and its memories change nearly every cycle. With
+        # them in one message, all of it was re-read every cycle (6,500-9,000
+        # tokens on the box after the window grew); split, an unchanged project
+        # is reused too.
+        _head_heads = _OWN_ORDER[:_OWN_ORDER.index("YOUR PROJECT")]
+        _mid_heads = _OWN_ORDER[_OWN_ORDER.index("YOUR PROJECT"):_OWN_ORDER.index("YOUR LAST BUILD")]
+        _own_head = [x for x in _own if x.lstrip().startswith(_head_heads)]
+        _own_mid = [x for x in _own if x.lstrip().startswith(_mid_heads)]
+        _own_rest = [x for x in _own if not x.lstrip().startswith(_head_heads + _mid_heads)]
+        user = (_OWN_HEADER + "\n\n" + "\n\n".join(_own_head)
+                + cortex.MESSAGE_BREAK + "\n\n".join(_own_mid)
+                + cortex.MESSAGE_BREAK + "\n\n".join(_own_rest)
+                + cortex.MESSAGE_BREAK + "<board>\n" + "\n\n".join(_board) + "\n</board>\n\n"
+                + "\n\n".join(_nobreak(_detag(t)) for t in _tail) + "\n\n"
+                f"Choose ONE action for this cycle, driven by '{drive}'. "
+                f"Reply with the JSON object only.")
+        return user
+    user = _assemble(parts)
+
+    # MEASURED, NOT ESTIMATED (audit F19, 2026-11-10). The fit above is in
+    # characters at 3.25 a token. The running llama-server's own tokenizer
+    # counts the prompt as built; if it would not leave room for the reply,
+    # the room is cut by what is over (at this prompt's own characters per
+    # token, and a margin) and the blocks are fitted again, at most three
+    # times. A cycle that fits, which is every ordinary cycle, is unchanged:
+    # this only acts on an overflow. If /tokenize cannot be asked, the
+    # estimate stands, as before.
+    _max_tok = int(cfg["llm"]["composer"].get("max_tokens", 1600))
+    if _nctx:
+        for _try in range(3):
+            _tok = cortex.count_tokens(cfg["llm"]["composer"], system, user)
+            if not _tok or _tok + _max_tok + 96 <= _nctx:
+                break
+            _over = _tok + _max_tok + 96 - _nctx
+            _cpt = (len(system) + len(user)) / max(1, _tok)
+            _cut = int(_over * _cpt * 1.15) + 400
+            log(f"the prompt is {_tok} tokens and the window {_nctx}, leaving "
+                f"{_nctx - _tok} for a reply of up to {_max_tok}: {_over} over, at "
+                f"{_cpt:.2f} chars a token. Fitting again with {_cut} chars less "
+                f"room.", level="warn")
+            _room = max(2000, _room - _cut)
+            parts = _fit(_before_fit, _room, log,
+                         big_build=(drive == "make" or _cycles_since_note(state, "last_build") <= 2))
+            user = _assemble(parts)
     # One line per cycle: what was sent against the ceiling, and how much of
     # it is the tail that changes every cycle.
     log(f"prompt sent: system {len(system)} + user {len(user)} = "
@@ -2569,9 +2600,26 @@ def _main():
         return 0
     try:
         cortex.set_purpose("cycle")              # labels the call in figures
-        raw = _complete_cutting(cfg["llm"]["composer"], system, user,
-                                _schema_without(cortex.proposal_schema(), _blocked),
-                                lambda m, **k: log(m, drive=drive, **k))
+        _sch = _schema_without(cortex.proposal_schema(), _blocked)
+        try:
+            raw = _complete_cutting(cfg["llm"]["composer"], system, user, _sch,
+                                    lambda m, **k: log(m, drive=drive, **k))
+        except Exception as _e1:
+            # STILL TOO LONG: ONCE MORE, SMALLER (audit F19). The measure
+            # above could not be taken, or was off. The cycle used to end as
+            # composer-failed and the next built the same prompt. A quarter
+            # less room, fitted again, asked once more.
+            if not cortex.overflowed(_e1):
+                raise
+            _room = max(2000, int(_room * 0.75))
+            log(f"the composer refused the prompt as longer than its window "
+                f"({str(_e1)[:160]}); fitting again in {_room} chars of room "
+                f"and asking once more", level="warn", drive=drive)
+            parts = _fit(_before_fit, _room, log,
+                         big_build=(drive == "make" or _cycles_since_note(state, "last_build") <= 2))
+            user = _assemble(parts)
+            raw = _complete_cutting(cfg["llm"]["composer"], system, user, _sch,
+                                    lambda m, **k: log(m, drive=drive, **k))
         proposal = cortex.parse_proposal(raw)
         # An over-long title used to lose the whole cycle: three in a row came
         # back at 121, 124 and 127 characters and each one died at the gate

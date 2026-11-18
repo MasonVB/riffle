@@ -377,16 +377,14 @@ class Handler(BaseHTTPRequestHandler):
             " ORDER BY id").fetchall()
         _pids = {r["id"] for r in _pending}
         _waiting = []
+        # Through the index on the action id (audit F26): this parsed the meta
+        # of every proposal message ever written, every poll.
         if _pids:
-            for m in s.db.execute(
-                    "SELECT id, meta FROM messages WHERE role='proposal'"
-                    " ORDER BY id"):
-                try:
-                    _mm = json.loads(m["meta"] or "{}")
-                except ValueError:
-                    continue
-                if _mm.get("action_id") in _pids:
-                    _waiting.append(m["id"])
+            _ph = ",".join("?" * len(_pids))
+            _waiting += [m["id"] for m in s.db.execute(
+                "SELECT id FROM messages WHERE role='proposal' AND json_valid(meta)"
+                f" AND json_extract(meta,'$.action_id') IN ({_ph}) ORDER BY id",
+                tuple(_pids))]
 
         # OPEN QUESTIONS ARE WAITING ON YOU TOO (2026-11-14). A question was
         # one message in the chat log and nothing more. The page loads the
@@ -403,14 +401,11 @@ class Handler(BaseHTTPRequestHandler):
         from agent.state import open_questions as _oq
         _openq = {r["id"] for r in _oq(s)}
         if _openq:
-            for m in s.db.execute("SELECT id, meta FROM messages"
-                                  " WHERE role='question' ORDER BY id"):
-                try:
-                    _qm = json.loads(m["meta"] or "{}")
-                except ValueError:
-                    continue
-                if int(_qm.get("qid") or 0) in _openq:
-                    _waiting.append(m["id"])
+            _ph = ",".join("?" * len(_openq))
+            _waiting += [m["id"] for m in s.db.execute(
+                "SELECT id FROM messages WHERE role='question' AND json_valid(meta)"
+                f" AND json_extract(meta,'$.qid') IN ({_ph}) ORDER BY id",
+                tuple(_openq))]
         _waiting = sorted(set(_waiting))
         # And questions answered in the last day, so the card turns to
         # "answered" on every device, not only the one you answered from
@@ -422,13 +417,10 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT id FROM questions WHERE answered_at IS NOT NULL"
                 " AND answered_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 day')")}
             if _done:
-                for m in s.db.execute("SELECT id, meta FROM messages"
-                                      " WHERE role='question' ORDER BY id"):
-                    try:
-                        if int(json.loads(m["meta"] or "{}").get("qid") or 0) in _done:
-                            _recent_q.add(m["id"])
-                    except (ValueError, TypeError):
-                        continue
+                _ph = ",".join("?" * len(_done))
+                _recent_q |= {m["id"] for m in s.db.execute(
+                    "SELECT id FROM messages WHERE role='question' AND json_valid(meta)"
+                    f" AND json_extract(meta,'$.qid') IN ({_ph})", tuple(_done))}
         except Exception:
             pass
         have = {m["id"] for m in out}
@@ -1337,7 +1329,7 @@ def card_for(state, aid):
     # By its action_id, however old (T2, audit 2026-10-27): this scanned only
     # the last 200 cards, so an older one could read "sending..." forever.
     m = state.db.execute(
-        "SELECT id, meta FROM messages WHERE role='proposal'"
+        "SELECT id, meta FROM messages WHERE role='proposal' AND json_valid(meta)"
         " AND json_extract(meta, '$.action_id') = ? ORDER BY id DESC LIMIT 1",
         (aid,)).fetchone()
     if not m:

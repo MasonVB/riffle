@@ -185,7 +185,7 @@ payload fields by action:
   library_put         {"title": "...", "body": "...", "kind": "note"?,
                        "tags": "comma,separated"?, "summary": "..."?,
                        "source": "1F916:2413"?}
-                      kind is note|code|page|thread|post|data|reference
+                      kind is note|code|thread|post|data|reference|draft
   library_find        {"query": "words you would have used in the title"}
   library_read        {"id": 14}
   desk_put            {"slot": "draft:emptiness", "kind": "draft",
@@ -522,6 +522,41 @@ def composer_ctx(llm_cfg):
     return _CTX_SEEN[url]
 
 
+def count_tokens(llm_cfg, system, user, timeout=60):
+    """The prompt's real token count from the running llama-server's
+    /tokenize, plus a few tokens a message for the chat template; None if it
+    cannot be asked.
+
+    CHARACTERS ARE AN ESTIMATE; TOKENS ARE WHAT OVERFLOW (audit F19,
+    2026-11-10). The prompt is fitted in characters, and the ceiling assumes
+    3.25 characters a token. Hashes, base64 signatures, emoji and CJK text run
+    at one to two characters a token, so a board carrying a few thousand
+    characters of them can overflow the window with the character count
+    unchanged, and the cycle fails, and the next cycle builds the same prompt.
+    The tokenizer is the model's own, so this is a measurement."""
+    url = str(llm_cfg.get("url") or "").rstrip("/")
+    if not url:
+        return None
+    parts = [system] + [p for p in user.split(MESSAGE_BREAK) if p.strip()]
+    try:
+        req = urllib.request.Request(
+            url + "/tokenize", method="POST",
+            data=json.dumps({"content": "\n".join(parts)}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            toks = json.loads(r.read().decode("utf-8", "replace")).get("tokens")
+        return len(toks) + 8 * len(parts) if isinstance(toks, list) else None
+    except Exception:
+        return None
+
+
+def overflowed(err):
+    """True if a composer error is llama-server refusing a prompt longer than
+    its window."""
+    t = str(err).lower()
+    return "context" in t and ("exceed" in t or "too long" in t or "too large" in t)
+
+
 def complete(llm_cfg, system, user, timeout=1800, schema=None):
     """OpenAI-compatible /v1/chat/completions, which llama-server serves.
 
@@ -777,7 +812,7 @@ def parse_proposal(text):
 # llama.cpp converts this schema into a sampler grammar, so a token that would
 # break it is unreachable rather than merely improbable. Every failure shape
 # below becomes impossible to emit: a truncated object with no "action", an
-# action name outside the eleven, a payload belonging to a different action,
+# action name outside the list, a payload belonging to a different action,
 # an extra field smuggled into a payload, a weight outside 0..1, a hash that
 # is not 64 lowercase hex.
 #

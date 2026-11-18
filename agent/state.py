@@ -222,6 +222,26 @@ class State:
         self._local = threading.local()
         with self._connect() as c:
             c.executescript(SCHEMA)
+            # LOOKUPS BY ACTION AND QUESTION (audit F26, 2026-11-10). The
+            # dashboard found a proposal's card by parsing the meta of every
+            # proposal message, on every 2.5-second poll while anything was
+            # waiting; card_for searched the same way; end_cycle scanned all
+            # messages every cycle. Nothing is pruned, so each grew with the
+            # table. Partial indexes on the two ids, over rows whose meta is
+            # valid JSON only, so one malformed old row cannot stop them
+            # being built. Separately, so a failure here never stops riffle
+            # starting: the queries work without them, only slower.
+            for _ix in (
+                    "CREATE INDEX IF NOT EXISTS ix_messages_action ON messages"
+                    "(json_extract(meta,'$.action_id'))"
+                    " WHERE role='proposal' AND json_valid(meta)",
+                    "CREATE INDEX IF NOT EXISTS ix_messages_qid ON messages"
+                    "(json_extract(meta,'$.qid'))"
+                    " WHERE role='question' AND json_valid(meta)"):
+                try:
+                    c.execute(_ix)
+                except sqlite3.Error:
+                    pass
 
     def _connect(self):
         c = sqlite3.connect(self.path, timeout=30)
@@ -322,9 +342,13 @@ class State:
         #
         # Checking both means the dedup works whichever way a call site tags
         # its message, instead of only the way none of them do.
+        # The last 2,000 messages only (audit F26): a cycle's own lines are
+        # written during it, and this scanned every message ever, each cycle.
         spoke = self.db.execute(
             "SELECT 1 FROM messages WHERE role IN ('report','error','proposal')"
-            " AND (json_extract(meta,'$.cycle') = ? OR content LIKE ?)",
+            " AND id > (SELECT COALESCE(MAX(id), 0) - 2000 FROM messages)"
+            " AND (CASE WHEN json_valid(meta) THEN json_extract(meta,'$.cycle') END = ?"
+            "      OR content LIKE ?)",
             (cid, f"Cycle {cid} %")).fetchone()
         if spoke:
             return

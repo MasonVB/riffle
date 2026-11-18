@@ -586,6 +586,11 @@ def _join_pending(limit=30):
         t.join(left)
 
 
+_DUMP_EVERY = 60
+_LAST_DUMP = -_DUMP_EVERY
+_DUMP_LOCK = threading.Lock()
+
+
 def install(state, cfg, wait_at_exit=False):
     """Make an error or alarm in the journal trigger a dump.
 
@@ -607,6 +612,17 @@ def install(state, cfg, wait_at_exit=False):
         _JOIN_REGISTERED = True
 
     def on_error(st, level, text):
+        # AT MOST ONE A MINUTE (audit F26, 2026-11-10). Every error line
+        # started a thread running eight subprocesses, with no limit, so a
+        # run of errors became a burst of forks on a box that has frozen
+        # before. One dump a minute, alarm or error, carries the state; the
+        # lines themselves are all in the journal either way.
+        global _LAST_DUMP
+        now = time.monotonic()
+        with _DUMP_LOCK:
+            if now - _LAST_DUMP < _DUMP_EVERY:
+                return
+            _LAST_DUMP = now
         # IN A THREAD. dump() runs five systemctl calls and three
         # journalctl reads — up to about a minute — and this hook fires
         # from inside state.log(). So writing an error line blocked the
