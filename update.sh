@@ -99,6 +99,51 @@ if found:
     print("!! rotate it first, then remove it from the file. Rolling back would not help.")
 PYSCAN
 
+# THE TWO SECRETS THAT MATTER, READ BY ROOT (audit F31, 2026-11-10). The scan
+# above runs as you, and you cannot read riffle.secret (its directory is 0700)
+# or the signer's seed (0400): repo_setup.scan skips an unreadable file
+# without a word, so the literal half of the scan never covered the two
+# credentials worth leaking. This step runs as root, reads those two files
+# and the changed files, and prints only the NAMES of files holding one,
+# never a value. It imports nothing from the checkout, and says which of the
+# two it checked.
+git diff --name-only --diff-filter=AM "$BEFORE" "$AFTER" \
+  | sudo python3 -I -c '
+import base64, os, sys
+names = [l.strip() for l in sys.stdin if l.strip()]
+secrets = {}
+for label, path in (("citizen secret", "/var/lib/riffle/riffle.secret"),
+                    ("signing seed", "/var/lib/riffle-signer/citizen.seed"),
+                    ("signing seed (old path)", "/var/lib/riffle/riffle.ed25519.seed")):
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        continue
+    forms = []
+    if len(raw) == 32:
+        forms += [raw.hex(), base64.b64encode(raw).decode()]
+    try:
+        t = raw.decode("ascii").strip()
+        if len(t) > 12:
+            forms.append(t)
+    except UnicodeDecodeError:
+        pass
+    secrets[label] = [f for f in forms if f]
+hits = []
+for n in names:
+    try:
+        body = open(os.path.join("/opt/riffle", n), errors="replace").read()
+    except OSError:
+        continue
+    for label, forms in secrets.items():
+        if any(f in body for f in forms):
+            hits.append((n, label))
+for n, label in hits:
+    print(f"!! SECRET: {n} contains the {label}, verbatim. It is ALREADY PUBLIC on GitHub: rotate it.")
+print("  literal check (as root): " + (", ".join(sorted(secrets)) + " checked" if secrets
+      else "found neither riffle.secret nor the signing seed to check against"))
+' || echo "  (the root literal check could not run)"
+
 # Two gates, in order of how much they prove.
 #
 # 1. PARSE, every .py in the repo. Cheap, and the CLI tools in the root are
@@ -198,7 +243,13 @@ try:
             pass
 
     dash.Handler.cfg = {"model_id": "gate", "caps": {}, "dash": {}}
-    dash.Handler.state = State(tempfile.mktemp(suffix=".sqlite"))
+    # Removed when the gate ends, with its -wal and -shm (audit F31): each
+    # deploy left one of these in /tmp.
+    _gate_db = tempfile.mktemp(suffix=".sqlite")
+    import atexit, os, glob as _glob
+    atexit.register(lambda: [os.remove(_f) for _f in _glob.glob(_gate_db + "*")
+                             if os.path.isfile(_f)])
+    dash.Handler.state = State(_gate_db)
 
     # A STUB WORKER, so /api/messages can be exercised too.
     #
@@ -1393,6 +1444,23 @@ if [ "${#changed[@]}" -gt 0 ]; then
     echo "!! daemon-reload failed; the new unit files are on disk but not loaded"
   fi
 fi
+
+# --- the sudoers rules, which are hand-installed too ----------------------
+#
+# Not in the list below until 2026-11-17 (audit F31): a rule tightened in
+# the repo never reached the box, and nothing said. /etc/sudoers.d is 0750
+# root, so compared as root. The install line is given behind a visudo
+# check, since a broken sudoers file can lock sudo out.
+for _s in bin/sudoers-riffle-*; do
+  [ -f "$_s" ] || continue
+  _dst="${RIFFLE_INSTALL_ROOT:-}/etc/sudoers.d/${_s#bin/sudoers-}"
+  if sudo test -e "$_dst"; then
+    if ! sudo cmp -s "$_s" "$_dst"; then
+      echo "  $_dst is behind the repo's $_s. Check it, then install it:"
+      echo "    sudo visudo -cf /opt/riffle/$_s && sudo install -m 0440 -o root -g root /opt/riffle/$_s $_dst"
+    fi
+  fi
+done
 
 # --- hand-installed copies that have fallen behind -------------------------
 #
