@@ -879,13 +879,19 @@ def reflect(state, cfg, log=None):
     # as "board", and so is an unlabelled line: a model that ignores the
     # labels errs towards distrust. (Earlier, all-"board" filing made riffle's
     # own conclusions look like the square's; the label is what fixes that.)
+    # NEW ROWS ONLY ARE COUNTED (2026-11-19). remember() returns the id of
+    # the stored memory a duplicate matched, so a reflection that repeated
+    # something already known logged "kept 1 note(s)" and counted it towards
+    # the passing notes kept beside it. Only an id above the store's top
+    # before this pass is a note kept.
+    _top = state.db.execute("SELECT COALESCE(MAX(id), 0) m FROM memories").fetchone()["m"]
     for line in durable[:cap]:
         _kind, line = _reflection_subject(line)
         if len(line) < 12:
             continue
         mid = remember(state, line, kind=_kind, source=f"cycle:{cid}",
                        ttl_days=ttl)
-        if mid:
+        if mid and mid > _top:
             made.append(mid)
     k = extra_count(len(made), cfg)
     if k and passing:
@@ -893,15 +899,26 @@ def reflect(state, cfg, log=None):
         for line in _r.sample(passing, min(k, len(passing))):
             mid = remember(state, line, kind="incidental",
                            source=f"cycle:{cid}", ttl_days=ttl)
-            if mid:
+            if mid and mid > _top:
                 made.append(mid)
     state.note("last_reflected_cycle", cid)
     if log:
         if made:
             log(f"reflected on cycle {cid}: kept {len(made)} note(s)")
-        elif durable or passing:
+        elif durable:
             log(f"reflected on cycle {cid}: model offered "
                 f"{len(durable)} durable and {len(passing)} passing, kept 0 "
                 f"(too short, or duplicates of something already stored)",
                 level="warn")
+        elif passing:
+            # ONLY PASSING NOTES IS NOT A FAULT (2026-11-19). Passing notes
+            # are kept at 5-10% of the durable ones kept (extra_count), so
+            # with none durable none can be kept, by design. This said "too
+            # short, or duplicates" at warn level, three of the fifteen
+            # warnings in the box's figures for 2026-11-18, and none of them
+            # was either.
+            log(f"reflected on cycle {cid}: model offered only "
+                f"{len(passing)} passing note(s) and nothing durable; passing "
+                f"notes are kept only beside durable ones, so none kept",
+                level="info")
     return made
