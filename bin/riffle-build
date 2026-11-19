@@ -89,14 +89,21 @@ OUTPUT_BUDGET = 16 * 1024 * 1024
 # says the disk is full, not that the build filled it.
 DISK_BUDGET = 2 * 1024 ** 3
 DISK_FLOOR = 1024 ** 3
-KEEP_FAILED = 20          # failed builds' directories kept, newest first
+# KEPT TO BE LOOKED AT, NOT TO FILL THE DISK (audit F25, 2026-11-10). Twenty
+# failed builds of up to 2 GiB each could hold 40 GiB. Five now, and a failed
+# build's directory over KEEP_FAILED_BYTES is removed at once: a failure that
+# wrote that much is not something anyone reads file by file.
+KEEP_FAILED = 5           # failed builds' directories kept, newest first
+KEEP_FAILED_BYTES = 256 * 1024 ** 2
 # HIDDEN, NOT JUST READ-ONLY (M9). ProtectSystem=strict makes the filesystem
 # read-only, but anything world-readable could still be READ: config.yaml with
 # the notification keys, and whatever else is readable under riffle's state
 # and library. A build's output reaches the prompt and can be posted. "-"
 # means a path that does not exist is skipped rather than failing the unit.
 HIDDEN = ("/opt/riffle", "/etc/riffle", "/var/lib/riffle",
-          "/var/lib/riffle-library", "/var/lib/riffle-signer")
+          "/var/lib/riffle-library", "/var/lib/riffle-signer",
+          # The system bus was reachable from inside a build (audit F25).
+          "/run/dbus/system_bus_socket")
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}\.(py|txt|json|csv|md)\Z")
 
@@ -276,6 +283,25 @@ def main():
         "--property=NoNewPrivileges=yes",
         f"--property=ReadWritePaths={work}",
         "--property=LimitFSIZE=512M",
+        # TIGHTER (audit F25, 2026-11-10). No devices but the basic ones; no
+        # other process visible in /proc, and none of /proc but processes; no
+        # new namespaces; no clock, kernel log or hostname changes; its own
+        # IPC namespace; sockets of the UNIX family only (it has no network
+        # anyway). System calls outside the usual service set fail with EPERM
+        # rather than killing the build, so a build that trips the filter
+        # gets a Python error it can read instead of a dead process.
+        "--property=PrivateDevices=yes",
+        "--property=ProtectProc=invisible",
+        "--property=ProcSubset=pid",
+        "--property=RestrictNamespaces=yes",
+        "--property=ProtectKernelLogs=yes",
+        "--property=ProtectClock=yes",
+        "--property=ProtectHostname=yes",
+        "--property=PrivateIPC=yes",
+        "--property=RestrictAddressFamilies=AF_UNIX",
+        "--property=SystemCallArchitectures=native",
+        "--property=SystemCallFilter=@system-service",
+        "--property=SystemCallErrorNumber=EPERM",
         "--property=InaccessiblePaths=" + " ".join(f"-{p}" for p in HIDDEN),
         f"--property=WorkingDirectory={work}",
         "--",
@@ -366,7 +392,8 @@ def main():
         # A build stopped for filling the disk is removed too: what it left
         # is the problem, not evidence, and keeping KEEP_FAILED of them could
         # hold tens of gigabytes.
-        if result["ok"] or result["stopped_for_disk"]:
+        if (result["ok"] or result["stopped_for_disk"]
+                or _build_bytes(work, unit) > KEEP_FAILED_BYTES):
             shutil.rmtree(work, ignore_errors=True)
         try:
             olds = sorted((e for e in os.scandir(BUILD_ROOT) if e.is_dir()),
