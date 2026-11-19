@@ -87,6 +87,48 @@ _LOCAL_FAIL = frozenset({
 })
 
 
+def _square_refs(text, cfg):
+    """[("post"|"comment", n)] named in text: the registry's own URLs (/api/post/N,
+    /post/N, /posts/N, /p/N, /api/comment/N, /comment/N, #comment-N) and
+    the forms "post N", "post #N", "1f916:N", "comment N" (F22)."""
+    t = text or ""
+    home = (urllib.parse.urlparse(cfg.get("base") or "").hostname or "1f916.ai").lower()
+    out = []
+    for m in re.finditer(r"https?://([^/\s]+)(/[^\s]*)", t, re.I):
+        host = (m.group(1).split("@")[-1].split(":")[0]).lower()
+        if host != home and not host.endswith("." + home):
+            continue
+        path = m.group(2)
+        c = re.search(r"(?:/api)?/comments?/(\d+)|#comment-(\d+)", path)
+        if c:
+            out.append(("comment", int(c.group(1) or c.group(2))))
+            continue
+        p = re.search(r"(?:/api)?/(?:post|posts|p)/(\d+)", path)
+        if p:
+            out.append(("post", int(p.group(1))))
+    bare = re.sub(r"https?://\S+", " ", t)
+    for m in re.finditer(r"\b(post|comment)\s*#?\s*(\d+)\b", bare, re.I):
+        out.append((m.group(1).lower(), int(m.group(2))))
+    for m in re.finditer(r"\b1f916:(\d+)\b", bare, re.I):
+        out.append(("post", int(m.group(1))))
+    seen, uniq = set(), []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            uniq.append(x)
+    return uniq
+
+
+def _sent_by_me(state, kind, n):
+    """True if riffle sent the post or comment numbered n (F22)."""
+    key = "post_id" if kind == "post" else "comment_id"
+    return bool(state.db.execute(
+        "SELECT 1 FROM actions WHERE kind=? AND status IN ('executed','sent')"
+        " AND json_valid(response) AND (json_extract(response, ?) = ?"
+        " OR json_extract(response, '$.id') = ?) LIMIT 1",
+        (kind, f"$.{key}", n, n)).fetchone())
+
+
 def near_duplicate(state, kind, body, exclude_id=None, threshold=0.55):
     """The most similar thing riffle has recently said of this kind.
 
@@ -3528,6 +3570,35 @@ def _main():
             state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
                       {"drive": drive})
             state.end_cycle(cid, "artifact-unfetchable", _art[:40])
+            return 0
+        # A POST OR COMMENT ON THE SQUARE HAS TO BE ONE OF RIFFLE'S (audit F22,
+        # 2026-11-10). Any string of eight characters passed, so a submission
+        # could name another citizen's post as riffle's work, and once a
+        # submission exists `sign` is offered for that listing. Your approval
+        # was the only check. Now an artifact that names a post or comment on
+        # the square (by the registry's own URL, or as "post 8395",
+        # "1f916:8395", "comment 512") must be one riffle sent.
+        _theirs = [(k, n) for k, n in _square_refs(_art, cfg)
+                   if not _sent_by_me(state, k, n)]
+        if _theirs:
+            _k, _n = _theirs[0]
+            _mine = [r["n"] for r in state.db.execute(
+                "SELECT COALESCE(json_extract(response,'$.post_id'),"
+                " json_extract(response,'$.id')) AS n FROM actions"
+                " WHERE kind='post' AND status IN ('executed','sent')"
+                " AND json_valid(response) ORDER BY id DESC LIMIT 5") if r["n"]]
+            why = (f"the artifact names {_k} {_n} on the square, and that is not "
+                   f"one you sent. A submission says the work is yours; "
+                   f"submit a post of your own that carries it"
+                   + (f" (your latest posts: {', '.join(str(m) for m in _mine)})"
+                      if _mine else "")
+                   + ".")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"listing_submission refused: artifact names {_k} {_n}, not riffle's",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "artifact-not-yours", f"{_k} {_n}")
             return 0
 
     # --- a hash you call your own has to be one of yours ----------------------

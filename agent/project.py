@@ -302,7 +302,10 @@ def normalise_source(s):
     if not s:
         return None
     t = str(s).strip().strip("<>[]() ").lower()
-    m = re.search(r"(?:1f916[:/#]|#)\s*(\d+)", t)
+    # Anchored at the start (audit F23, 2026-11-10): searched anywhere, this
+    # turned "library #12" into board thread 12, and "listing #57 notes"
+    # into thread 57.
+    m = re.match(r"(?:1f916\s*[:/#]|#)\s*(\d+)\b", t)
     if m:
         return "1f916:" + m.group(1)
     m = re.match(r"^(\d{1,7})$", t)
@@ -330,9 +333,47 @@ def notes(state, pid, limit=60):
     return list(reversed(rows))
 
 
+def _resolves(state, src, pages):
+    """True if a note's source names something riffle read (audit F23): a board
+    thread it read, a page the reader fetched, or an answer of yours."""
+    m = re.match(r"1f916:(\d+)$", src)
+    if not m and src.startswith(("http://", "https://")) and "1f916" in src.split("/")[2]:
+        m = re.search(r"/(?:api/)?(?:post|posts|p)/(\d+)", src)
+    if m:
+        return bool(state.db.execute("SELECT 1 FROM thread_reads WHERE post_id=? LIMIT 1",
+                                     (int(m.group(1)),)).fetchone())
+    if src.startswith(("http://", "https://")):
+        from agent import reference
+        return reference._norm_url(src) in pages
+    if "operator" in src:
+        return bool(state.db.execute(
+            "SELECT 1 FROM questions WHERE answer IS NOT NULL AND answer != '' LIMIT 1").fetchone()
+            or state.db.execute("SELECT 1 FROM messages WHERE role='user' LIMIT 1").fetchone())
+    return False
+
+
 def stats(state, pid):
     rows = notes(state, pid, limit=500)
-    srcs = {r["source"] for r in rows if r["source"]}
+    # A SOURCE IS SOMETHING READ (audit F23, 2026-11-10). This counted the
+    # distinct strings riffle typed into notes' `source` field, matched
+    # against nothing, so "a source" could be any phrase, and readiness, the
+    # gate in front of a post, went up with the typing. Now a source counts
+    # only if it resolves: a board thread riffle read (thread_reads), a page
+    # the reader fetched (library pages and their aliases), or, for one that
+    # names you, an answer of yours. The rest are reported, not counted.
+    listed = {r["source"] for r in rows if r["source"]}
+    try:
+        from agent import reference
+        pages = reference._pages(state)
+    except Exception:
+        pages = {}
+    srcs = set()
+    for x in listed:
+        try:
+            if _resolves(state, x, pages):
+                srcs.add(x)
+        except Exception:
+            continue
     by_kind = {}
     for r in rows:
         by_kind[r["kind"]] = by_kind.get(r["kind"], 0) + 1
@@ -352,7 +393,8 @@ def stats(state, pid):
     # end of the prompt.
     _op = (p["opened_at"] or "")[:16].replace("T", " ") + "Z" if p and p["opened_at"] else "unknown"
     return {"notes": len(rows), "sources": len(srcs), "by_kind": by_kind,
-            "age_hours": round(age_h, 1), "opened": _op}
+            "age_hours": round(age_h, 1), "opened": _op,
+            "unread_sources": sorted(listed - srcs)}
 
 
 def ready(state, cfg, pid=None):
@@ -377,7 +419,13 @@ def ready(state, cfg, pid=None):
     if s["notes"] < min_notes:
         missing.append(f"{min_notes - s['notes']} more note(s)")
     if s["sources"] < min_sources:
-        missing.append(f"{min_sources - s['sources']} more distinct source(s)")
+        _un = s.get("unread_sources") or []
+        missing.append(f"{min_sources - s['sources']} more distinct source(s)"
+                       + (f" (a source counts once it is a thread you read with "
+                          f"read_thread or a page you read with read_page; "
+                          f"{len(_un)} you listed are neither: "
+                          + ", ".join(repr(u[:40]) for u in _un[:3]) + ")"
+                          if _un else ""))
     if s["by_kind"].get("draft", 0) < min_drafts:
         missing.append("a draft")
     if s["by_kind"].get("objection", 0) < min_objections:
