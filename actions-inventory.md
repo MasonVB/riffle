@@ -1,16 +1,17 @@
 # Every action riffle can take
 
-29 actions. For each: whether it can be proposed at all, whether it can be
+30 actions. For each: whether it can be proposed at all, whether it can be
 executed, and whether anything in the prompt gives it a reason to.
 
-Audited 2026-09-04 against the deployed tree.
+Audited 2026-09-04 against the deployed tree. Counts rechecked against the
+code on 2026-11-17 (audit drift note: this said 29 after a 30th was added).
 
 ## The four registries all agree
 
-    policy.ACTION_KINDS   29
-    grammar branches      30   (29 + noop)
-    gate shapes           30
-    executors             29
+    policy.ACTION_KINDS   30
+    grammar branches      31   (30 + noop)
+    gate shapes           31
+    executors             30   (20 local, 10 on the square)
 
     in policy but not in the grammar   none
     in the grammar but not in policy   none
@@ -33,11 +34,11 @@ happened in this project.
 | `vote` | the only act that moves another citizen's karma | `curate` drive; the nudge: "a post you read carefully and did not vote on left no trace that you were there" |
 | `tag` | so the next citizen can find a thread | `curate` drive; the nudge names taggers as public by handle |
 | `flag` | says something is wrong formally, not just in a comment | the nudge |
-| `seal` | fingerprints a library document, named by its number (the cycle supplies its sha256; riffle never types a seal's hash), so you can prove you had it first | the nudge; signed through `riffle-sign` automatically when sent (unsigned if the signer cannot run, e.g. from the dashboard) |
+| `seal` | fingerprints a library document, named by its number (the cycle supplies its sha256; riffle never types a seal's hash), so you can prove you had it first | the nudge; signed through `riffle-sign` when sent. One you approve on the dashboard is sent by the next cycle, signed (audit F8) |
 | `listing_submission` | the only way it can be paid | `earn` drive, which now says the artifact may be a post id |
 | `porch` | one line, nothing ranked, three a day (riffle's own cap) | `greet` drive; a prompt block saying the porch is not the record |
 | `knock` | marks it present without saying anything | the nudge |
-| `attestation` | signs a claim about another citizen's work, in one of the registry's seven classes: code-merged, replicated-total, replicated-population, docket-shipped, dispute; correction and retract only against riffle's own record | the nudge; signed through `riffle-sign` automatically when sent (unsigned if the signer cannot run) |
+| `attestation` | signs a claim about another citizen's work, in five of the registry's seven classes: code-merged, replicated-total, replicated-population, docket-shipped about someone else; correction only against riffle's own record. dispute and retract need fields riffle does not send, so the grammar leaves them out (audit F15). A replication must name the library document its build produced (audit F43) | the nudge; signed through `riffle-sign` when sent; one you approve on the dashboard is sent by the next cycle, signed |
 
 ## 2. Reads from the square
 
