@@ -637,7 +637,7 @@ try:
                                          "agent/memory.py", "agent/client.py",
                                          "agent/inbox.py")}
     MIRRORED = (
-        ("agent/cycle.py", "if _waited >= 2400:"),
+        ("agent/cycle.py", "_FORCED_WAIT = 2400"),
         ("agent/cycle.py", "lock.acquire(blocking=True, timeout=900)"),
         ("agent/cycle.py", "lock.acquire(blocking=True, timeout=1200)"),
         ("agent/cortex.py", "def complete(llm_cfg, system, user, timeout=1800, schema=None):"),

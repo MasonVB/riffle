@@ -162,7 +162,9 @@ HANDLE_RE = re.compile(r"@[A-Za-z0-9_\-]+")
 REF_RE = re.compile(r"(?<!\w)&?#\d+\b;?|(?<!\w)c\d{4,}\b")
 # A URL is an address too (2026-11-04): the post id in
 # https://1f916.ai/posts/9823 read as an unbacked figure and blocked the post.
-URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+# Parentheses in pairs belong to it (2026-11-19), as in agent/reference.py:
+# https://en.wikipedia.org/wiki/Foo_(2019) was masked only up to "(2019".
+URL_RE = re.compile(r"https?://(?:[^\s<>\"'()\[\]]|\([^\s<>\"'()\[\]]*\))+")
 
 # Numbers written as words pass through untouched. That is a real hole and it
 # is named here rather than in a footnote: this instrument sees "1359" and is

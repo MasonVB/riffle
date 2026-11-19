@@ -4,6 +4,16 @@ A university library's holdings, as domains. In use: `bin/riffle-reader` reads o
 `read_page` and `search_web`. Wikipedia and the other open-edit sites, and
 the preprint servers, are labelled as such wherever riffle reads them.
 
+**How this list and the reader agree (2026-11-19, audit F45).** The reader
+works by host. A path written here (`llvm.org/docs`) says where on a host to
+look; the reader allows the whole host, with one exception: on `gcc.gnu.org`
+it reads `/onlinedocs` and nothing else, since the rest is GCC's bug tracker
+and mailing lists. Five hosts this list once named are refused by the reader,
+because anyone can upload to them: `osf.io`, `zenodo.org`, `archive.org`,
+`libretexts.org` (the campus-edited `bookshelf.libretexts.org` stays) and
+`raw.githubusercontent.com`. Their rows are struck through below. What riffle
+is told about each page it reads is under *Labels* near the end.
+
 ## The rule used to include or exclude
 
 A site is on this list if **a stranger cannot change what it says without
@@ -56,21 +66,21 @@ against a second source on this list.
 | `www.medrxiv.org` | health sciences |
 | `chemrxiv.org` | chemistry |
 | `engrxiv.org` | engineering |
-| `psyarxiv.com` | psychology |
-| `socarxiv.org` | social sciences |
-| `osf.io` | Open Science Framework — preregistrations, data, materials |
+| `psyarxiv.com` | psychology (now served from osf.io, so unreadable; see below) |
+| `socarxiv.org` | social sciences (the same) |
+| ~~`osf.io`~~ | refused by the reader: anyone can upload to it |
 | `www.ssrn.com` | social science, law, economics |
 | `eprint.iacr.org` | cryptology |
 | `hal.science` | French national open archive |
-| `zenodo.org` | CERN-operated, DOI-assigning |
-| `core.ac.uk` | aggregates open repositories |
-| `www.semanticscholar.org` | index with abstracts and citation graph |
+| ~~`zenodo.org`~~ | refused by the reader: anyone can deposit to it |
+| `core.ac.uk` | aggregates open repositories; labelled "may be unreviewed" |
+| `www.semanticscholar.org` | index with abstracts and citation graph; labelled "may be unreviewed" |
 | `pubmed.ncbi.nlm.nih.gov` | biomedical index |
 | `www.ncbi.nlm.nih.gov` | PMC full text, genomes, databases |
 | `doaj.org` | Directory of Open Access Journals |
-| `www.base-search.net` | Bielefeld academic search |
+| `www.base-search.net` | Bielefeld academic search; labelled "may be unreviewed" |
 | `openalex.org` | open bibliographic graph |
-| `scholar.archive.org` | fatcat, archived scholarly PDFs |
+| `scholar.archive.org` | fatcat, archived scholarly PDFs; labelled "may be unreviewed" |
 
 ## 3. Journals and publishers with substantial open access
 
@@ -278,7 +288,7 @@ against a second source on this list.
 | `www.nimh.nih.gov` | mental health research |
 | `www.ninds.nih.gov` | neurological |
 | `pmc.ncbi.nlm.nih.gov` | open full text |
-| `psyarxiv.com` | preprints |
+| `psyarxiv.com` | preprints (served from osf.io now, so unreadable) |
 | `www.cochranelibrary.com` | intervention reviews |
 | `dsm.psychiatryonline.org` | DSM, paywalled |
 | `www.ncbi.nlm.nih.gov/books` | NCBI Bookshelf — StatPearls, textbooks |
@@ -322,7 +332,7 @@ against a second source on this list.
 | `www.archives.gov` | US National Archives |
 | `www.bl.uk` | British Library |
 | `www.gutenberg.org` | Project Gutenberg — public domain full texts |
-| `archive.org`, `openlibrary.org` | Internet Archive, Open Library |
+| ~~`archive.org`~~, `openlibrary.org` | Open Library (labelled "written by anyone"); the Internet Archive is refused: anyone can upload, and its Wayback Machine serves any site |
 | `www.perseus.tufts.edu` | Perseus classical texts |
 | `www.thelatinlibrary.com` | Latin corpus |
 | `www.metmuseum.org` | Met collection and Heilbrunn timeline |
@@ -368,13 +378,13 @@ against a second source on this list.
 |---|---|
 | `www.gutenberg.org` | public domain |
 | `openlibrary.org` | catalogue with borrowable scans |
-| `archive.org` | texts, audio, software, web archive |
+| ~~`archive.org`~~ | refused by the reader (see above) |
 | `www.hathitrust.org` | digitised library holdings |
-| `books.google.com` | previews and full public-domain texts |
+| `books.google.com` | previews and full public-domain texts; labelled "may be unreviewed" (self-published books sit beside published ones) |
 | `www.ncbi.nlm.nih.gov/books` | NCBI Bookshelf |
 | `open.umn.edu` | Open Textbook Library |
 | `openstax.org` | peer-reviewed open textbooks |
-| `bookshelf.libretexts.org`, `libretexts.org` | open textbooks, campus-edited |
+| `bookshelf.libretexts.org`, ~~`libretexts.org`~~ | open textbooks, campus-edited; the main host is refused, since its authoring is open |
 | `www.doabooks.org` | Directory of Open Access Books |
 | `oapen.org` | open access academic books |
 | `standardebooks.org` | curated public domain editions |
@@ -552,7 +562,9 @@ than expecting to read them.
 **Community content**: Reddit, Stack Exchange, Quora, Hacker News, Discord,
 forums, YouTube, Medium, Substack, personal blogs, GitHub Issues, mailing list
 archives. The rule is not about quality — Stack Exchange is often right — it is
-that a stranger can put text there specifically for an agent to read.
+that a stranger can put text there specifically for an agent to read. (A
+forum, list archive or comment page on a host that *is* listed can be read,
+and is labelled "written by anyone": your decision of 2026-11-19, below.)
 
 **News**: contested, fast, and correction-prone. If riffle needs current events
 it can ask you.
@@ -562,9 +574,41 @@ it can ask you.
 **Sci-Hub, LibGen and similar.** Copyright infringement, and riffle is a
 citizen of a square whose subject is provenance.
 
-**GitHub in general.** `raw.githubusercontent.com` is already reachable for
-riffle's own repos. Opening the whole of GitHub means opening arbitrary
-attacker-controlled text, which is precisely rule 2b's concern.
+**GitHub in general.** Opening the whole of GitHub means opening arbitrary
+attacker-controlled text, which is precisely rule 2b's concern. (This said
+`raw.githubusercontent.com` was already reachable for riffle's own repos. It
+never was: the reader has never listed it, and riffle reads no part of
+GitHub.)
+
+## Labels
+
+Decided 2026-11-19 (audit F17, option B): a listed site with a part the
+public writes stays readable, and that part is labelled. The label is on the
+page when riffle reads it, in its library entry, and on a search result, and
+the system prompt says what each means. `source_label` in `agent/cycle.py`
+holds the lists; this is a summary of them.
+
+- **written by anyone**: `en.wikipedia.org`, `commons.wikimedia.org`,
+  `en.wikisource.org`, `imslp.org`, `openlibrary.org`, `musicbrainz.org`,
+  `pkg.go.dev`, `en.cppreference.com`, `encyclopediaofmath.org`,
+  `www.chemspider.com`, `www.oercommons.org`, `forum.earthdata.nasa.gov`;
+  and, by path, `sqlite.org/forum`, `www.postgresql.org/message-id` and
+  `/list/`, `www.mathworks.com/matlabcentral`, `go.dev/play`,
+  `www.w3.org/community` and `/wiki`, `www.sec.gov/comments`,
+  `ec.europa.eu/info/law/better-regulation` ("Have your say").
+- **unreviewed preprint**: `arxiv.org`, `www.biorxiv.org`, `www.medrxiv.org`,
+  `chemrxiv.org`, `engrxiv.org`, `psyarxiv.com`, `socarxiv.org`,
+  `www.ssrn.com`, `hal.science`, `eprint.iacr.org`.
+- **may be unreviewed** (reviewed and unreviewed side by side): `core.ac.uk`,
+  `scholar.archive.org`, `www.semanticscholar.org`, `www.base-search.net`,
+  `books.google.com`, `catalog.archives.gov`; and, by path,
+  `www.cambridge.org/engage`, `www.nber.org/papers`,
+  `datatracker.ietf.org/doc/draft-`.
+
+Not labelled: preprints in PMC (`pmc.ncbi.nlm.nih.gov`), whose addresses do
+not say which articles are preprints. The two wide entries, every subdomain
+of `europa.eu` and of `nasa.gov`, stay; the parts of them the audit named are
+labelled above.
 
 ---
 
