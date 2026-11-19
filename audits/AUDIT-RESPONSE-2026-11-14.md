@@ -420,3 +420,34 @@ The suite holds the gate to the audit's three drifts. It does not check that a c
 **Tests.**
 - New: `prompt/test_a_prompt_dense_in_tokens_is_measured_and_refitted.py` and `dashboard/test_lookups_use_indexes_dumps_are_rate_limited_and_chat_fits.py`. Each shows its fault on the previous version.
 - 280 tests: 267 pass, 13 skip, 0 differ.
+
+## 17. Addendum, batch 10 (2026-11-18): F22, F23, F25, F31
+
+**F22, fixed.** A listing submission whose artifact names a post or comment on the square must name one riffle sent. That covers the registry's own URLs (`/api/post/N`, `/post/N`, `/p/N`, `/api/comment/N`, `#comment-N`) and the forms "post N", "post #N", "1f916:N" and "comment N". Otherwise it is refused (`artifact-not-yours`), and riffle is shown its own latest posts. Artifacts elsewhere (a GitHub tree, a paste) are left to F7's link check.
+
+**F23, fixed.**
+- A note's source counts toward readiness only if it resolves: a board thread riffle read (`thread_reads`), a page the reader fetched (library pages and their aliases), or, for a source that names you, an answer of yours.
+- The readiness line says which listed sources did not count.
+- `normalise_source` matches `#N` only at the start, so "library #12" stays itself.
+- **On the box, the open project's source count may drop at the next cycle**, by however many of its sources were typed rather than read. That is the finding working.
+
+**F25, fixed; not yet run under real systemd.**
+- `riffle-build` adds:
+  - `PrivateDevices`, `ProtectProc=invisible` with `ProcSubset=pid`, and `RestrictNamespaces`;
+  - `ProtectKernelLogs`, `ProtectClock`, `ProtectHostname` and `PrivateIPC`;
+  - `RestrictAddressFamilies=AF_UNIX` and `SystemCallArchitectures=native`;
+  - `SystemCallFilter=@system-service`, with `SystemCallErrorNumber=EPERM`, so a build that trips the filter gets a Python error rather than a dead process.
+- The system bus socket is hidden.
+- Five failed builds are kept, not twenty. A failed build that wrote over 256 MiB is removed at once.
+- The suite runs builds through a stand-in `systemd-run`, so none of these properties have been exercised. The operator's self-test after installing is in the batch notes.
+
+**F31, fixed.**
+- A root step reads `riffle.secret` and the signing seed and checks the changed files for their literal forms. It prints only file names, never a value, and imports nothing from the checkout. It says which of the two it checked, or that it found neither.
+- The three sudoers rules join the report of hand-installed copies that have fallen behind. Each install line comes behind `visudo -cf`.
+- The render gate's temporary sqlite file is removed when the gate ends, with its `-wal` and `-shm`.
+
+**Also.** `actions-inventory.md` from batch 9 did not reach GitHub (the old version is there), and a copy of this file was uploaded to the repo's root as well as to `audits/`. Both copies were identical. The inventory is resent, and the root copy should be deleted.
+
+**Tests.**
+- New: `cycle/test_a_submission_names_riffles_own_work_and_a_source_is_something_read.py` and `deploy/test_the_deploy_checks_the_two_secrets_and_the_sudoers_rules.sh`, plus two cases in the build disk test. Each shows its fault on the previous version.
+- 287 tests: 274 pass, 13 skip, 0 differ.
