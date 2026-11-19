@@ -522,3 +522,18 @@ I did not repeat the auditor's mutation runs. Each new test prints the value the
 - `dense prompt refitted` counted ordinary text at 4 characters a token and overflowed by only a few hundred tokens. The 257 characters this batch adds to the system prompt made it fit without being measured, so it tested nothing. It now counts 3.5, and overflows on both the old tree and the new.
 - Six recorded outputs moved with the system prompt's size and the label's wording.
 - 306 tests. As root, with the registry's builders: 306 match. As an ordinary user: 301 match, and the five root-only cases skip.
+
+## 20. Addendum, batch 13 (2026-11-19): reflection's account of what it kept
+
+**Batch 12 on the box.** Deployed at b9797d7, the gates passed, the reader was reinstalled, and llama-triage was restarted. GitHub matched the batch file for file.
+
+**From the figures, again.** Three of the fifteen warnings on 2026-11-18 read "model offered 0 durable and N passing, kept 0 (too short, or duplicates of something already stored)". Neither reason was true.
+- Passing notes are kept at 5-10% of the durable notes kept, so with none durable, none can be. That is by design. It is now logged at info level and says so.
+- The opposite fault: `remember()` returns the id of the memory a duplicate matched, so a reflection that only repeated a stored note logged "kept 1 note(s)" and counted it towards the passing notes. Only new rows count now, and a pure repeat gets the duplicates warning it should have had.
+
+**Not done, and why.**
+- Reflection's 1,000-token cutoffs (three a day, each retried and almost always kept the next time). The first lines of a cut-off reply could be saved, but the prompt tells the model that a long answer keeps nothing, and the retry costs about 40 s. Not worth changing that promise.
+- Pruning old journal, chat, action and cycle rows is still your decision (section 16).
+- `keyutil.py`'s lint, as before.
+
+**Tests.** New: `reflection says why it kept nothing`. `greet and porch` drew deepen 4 and witness 2 where it drew 3 and 3. Its stand-in reply is filed as a note, which is a duplicate from the second cycle onward and no longer draws a random number. It still never draws greet. 307 tests: as root, 307 match; as an ordinary user, 302 match and the five root-only cases skip.
