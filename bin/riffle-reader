@@ -22,8 +22,13 @@ That is not the same as "reputable". Stack Exchange is often right and is
 excluded, because the risk was never that a page is wrong — it is that someone
 can put text on it specifically for an agent to read.
 
-Wikipedia is the one open exception, English only, and it is the weakest entry
-here. Anything load-bearing from it gets checked against a second source.
+Not every entry meets that, and those are not hidden: English Wikipedia and a
+few other open wikis and uploads, the preprint servers, and the parts of
+reviewed sites where the public writes (forums, mailing-list archives, comment
+pages) are allowed, and labelled for riffle as "written by anyone", "unreviewed
+preprint" or "may be unreviewed" by agent/cycle.py's source_label wherever it
+sees the page. (This said Wikipedia was "the one open exception"; it has not
+been the only one for a long time.)
 
 REDIRECTS ARE CHECKED TOO
 
@@ -172,7 +177,31 @@ ALLOWED = {
     "www.urban.org", "www.usa.gov", "www.usda.gov", "www.usgbc.org",
     "www.usgs.gov", "www.ushmm.org", "www.uspto.gov", "www.ustravel.org",
     "www.w3.org", "www.whitehouse.gov", "www.who.int", "www.wolfram.com",
-    "www.wri.org", "www.wttc.org", "zbmath.org", "zbmath.org"
+    "www.wri.org", "www.wttc.org", "zbmath.org"
+}
+
+# ADDED 2026-11-19 (audit F45, the operator's decision). reading-allowlist.md
+# listed these and this file refused them. Each is edited by the organisation
+# that runs it. open-std.org is listed under both names, since the committee
+# papers are served from www. A separate block so the diff shows what came in.
+ALLOWED |= {
+    "cde.ucr.cjis.gov", "cve.mitre.org", "data.worldbank.org",
+    "datatracker.ietf.org", "ieeexplore.ieee.org", "journals.aps.org",
+    "open-std.org", "pandas.pydata.org", "patents.google.com",
+    "reference.wolfram.com", "scikit-learn.org", "scipy.org",
+    "webbtelescope.org", "www.britishmuseum.org", "www.fda.gov",
+    "www.fhwa.dot.gov", "www.govinfo.gov", "www.ncjrs.gov",
+    "www.nrcs.usda.gov", "www.open-std.org", "www.rijksmuseum.nl",
+    "www.weather.gov",
+}
+
+# ONE PART OF A HOST (2026-11-19, the same decision). gcc.gnu.org also serves
+# GCC's bug tracker and mailing-list archives, which anyone can write to; the
+# reading plan wanted only the manuals. A host here is readable only under
+# these path prefixes, and is left out of --list-domains, so search_web does
+# not offer the rest of it.
+PATH_ONLY = {
+    "gcc.gnu.org": ("/onlinedocs",),
 }
 
 
@@ -198,7 +227,11 @@ SUBDOMAINS_OK = frozenset({
     "nih.gov", "nasa.gov", "noaa.gov", "usgs.gov", "cdc.gov", "nist.gov",
     "europa.eu", "who.int", "un.org",
     # Standards bodies that publish only from their own subdomains.
-    "ietf.org", "rfc-editor.org",
+    "rfc-editor.org",
+    # ietf.org REMOVED 2026-11-19. Its subdomains include mailarchive.ietf.org,
+    # every IETF mailing list, which anyone can post to. It opened nothing
+    # while no ietf.org host was on ALLOWED (the check below needs one), and
+    # would have opened all of them once datatracker.ietf.org was added.
     # REMOVED, and why — each let in something a stranger can edit:
     #   wikipedia.org   every language edition, including ones with no
     #                   active moderation; the allowlist wants en only
@@ -246,6 +279,18 @@ def host_ok(url):
     host = (p.hostname or "").lower()
     if not host:
         return None, "no host in that URL"
+    if host in PATH_ONLY:
+        # The prefix itself, or below it: /onlinedocs and /onlinedocs/...,
+        # not /onlinedocsfoo. A "." or ".." segment, written plainly or as
+        # %2e, is refused: /onlinedocs/../bugzilla starts with the prefix and
+        # is the bug tracker by the time the server has read it.
+        path = p.path or "/"
+        if any(seg in (".", "..") for seg in urllib.parse.unquote(path).split("/")):
+            return None, "a URL with a . or .. path segment is refused here"
+        if any(path == pre or path.startswith(pre + "/") for pre in PATH_ONLY[host]):
+            return host, None
+        return None, (f"only {', '.join(host + pre for pre in PATH_ONLY[host])} "
+                      f"is on the reading allowlist, not the rest of {host}")
     if host in ALLOWED:
         return host, None
     for a in SUBDOMAINS_OK:
