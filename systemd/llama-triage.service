@@ -17,9 +17,20 @@ ExecStart=/opt/llama.cpp/build/bin/llama-server \
   --host 127.0.0.1 --port 8081 \
   --ctx-size 8192 --threads 3 --batch-size 256 \
   --chat-template-kwargs '{"enable_thinking":false}' \
-  --kv-unified --cache-reuse 256 --no-webui
+  --kv-unified --cache-reuse 256 --cache-ram 512 --no-webui
 Restart=always
 RestartSec=10
+# --cache-ram 512 (2026-11-19). The composer has set --cache-ram since
+# 2026-10-25; this never did, so it had llama.cpp's default store of old
+# prompts, 8 GiB, on a model that peaked at 5.1 GB. On 2026-11-18 the
+# figures showed it at 6.4 GB in memory (MemoryHigh below is 6G) and 4.6 GB
+# in swap, on a box with 43 GB free, which is what a store growing past
+# MemoryHigh looks like: its pages are reclaimed to swap, not freed. That is
+# the reading, not yet a measurement; after the restart the figures should
+# show triage's swap near 0 and staying there. Reflection's prompts share one
+# prefix, which stays in the slot itself, so the store holds little worth
+# keeping. Takes effect on `sudo systemctl restart llama-triage`.
+#
 # --chat-template-kwargs enable_thinking:false, which the composer has had
 # since it was written and this never did.
 #
