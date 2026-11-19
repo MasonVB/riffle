@@ -705,6 +705,46 @@ def do_witness(state, reader, log, max_pages=8):
 
 _RUN = None          # (state, cfg) once main() has them, for _after_cycle
 
+_FORCED_WAIT = 2400  # seconds a forced run waits for the cycle lock (gate 6)
+
+
+class _LockWaitOver(Exception):
+    pass
+
+
+def _wait_for_lock(fh, seconds):
+    """Block in flock on fh until it is ours (True) or `seconds` pass (False).
+
+    A waiter blocked in flock is given the lock when it is released, ahead
+    of any process that asks afterwards; see the forced run in _main. The
+    alarm needs the main thread; anywhere else this falls back to trying
+    once a second."""
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                time.sleep(1)
+        return False
+
+    def _over(*_):
+        raise _LockWaitOver()
+    old = signal.signal(signal.SIGALRM, _over)
+    signal.alarm(max(1, int(seconds)))
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        return True
+    except _LockWaitOver:
+        return False
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
 
 def main():
     """One cycle; then the figures report (agent/figures.py) is brought up to
@@ -780,24 +820,30 @@ def _main():
     #
     # Waiting is the honest answer: a forced run was asked for deliberately,
     # so it should queue behind the running cycle rather than race it. The
-    # wait is bounded well inside TimeoutStartSec (10800s).
+    # wait is bounded well inside TimeoutStartSec (21600s; gate 6 sums it).
+    #
+    # IN THE QUEUE, NOT POLLING (2026-11-19). This tried the lock every ten
+    # seconds. The timer's next wake starts the moment a cycle ends (its five
+    # minutes are long past by then) and takes the lock within a second or
+    # two, so a poller that looks every ten seconds usually finds it taken
+    # again: on 2026-11-18 a forced run waited from 21:01 to 21:41 UTC while
+    # three timer cycles ran, then gave up, "a cycle has held the lock for 40
+    # minutes", when none had. Now it waits in flock itself, which the kernel
+    # wakes the moment the lock is released, a second or more before a new
+    # timer wake has started up far enough to ask; an alarm ends the wait at
+    # the same 40 minutes.
     if getattr(a, "force", False):
-        _waited = 0
-        while True:
-            try:
-                fcntl.flock(_CYCLE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if _waited >= 2400:
-                    log("a cycle has held the lock for 40 minutes; this "
-                        "forced run gives up rather than waiting longer",
-                        level="warn")
-                    return 0
-                if _waited == 0:
-                    log("a cycle is running; this forced wake waits for the "
-                        "lock rather than exiting", level="info")
-                time.sleep(10)
-                _waited += 10
+        try:
+            fcntl.flock(_CYCLE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log("a cycle is running; this forced wake waits for the "
+                "lock rather than exiting", level="info")
+            if not _wait_for_lock(_CYCLE_LOCK, _FORCED_WAIT):
+                _for = (f"{_FORCED_WAIT // 60} minutes" if _FORCED_WAIT >= 120
+                        else f"{_FORCED_WAIT} s")
+                log(f"the cycle lock was not free for {_for}; this forced run "
+                    f"gives up rather than waiting longer", level="warn")
+                return 0
     else:
         try:
             fcntl.flock(_CYCLE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2309,12 +2355,18 @@ def _main():
             _age = (_dts.datetime.now(_dts.timezone.utc) - _dts.datetime.fromisoformat(
                 _ls["at"].replace("Z", "+00:00"))).total_seconds()
             if _age < 6 * 3600:
+                # EACH RESULT LABELLED (audit F17, 2026-11-19): a Wikipedia
+                # snippet sat here unmarked, and its figures count as read.
                 parts.append(
                     f"WHAT YOUR SEARCH FOUND \u2014 {_ls['site']}, "
                     f"\"{_ls['query']}\" ({len(_ls['results'])} result(s)); "
-                    f"read_page a URL to read it and quote it:\n"
-                    + "\n".join(f"  {r.get('url')} \u2014 {(r.get('title') or '')[:90]}: "
-                                f"{(r.get('snippet') or '')[:200]}"
+                    f"read_page a URL to read it and quote it. A [label] is "
+                    f"what the page will be marked when you read it:\n"
+                    + "\n".join(f"  {r.get('url')}"
+                                + (f" [{source_label(r.get('url'))[0]}]"
+                                   if source_label(r.get('url'))[0] else "")
+                                + f" \u2014 {(r.get('title') or '')[:90]}: "
+                                + f"{(r.get('snippet') or '')[:200]}"
                                 for r in _ls["results"]))
         except Exception:
             pass
@@ -5691,16 +5743,60 @@ def apply_read_page(state, cfg, cid, p, drive, log):
 # 2026-10-27). The system prompt said the list held nothing a stranger could
 # post to while naming Wikipedia and arXiv on it. Removing these would cost
 # most of riffle's general reference, so they stay, labelled: in the system
-# prompt, in what riffle is shown when it reads one, and in the library entry,
-# so the label is there whenever the page is found again. Each must also be on
-# the reader's ALLOWED list; one that is not is dead weight here.
+# prompt, in what riffle is shown when it reads one, in the library entry,
+# and on a search result, so the label is there whenever the page is found
+# again. Each must also be readable by riffle-reader; one that is not is dead
+# weight here.
+#
+# WIDER, AND BY PATH (audit F17; the operator chose to label, not refuse,
+# 2026-11-19). The audit named reviewed sites with a part the public writes
+# (a forum, a mailing-list archive, a comment docket), open wikis and crowd
+# databases the label missed, and indexes that hold unreviewed work beside
+# reviewed. A site in OPEN_EDIT_PATHS or UNSURE_PATHS is labelled only under
+# those path prefixes; the rest of it is not.
 OPEN_EDIT_HOSTS = {
     "en.wikipedia.org", "commons.wikimedia.org", "en.wikisource.org",
-    "imslp.org", "openlibrary.org", "musicbrainz.org", "pkg.go.dev"}
+    "imslp.org", "openlibrary.org", "musicbrainz.org", "pkg.go.dev",
+    # added 2026-11-19 (F17)
+    "en.cppreference.com", "encyclopediaofmath.org", "www.chemspider.com",
+    "www.oercommons.org", "forum.earthdata.nasa.gov"}
+OPEN_EDIT_PATHS = {
+    "sqlite.org": ("/forum",),
+    "www.postgresql.org": ("/message-id", "/list/"),
+    "www.mathworks.com": ("/matlabcentral",),
+    "go.dev": ("/play",),
+    "www.w3.org": ("/community", "/wiki"),
+    "www.sec.gov": ("/comments",),
+    "ec.europa.eu": ("/info/law/better-regulation",),   # "Have your say"
+}
 PREPRINT_HOSTS = {
     "arxiv.org", "www.biorxiv.org", "www.medrxiv.org", "chemrxiv.org",
     "engrxiv.org", "psyarxiv.com", "socarxiv.org", "www.ssrn.com",
     "hal.science", "eprint.iacr.org"}
+# Reviewed and unreviewed side by side, and the URL does not say which.
+UNSURE_HOSTS = {
+    "core.ac.uk", "scholar.archive.org", "www.semanticscholar.org",
+    "www.base-search.net", "books.google.com", "catalog.archives.gov"}
+UNSURE_PATHS = {
+    "www.cambridge.org": ("/engage",),
+    "www.nber.org": ("/papers",),                      # working papers
+    "datatracker.ietf.org": ("/doc/draft-",),          # anyone may submit one
+}
+_LABELS = {
+    "open": ("written by anyone",
+             "This page is written by anyone (an open wiki, an open upload, a "
+             "forum, a mailing list or a comment page): treat it as someone's "
+             "claim and check a figure from it against a reviewed source."),
+    "preprint": ("unreviewed preprint",
+                 "This is an unreviewed preprint: treat it as its authors' claim "
+                 "and check a figure from it against a reviewed source."),
+    "unsure": ("may be unreviewed",
+               "This page comes from a site that holds reviewed or official work "
+               "beside work nobody reviewed (preprints, working papers, drafts, "
+               "self-published books, public transcriptions): find out which "
+               "this is before you rest anything on it, and until then treat it "
+               "as its authors' claim."),
+}
 
 
 def source_label(url):
@@ -5710,21 +5806,28 @@ def source_label(url):
     which carries a port or a user name when the URL does, while the reader
     checks hostname: https://en.wikipedia.org:443/wiki/Water was read, and
     shelved with no warning. The reader now refuses such URLs as well; this
-    holds either way. www. is matched with or without."""
+    holds either way. www. is matched with or without, and a path prefix as
+    written (/forum also takes in /forumpost; none here needs it not to)."""
     try:
-        host = (urllib.parse.urlparse(url or "").hostname or "").lower()
+        sp = urllib.parse.urlparse(url or "")
+        host = (sp.hostname or "").lower()
+        # As the server will read it: /docs/../forum/x is the forum, and so
+        # is //forum or /%66orum (decoded, doubled slashes and dot segments
+        # resolved) before the prefixes are compared.
+        import posixpath
+        path = posixpath.normpath(re.sub(r"/+", "/", "/" + urllib.parse.unquote(sp.path or "/")))
     except ValueError:
-        host = ""
+        host, path = "", "/"
     hosts = {host, host[4:] if host.startswith("www.") else "www." + host}
-    if hosts & OPEN_EDIT_HOSTS:
-        return ("written by anyone",
-                "This page is written by anyone (an open wiki or open upload): "
-                "treat it as someone's claim and check a figure from it against "
-                "a reviewed source.")
+
+    def _under(table):
+        return any(path.startswith(pre) for h in hosts for pre in table.get(h, ()))
+    if hosts & OPEN_EDIT_HOSTS or _under(OPEN_EDIT_PATHS):
+        return _LABELS["open"]
     if hosts & PREPRINT_HOSTS:
-        return ("unreviewed preprint",
-                "This is an unreviewed preprint: treat it as its authors' claim "
-                "and check a figure from it against a reviewed source.")
+        return _LABELS["preprint"]
+    if hosts & UNSURE_HOSTS or _under(UNSURE_PATHS):
+        return _LABELS["unsure"]
     return ("", "")
 
 

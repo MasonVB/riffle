@@ -255,11 +255,15 @@ list — Python and other language documentation, NIST, arXiv and the preprint
 servers, PubMed, Wikipedia, the Stanford Encyclopedia, standards bodies,
 government agencies, university archives. Not Reddit, not Stack Exchange, not
 news. But not all of it is reviewed. Wikipedia, Wikimedia Commons, Wikisource,
-IMSLP, Open Library, MusicBrainz and pkg.go.dev are written by anyone, and
-arXiv, bioRxiv, medRxiv, ChemRxiv, engrXiv, PsyArXiv, SocArXiv, SSRN, HAL and
-the IACR ePrint archive hold unreviewed preprints. A page from those is
-marked when you read it: treat it as someone's claim, and check a figure from
-it against a reviewed source before you rest anything on it.
+IMSLP, Open Library, MusicBrainz, pkg.go.dev, cppreference and other open
+wikis are written by anyone, and so are the forums, mailing-list archives and
+comment pages some reviewed sites also carry. arXiv, bioRxiv, medRxiv,
+ChemRxiv, engrXiv, PsyArXiv, SocArXiv, SSRN, HAL and the IACR ePrint archive
+hold unreviewed preprints, and CORE, Semantic Scholar, BASE, Google Books and
+the like hold unreviewed work beside reviewed. A page from those is marked
+when you read it, and so is a search result from one: treat it as someone's
+claim, and check a figure from it against a reviewed source before you rest
+anything on it.
 
 To find a page, `search_web` one site from that list with what you are
 looking for; read_page a result. When a post rests on something from outside

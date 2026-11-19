@@ -418,10 +418,18 @@ def prune(state, keep=PRUNE_KEEP):
     n = state.db.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
     if n <= keep:
         return 0
+    # WHAT IS ALREADY DEAD GOES FIRST (2026-11-19). The store sat at exactly
+    # 1,200 on 2026-11-18, 765 of them expired: kept for the record by the
+    # daily sweep (consolidate.sweep purges them after 30 days), and never
+    # shown to riffle. This took the least-used first, so an expired note
+    # that had been recalled once went after a live one never yet recalled.
+    # Expired or superseded rows now go before any live one; among each,
+    # least-used and oldest.
     doomed = state.db.execute(
         "SELECT id FROM memories WHERE pinned=0"
         " AND COALESCE(tier,'short') != 'long'"
-        " ORDER BY use_count ASC, id ASC LIMIT ?",
+        " ORDER BY (COALESCE(expired,0)=0 AND superseded_by IS NULL) ASC,"
+        " use_count ASC, id ASC LIMIT ?",
         (n - keep,)).fetchall()
     for r in doomed:
         forget(state, r["id"])
@@ -694,6 +702,16 @@ def reflect(state, cfg, log=None):
     # a backlog all at once would cost more than the cycle has. Taking the
     # oldest means the backlog drains in order instead of being discarded.
     last_done = state.note("last_reflected_cycle")
+    # THE FAILURE COUNTS GO WHEN THE MARKER PASSES THEM (2026-11-19). Each
+    # failed attempt writes reflect_fail_<cycle>, and nothing removed one, so
+    # the notes table had 494 of them on 2026-11-18, one for every cycle that
+    # ever failed once, read by nothing after the marker moved past it.
+    if last_done:
+        state.db.execute(
+            "DELETE FROM notes WHERE key LIKE 'reflect_fail\\_%' ESCAPE '\\'"
+            " AND substr(key, 14) NOT GLOB '*[^0-9]*'"      # a cycle id, and only that
+            " AND CAST(substr(key, 14) AS INTEGER) <= ?", (int(last_done),))
+        state.db.commit()
     # A STALE BACKLOG IS SKIPPED (audit of the box, 2026-11-03). Reflection
     # failed on 182 of ~260 attempts in three days (a 400-token ceiling the
     # notes outgrew) and fell about 680 cycles, a week, behind, taking the

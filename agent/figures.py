@@ -296,9 +296,13 @@ def report(state, cfg):
                 continue
             avail.append((j.get("mem") or {}).get("MemAvailable"))
             load.append((j.get("cpu") or {}).get("load1"))
+            # telemetry.temps() is flat, {"coretemp.Core 0": 78.0, ...}; this
+            # read only nested dicts, so "hottest" was always "-" (2026-11-19).
             for chip, v in (j.get("temps") or {}).items():
                 if isinstance(v, dict):
                     temp += [x for x in v.values() if isinstance(x, (int, float))]
+                elif isinstance(v, (int, float)):
+                    temp.append(v)
         if rows:
             say(f"  last 24 h, {len(rows)} samples: least memory available "
                 f"{_n(min([a for a in avail if a is not None], default=None))} MiB, "
@@ -365,8 +369,16 @@ def report(state, cfg):
 
     def prompt():
         ccfg = cfg.get("cycle") or {}
-        say(f"  max_prompt_chars {ccfg.get('max_prompt_chars')}, interval {ccfg.get('interval_minutes')} min "
-            f"(set: {_one(state, 'SELECT value FROM notes WHERE key=?', ('cycle_interval_minutes',), 'config')})")
+        # Which interval is in force, as the cycle's own gate decides it: the
+        # dashboard's setting, else config.yaml, else 60. This printed the
+        # config value alone, "interval None min (set: 15)" (2026-11-19).
+        _set = _one(state, 'SELECT value FROM notes WHERE key=?', ('cycle_interval_minutes',), None)
+        _cfg_iv = ccfg.get('interval_minutes')
+        _iv_src = ("set on the dashboard" if _set else
+                   "from config.yaml" if _cfg_iv else "the default")
+        _in_cfg = f"config.yaml says {_cfg_iv}" if _cfg_iv else "not in config.yaml"
+        say(f"  max_prompt_chars {ccfg.get('max_prompt_chars')}, interval "
+            f"{_set or _cfg_iv or 60} min ({_iv_src}; {_in_cfg})")
         rows = _q(state, "SELECT * FROM prompt_fits ORDER BY id DESC LIMIT 100")
         if rows:
             r = rows[0]
@@ -380,8 +392,11 @@ def report(state, cfg):
             per = {}
             for x in rows:
                 try:
+                    # One row per kind of block: a heading's numbers (a count,
+                    # a date) change from cycle to cycle, and listed apart the
+                    # same block filled seven of the 32 rows (2026-11-19).
                     for name, (w, s) in json.loads(x["blocks"] or "{}").items():
-                        per.setdefault(name, []).append((w, s))
+                        per.setdefault(re.sub(r"\d+", "#", name), []).append((w, s))
                 except (ValueError, TypeError):
                     continue
             say("  each block over those fits: in how many, wanted median/max, and how often cut (sent less)")

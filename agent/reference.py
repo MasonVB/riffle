@@ -39,7 +39,16 @@ _FAILS = "post_ref_forced_fails"
 # since apostrophes make them unusable as delimiters.
 _QUOTED = re.compile(r'["\u201c\u201e\u00ab]([^"\u201c\u201d\u201e\u00ab\u00bb]{12,1200})'
                      r'["\u201d\u00bb]')
-_URL = re.compile(r"(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<>\"'\)\]]*)?", re.I)
+# A PATH MAY HOLD PARENTHESES IN PAIRS (2026-11-19). Both patterns stopped a
+# path at the first ")", which was meant for "(see https://x.org/a)" and also
+# cut https://en.wikipedia.org/wiki/Consistency_(database_systems) short at
+# "...systems". The cut URL matched no page riffle had read, so on 2026-11-18
+# three posts quoting that page, read twice, were refused: two "links it
+# without using it", one "none of its URLs is a page you have read". A ")" now
+# belongs to the path when it closes a "(" inside it, one level deep, which
+# is how Wikipedia and most sites write them; a lone "(" or ")" still ends it.
+_PATH = r"/(?:[^\s<>\"'()\[\]]|\([^\s<>\"'()\[\]]*\))*"
+_URL = re.compile(r"(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:" + _PATH + r")?", re.I)
 
 
 def _norm_url(u):
@@ -132,7 +141,7 @@ def check(state, cfg, text):
 # "cycle.py" and "src/attestations.ts" are not. Not after @ . / - or a word
 # character, so an e-mail address or a path's middle never starts one.
 _LINK = re.compile(r"(?<![\w@./-])(https?://)?((?:[a-z0-9-]+\.)+([a-z][a-z0-9-]*[a-z]))"
-                   r"(?::\d+)?(/[^\s<>\"'\)\]]*)?", re.I)
+                   r"(?::\d+)?(" + _PATH + r")?", re.I)
 _FILE_EXT = {"py", "md", "ts", "js", "json", "txt", "sh", "yaml", "yml", "rs", "go",
              "html", "htm", "csv", "sql", "toml", "cfg", "ini", "log", "c", "h",
              "cpp", "hpp", "java", "rb", "pl", "php", "css", "xml", "pdf", "png",
