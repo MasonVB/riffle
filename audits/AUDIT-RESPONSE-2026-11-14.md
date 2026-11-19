@@ -451,3 +451,42 @@ The suite holds the gate to the audit's three drifts. It does not check that a c
 **Tests.**
 - New: `cycle/test_a_submission_names_riffles_own_work_and_a_source_is_something_read.py` and `deploy/test_the_deploy_checks_the_two_secrets_and_the_sudoers_rules.sh`, plus two cases in the build disk test. Each shows its fault on the previous version.
 - 287 tests: 274 pass, 13 skip, 0 differ.
+
+## 18. Addendum, batch 11 (2026-11-18): the suite itself (sections 7.1 and 7.2), and F25 on the box
+
+**F25, confirmed on the box.** After installing the new `riffle-build`, a build printed `bus: refused, PermissionError 13` (the system bus is hidden), `inet socket: refused, OSError 97` (only UNIX sockets), one process visible in `/proc`, and a working `multiprocessing.Pool`. My first self-test checked whether the bus socket's path existed, which a hidden path still does, so it proved nothing. The second one connects.
+
+**The runner's two points, fixed.**
+- `run_all.sh` keeps up to 200 lines of each test and says when there were more. It used to cut at 40, silently.
+- `check_against_expected.py` still compares a partly skipped test: the lines that ran must appear, in order, in the reviewed output.
+
+**7.2, fixed.**
+- 1 and 4 were fixed in batch 1.
+- 2: `running cycle seen` lists `/proc` as holding only its own stand-in cycle. Shown with a second stand-in running: the old test said "after it exits: seen=True", the new one says False.
+- 3: the gate test picks free ports.
+- 5: `run_all.sh` sets `TMPDIR` inside the run, so the tests' temporary files go with it. The normaliser maps the new path. One test cut its line at a fixed length before normalising and lost its tail to the longer path; it now replaces the path first.
+- 6: `witness once` calls `save_head(chain, head, through_id)` the right way round. The recorded marks are now positions (100, 50), not heads.
+- 7: corrected
+  - the inbox test's header (the ack comes straight after the store, on purpose);
+  - the reflection test's header (the front page is given for the newest cycle only, H4's rule);
+  - the board-tag test's count, which now leaves out the real pair and uses the batch 5 pattern (2 became 0);
+  - the three prompt tests, which print the configured ceiling.
+- 8: as an ordinary user, the stand-in `sudo` drops `install`'s `-o`/`-g`, and the sandboxed signer accepts libraries owned by the test's user. The five `signer libraries` cases, which test the root-owned rule itself, print SKIPPED as anyone but root and say why.
+
+**7.1, covered.** All nineteen protections no test noticed losing are now pinned:
+- the queue setting (batch 1) and the stuck failsafe (batch 8);
+- the gate's `never`, unknown fields, rationale rule and daily cap;
+- riffle's limit on moving a goal;
+- the signer's payout-address comparison, and `custom` refused to riffle and riffle-build;
+- the reader's allowlist and https rule;
+- the dashboard's JSON-only writes;
+- the cycle lock;
+- the dashboard's duplicate re-check on approval, which also covers the near-duplicate check;
+- every sandbox property of a build, `PrivateNetwork` and `MemoryMax` among them;
+- numcheck's exact-integer rule, and small integers as claims in agent mode.
+
+I did not repeat the auditor's mutation runs. Each new test prints the value the protection decides, so switching it off changes the output.
+
+**Result.** 295 tests. As root, with the registry's message builders: 295 match, none skipped. As an ordinary user: 290 match, and the five root-only cases skip.
+
+**Still open:** F45 and F17, the reading allowlist, which need the operator's decision.
