@@ -490,3 +490,35 @@ I did not repeat the auditor's mutation runs. Each new test prints the value the
 **Result.** 295 tests. As root, with the registry's message builders: 295 match, none skipped. As an ordinary user: 290 match, and the five root-only cases skip.
 
 **Still open:** F45 and F17, the reading allowlist, which need the operator's decision.
+
+## 19. Addendum, batch 12 (2026-11-19): F45 and F17 as decided, the rest of F26, and five faults from the box's figures
+
+**F45 and F17, the operator's decision.** Add the 21 edited hosts and gcc.gnu.org's manuals; keep five open hosts out; for F17, label rather than refuse (option B).
+- The reader allows the 21: scipy.org, pandas.pydata.org, scikit-learn.org, datatracker.ietf.org, open-std.org (and www.), reference.wolfram.com, ieeexplore.ieee.org, journals.aps.org, cve.mitre.org, data.worldbank.org, patents.google.com, www.fda.gov, www.weather.gov, www.govinfo.gov, www.fhwa.dot.gov, www.ncjrs.gov, www.nrcs.usda.gov, cde.ucr.cjis.gov, webbtelescope.org, www.britishmuseum.org, www.rijksmuseum.nl. They are a separate block, so the diff shows them.
+- gcc.gnu.org is readable under `/onlinedocs` only (`PATH_ONLY`). A `.` or `..` segment is refused there, written plainly or as `%2e`, since `/onlinedocs/../bugzilla` starts with the prefix. It is left out of `--list-domains`, so search_web does not offer it.
+- `ietf.org` is out of `SUBDOMAINS_OK`. It opened nothing while no ietf.org host was allowed, and would have opened every IETF mailing list (mailarchive.ietf.org) once datatracker.ietf.org was.
+- osf.io, zenodo.org, archive.org, libretexts.org and raw.githubusercontent.com stay refused. psyarxiv.com and socarxiv.org are still listed, but both now serve from osf.io, so their pages cannot be read.
+- `source_label` labels by path as well as host, on the path as the server reads it (decoded, doubled slashes and dot segments resolved).
+  - "written by anyone" adds en.cppreference.com, encyclopediaofmath.org, www.chemspider.com, www.oercommons.org and forum.earthdata.nasa.gov; and, by path, sqlite.org/forum, the postgresql.org list archives, MathWorks' matlabcentral, go.dev/play, w3.org's community and wiki pages, sec.gov comments, and the Commission's "Have your say".
+  - A new label, "may be unreviewed": core.ac.uk, scholar.archive.org, Semantic Scholar, BASE, Google Books, catalog.archives.gov; by path, cambridge.org/engage, NBER working papers, Internet-Drafts on the datatracker.
+- Each search result carries its label in WHAT YOUR SEARCH FOUND. The system prompt's sentence on labels names the new kinds.
+- `reading-allowlist.md` agrees with the reader: refused hosts are struck through, the GitHub sentence is corrected (riffle never could read raw.githubusercontent.com), and a Labels section lists what is labelled.
+- The reader's comments are corrected: Wikipedia was "the one open exception", and is not; ietf.org is gone.
+- Not done: preprints in PMC are not labelled, since their addresses do not say which they are. The europa.eu and nasa.gov wildcards stay, as option B keeps them; the parts the audit named are labelled.
+
+**F26, the part batch 9 missed.** The second pass's F26 named 490 `reflect_fail_*` notes that are never deleted. Batch 9's fix did not touch them, and my addendum listed only pruning as not done. That was my miss: I fixed the finding as first written and did not check what the second pass added to it. On 2026-11-18 there were 494. Reflection now deletes each count once its marker has passed that cycle, the existing ones included, on its next run.
+
+**From the box's figures of 2026-11-18.**
+- **Links with parentheses.** Both URL patterns stopped a path at the first `)`, so `en.wikipedia.org/wiki/Consistency_(database_systems)` was checked without its last character. Three posts quoting that page, which riffle had read twice, were refused on 2026-11-18. A `)` now belongs to the path when it closes a `(` inside it. numcheck's URL mask takes the same rule.
+- **A forced run starved by timer wakes.** It tried the lock every ten seconds. The timer's next wake starts as soon as a cycle ends and takes the lock within a second or two. A forced run waited 21:01 to 21:41 UTC while three cycles ran, then logged that a cycle had held the lock 40 minutes, which none had. It now waits in `flock` itself, with an alarm at the same 40 minutes. Gate 6 mirrors `_FORCED_WAIT = 2400`.
+- **Pruning took live memories before dead ones.** The store sat at its 1,200 limit, with 765 rows expired. Expired and superseded rows now go first.
+- **The triage model in swap.** llama-triage showed 6.4 GB in memory and 4.6 GB in swap, with 43 GB free. Its unit never set `--cache-ram`, so it had llama.cpp's default store of old prompts. It now has `--cache-ram 512`. This is a reading of the figures, not a measurement. After `sudo systemctl restart llama-triage`, the figures should show its swap near 0.
+- **The figures report.**
+  - "hottest" read only nested temperatures, and they are flat.
+  - The interval line printed config.yaml's value alone ("None").
+  - The block list gave one row per count in a heading.
+
+**Tests.** New: `parentheses link`, `forced run lock`, `reflect fails and prune`, `reading list decided` (reader, document, labels, search results), `figures three lines`.
+- `dense prompt refitted` counted ordinary text at 4 characters a token and overflowed by only a few hundred tokens. The 257 characters this batch adds to the system prompt made it fit without being measured, so it tested nothing. It now counts 3.5, and overflows on both the old tree and the new.
+- Six recorded outputs moved with the system prompt's size and the label's wording.
+- 306 tests. As root, with the registry's builders: 306 match. As an ordinary user: 301 match, and the five root-only cases skip.
