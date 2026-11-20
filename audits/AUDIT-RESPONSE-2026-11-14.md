@@ -563,3 +563,62 @@ I did not repeat the auditor's mutation runs. Each new test prints the value the
 **Found by its own test.** The first version kept every ordinary dashboard message whenever any action was waiting. A message with no action id gives NULL, `NULL IN (...)` is NULL, and `NOT NULL` is not true. A COALESCE fixes it.
 
 **Tests.** New: `history past the disk limit`. Rewritten for the rule: `library floor` and `telemetry prune`, both keeping their names. The suite now needs a disk under 85% used where it runs. 308 tests: as root, 308 match; as an ordinary user, 303 match and the five root-only cases skip.
+
+## 22. Verification of every finding (2026-11-19), and batch 15
+
+The operator asked for every finding in both reports to be checked against the code as it now stands (GitHub at c123984 plus this batch).
+
+**The auditor's 29 reproductions, re-run on today's code.** From `audits/riffle-audit-2026-11-14-repro-tests.zip`, as its README says, as root with the registry's builders. Each was compared with `output_on_39a3a5e.txt`.
+
+| Repro | Finding | On 39a3a5e | Today |
+|---|---|---|---|
+| sources, ownwords, title | F1, F2, F3 | sent | `numcheck-blocked`, not sent |
+| upper, ox, short | F6 | sent | `hash-unknown`, not sent |
+| twolinks | F7 | sent | `post-link-unused`, not sent |
+| forged | F5 | page shelved, post sent | `library_put` of a page blocked; post not sent |
+| answers, desk, notes | F12, F37 | most cut | all six answers, three drafts' starts and notes 4-8 shown |
+| buildhash | F4 | hash differs between runs, not the file's, not shown whole | same both runs, is the file's sha256, shown in full |
+| rejected | F9 | not mentioned, re-queued | mentioned, `rejected-before` |
+| ghost | F10 | left `approved` | `unknown`, to be settled (the next sweep settles it; see below) |
+| dashfail | F11 | `failed` after it landed | `executed` |
+| secret | F11 | thread died, row stuck at `sending` | row `failed` |
+| neardup | F16 | the corrected date merged into the old | stored apart |
+| launder | F14 | the pass wrote a board claim as `self` | written as `board` |
+| leak | F14 | stranger's line outside `<board>` | inside only |
+| detag | F14 | 3 of 5 tag forms passed | all 5 neutralised |
+| memory pass holds the database | F13 | second writer refused | wrote |
+| fit, fitquiet | F37 | 8,794 cut with room to spare; no journal line | nothing cut; every draft and note shown |
+| neverleft | F38 | `unknown` for good; the retry refused | `failed` / `never-sent`; the retry sent |
+| ghostinbox | F10 | comment stuck `pending` | the same, **as expected**. This repro runs only `inbox.reconcile`, with no cycle. The fix is the cycle's opening sweep, which turns the ghost into `unknown` and settles it against riffle's own history; the comment is then offered again. The suite's `no-answer sends are settled` test runs that sweep (`ghost-landed` executed, `unknown-gone` failed). |
+| memdrop | F42 | all 40 dropped, the pinned and the operator's among them | the pinned one is not shown; 8 dropped; both kept |
+| label | F41 | port and user-name URLs unlabelled and allowed | labelled; the user-name URL refused |
+| build disk masked, falsealarm | F40 | flood passed; innocent build stopped | flood stopped; innocent build passes |
+
+**Findings with no reproduction** were checked by their test in the suite: each addendum names the test, and all 309 match today. F8 (§9), F15, F43 (§13), F17, F45 (§19), F18 to F35 (§§15 to 17), F39, F44 (§14), F19, F26 (§§16, 19, 21).
+
+**Section 7.** 7.1: all 19 protections pinned (§18). 7.2: items 1 to 8 and the runner's two points fixed (§§4, 18).
+
+**Section 8, the small things.** Checking them found six of seven never done. That was my miss: I worked from the numbered findings and the drift notes, and never went back through section 8's list. Fixed in this batch:
+
+- config.example.yaml's "Twelve hours" paragraph explained `stale_minutes`, a key long gone. It is folded into the removal note.
+- Its two present-tense mentions of the 20,480-token window are now marked as the window of the time.
+- "three user messages" is now four (since 2026-11-07).
+- `notify.enabled` shipped `true` under a comment saying to leave it `false` until the keys are in. The example now ships `false`. The box's config.yaml is not touched.
+- llama-triage.service said the composer keeps `--mlock`. It dropped it on 2026-10-25.
+- riffle-run-cycle.service said, in one place, that a requested cycle exits if one is running. It waits.
+- `policy.REACHES_THE_SQUARE` now includes `knock`, which posts a presence mark, so the settings page marks it.
+- SETUP.md stage 1 now copies the two `.path` units, and stage 2 enables them. Without them, the dashboard's "run a cycle" and "restart the composer" buttons do nothing on a fresh install.
+- Already done earlier: the ordering-table drift (§11). The pre-commit scan point is a fact about uploads through GitHub's site, which F31's root literal check (§17) answers at deploy.
+
+**F14's fourth route, fixed.** Reflection is shown the newest cycle's front page. A durable line labelled `me:` that carries a run of five words from that page is now filed as `board`. Before, a stranger's title written as "me: …" became riffle's own conclusion. New test: `me line in front page words`, which shows the fault on the previous version.
+
+**Still not done, on purpose, and named here so nothing is hidden.**
+- F16 for riffle's own memories: kept apart only for the operator's words. Applied to riffle's own, it piled up changing numbers and broke the prompt cache (§12).
+- F17: preprints in PMC are unlabelled, since their addresses do not say which they are (§19).
+- `keyutil.py`'s lint, an unused import that is a deliberate probe (§16).
+
+**Settings the second pass recommended (section 9).** Seal and attestation are on queue. `flag` is still on auto, per the 2026-11-18 figures. The second pass advised queue. A flag's reason now gets the figure, hash and link checks (F3, F7), but a flag is an accusation made in public. It is the operator's call.
+
+**Housekeeping.** The reproductions zip is in both `audits/` and `tests/`, the same bytes. The `tests/` copy can be deleted.
+
+**Tests.** 309. As root, 309 match; as an ordinary user, 304 match and the five root-only cases skip. All 13 gates pass.
