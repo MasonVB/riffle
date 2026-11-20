@@ -34,9 +34,10 @@ llm:
     # with a worked argument in it.
     #
     # Against the MEASURED prompt size of 14,336 tokens (from llama-server's
-    # own n_tokens line, not an estimate), 4,000 leaves about 2,100 tokens
-    # of the 20,480 context spare. Going higher starts eating the margin
-    # that keeps a long prompt from colliding with a long answer.
+    # own n_tokens line, not an estimate), 4,000 left about 2,100 tokens
+    # of the 20,480 context then spare. (The window is 49,152 since
+    # 2026-11-15; see max_prompt_chars below.) Going higher starts eating the
+    # margin that keeps a long prompt from colliding with a long answer.
     #
     # cortex.complete now raises on finish_reason == "length", so the next
     # time this binds it will say so rather than blaming the JSON.
@@ -59,17 +60,11 @@ cycle:
   # starts an hour apart until someone sets it on the dashboard — the 15
   # you run came from a note, not from here.
   interval_minutes: 15
-  # Twelve hours. A build cycle takes over two, and at 120 every one of them
-  # was reaped minutes before finishing. This is a backstop for a process
-  # that hung, not a schedule.
-  #
-  # Safe only because a cycle that started before the current boot is reaped
-  # immediately regardless: after a crash the row is minutes old, and without
-  # that check twelve hours would block every cycle for twelve hours.
-  #
-  # stale_minutes removed: it was replaced by the cycle lock (agent/cycle.py
-  # takes a flock for the life of the process) and nothing has read it since.
-  # Leaving it here invited tuning a number with no effect.
+  # stale_minutes removed (it was twelve hours, a backstop for a cycle that
+  # hung): the cycle lock replaced it (agent/cycle.py takes a flock for the
+  # life of the process) and nothing has read it since. Leaving it here
+  # invited tuning a number with no effect. (Its old explanation stayed here
+  # after the key went, until 2026-11-19; audit second pass, section 8.)
 
   # The failsafe. When nothing has reached the square for stuck_hours AND
   # at least stuck_cycles have actually run in roughly that window, the
@@ -98,10 +93,10 @@ cycle:
   # max_prompt_chars below, and each block to its own cap (the project 3,000
   # characters, the thread 3,500), well under what is drafted here. Lowering
   # this changes nothing unless it goes below those caps. What sets cycle time
-  # now is max_prompt_chars and the composer's cache: since audit round 3
-  # (V1) riffle's prompt goes as three user messages, and the composer
-  # resumes from the first one that changed, not only after the system prompt
-  # as measured here on 2026-10-21.
+  # now is max_prompt_chars and the composer's cache: riffle's prompt goes as
+  # four user messages (three from audit round 3, V1; four since 2026-11-07),
+  # and the composer resumes from the first one that changed, not only after
+  # the system prompt as measured here on 2026-10-21.
   max_context_chars: 20000
   # 50000, not 46000.
   #
@@ -110,9 +105,9 @@ cycle:
   # remaining data blocks could not always give up enough, and the prompt
   # came out 315 to 578 characters over — small, and still a refused call.
   #
-  # 50,000 leaves about 4,000 characters of slack and still puts ~15,900
-  # tokens on the wire against a 20,480 window, so ~4,500 remain to answer
-  # in against a max_tokens of 3,000.
+  # 50,000 left about 4,000 characters of slack and still put ~15,900
+  # tokens on the wire against the 20,480 window of the time, so ~4,500
+  # remained to answer in against a max_tokens of 3,000.
   #
   # 62,000 with the composer's window at 24,576 tokens (audit round 3, V2):
   # ~19,100 tokens on the wire, ~5,400 left against max_tokens 4,000. Raise
@@ -232,8 +227,10 @@ dash:
 # --- notifications --------------------------------------------------------
 # Get both keys from pushover.net: user_key from your dashboard, api_token by
 # registering an application. Leave enabled: false until both are filled in.
+# (This shipped true beside empty keys until 2026-11-19, against its own
+# advice; audit second pass, section 8. Your config.yaml is not changed.)
 notify:
-  enabled: true
+  enabled: false
   timezone: America/Los_Angeles
   dash_host: riffle          # used to build the tap-through link
   windows:

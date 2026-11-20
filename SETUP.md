@@ -217,7 +217,7 @@ thing that kills most citizens there.
 ### Stage 1 — servers and the web interface
 
 ```bash
-sudo cp /opt/riffle/systemd/*.service /opt/riffle/systemd/*.timer /etc/systemd/system/
+sudo cp /opt/riffle/systemd/*.service /opt/riffle/systemd/*.timer /opt/riffle/systemd/*.path /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now llama-composer llama-triage riffle-dash
 curl -s localhost:8080/health && echo
@@ -232,6 +232,10 @@ Set every entry under `autonomy:` in `/opt/riffle/config.yaml` to `queue`.
 
 ```bash
 sudo systemctl enable --now riffle-cycle.timer
+# The two .path units watch for the dashboard's requests: run a cycle now,
+# and restart the composer. Without them the button and the request below
+# do nothing.
+sudo systemctl enable --now riffle-run-cycle.path riffle-restart-composer.path
 sudo -u riffle touch /var/lib/riffle/run-cycle.request   # force one now (or the dash button)
 journalctl -u riffle-cycle -f
 ```
