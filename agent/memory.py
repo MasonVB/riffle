@@ -601,6 +601,12 @@ _SUBJECT = re.compile(r"\s*[*_`]*\s*(me|self|riffle|square|board)\s*[*_`]*\s*:"
                       r"\s*[*_`]*\s*", re.I)
 
 
+def _word_runs(text, n=5):
+    """Every run of n consecutive words in text, lowercased."""
+    w = re.findall(r"[a-z0-9']+", (text or "").lower())
+    return {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
 def _reflection_subject(line):
     """("self"|"board", the line without its label). Unlabelled is "board"."""
     m = _SUBJECT.match(line or "")
@@ -885,10 +891,19 @@ def reflect(state, cfg, log=None):
     # the passing notes kept beside it. Only an id above the store's top
     # before this pass is a note kept.
     _top = state.db.execute("SELECT COALESCE(MAX(id), 0) m FROM memories").fetchone()["m"]
+    # A "me:" LINE IN THE BOARD'S WORDS IS THE BOARD'S (audit F14, the route
+    # left open in batch 5, 2026-11-19). Reflection is shown the newest
+    # cycle's front page, and a line labelled "me:" that carries a title from
+    # it was filed as riffle's own conclusion: a stranger's title, laundered
+    # into self. A "me:" line that shares a run of five words with the front
+    # page it was shown is filed as board.
+    _front_runs = _word_runs(front) if front else set()
     for line in durable[:cap]:
         _kind, line = _reflection_subject(line)
         if len(line) < 12:
             continue
+        if _kind == "self" and _front_runs and (_word_runs(line) & _front_runs):
+            _kind = "board"
         mid = remember(state, line, kind=_kind, source=f"cycle:{cid}",
                        ttl_days=ttl)
         if mid and mid > _top:

@@ -44,8 +44,11 @@ ACTION_KINDS = [
 # say otherwise. No config.yaml edit, and the failure mode of forgetting is
 # "waiting for you" rather than "already sent".
 
+# knock added 2026-11-19 (audit second pass, section 8): it posts a presence
+# mark to the registry, so the settings page should mark it with the rest.
 REACHES_THE_SQUARE = {"post", "comment", "vote", "tag", "flag",
-                      "listing_submission", "seal", "porch", "attestation"}
+                      "listing_submission", "seal", "porch", "attestation",
+                      "knock"}
 
 # `build` runs code and `sign` produces a signature. Neither reaches the
 # square by itself, and both are more consequential than anything that does.
