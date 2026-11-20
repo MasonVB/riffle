@@ -1,0 +1,1780 @@
+#!/usr/bin/env python3
+"""riffle's user-facing interface. One page: a conversation.
+
+    python3 -m agent.dash --config config.yaml
+
+The agent reports into the same thread you type into, so opening the page
+shows what it has been doing since you last looked — its cycles, what it sent,
+what it found, what got blocked — interleaved with your questions. Proposals
+waiting for approval render as cards you tap.
+
+Some administration is here and some is not. This page changes what lives in
+the database: each action's autonomy mode, the goals and their weights, the
+cycle interval, operator instructions, and memory. It cannot change
+config.yaml, the caps, the models, or the units; those are files you edit as
+yourself over ssh, and the service account cannot write them.
+"""
+import argparse
+import datetime as dt
+import hashlib
+import ipaddress
+import json
+import os
+import socket
+import sys
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from agent import chat, goals, memory  # noqa: E402
+import subprocess  # noqa: E402
+import threading as _th  # noqa: E402
+from agent.client import HttpError, Writer  # noqa: E402
+from agent import cycle as cycle_mod  # noqa: E402
+from agent.cycle import execute, load_config  # noqa: E402
+from agent.state import State, utcnow  # noqa: E402
+from agent.pages import (ACT_PAGE, GOALS_PAGE, HISTORY_EXTRA,  # noqa: E402
+                         PAGE, _chat_css)
+
+
+
+def cycle_running():
+    """Whether a wake cycle is running now: a live `python3 -m agent.cycle`.
+
+    M11, audit 2026-10-27. The dashboard's _cycle_running flag is true only
+    for the instant it writes a cycle request, never while a cycle runs, so
+    "Restart model" could kill a cycle mid-call and the indicator never lit.
+    This reads /proc rather than testing the cycle's lock: a test lock taken
+    on every poll could make a wake starting at that instant skip itself.
+    """
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if b"agent.cycle" in argv and b"-m" in argv:
+            return True
+    return False
+
+
+def host_allowed(host_header, cfg, hostname=None):
+    """Whether a request's Host header names this dashboard.
+
+    DNS REBINDING (Q1, audit 2026-10-27). A page your browser opens can point
+    a name it controls at this box and then talk to the dashboard as if it
+    were the same site; the JSON content-type check does not stop that. Such
+    a request always carries the attacker's NAME in its Host header. So:
+      - an IP literal is allowed: rebinding never arrives as one, and it is
+        how the box is reached by LAN or Tailscale address;
+      - an empty Host is allowed: every browser sends one, so an attack has one;
+      - otherwise only this box's own names: its hostname, hostname.local,
+        localhost, notify.dash_host, hostname.<tailnet>.ts.net (names
+        Tailscale controls), and any listed in dash.allowed_hosts.
+    The LAN and tailnet are trusted by design; this only stops a web page
+    reaching in through a browser.
+    """
+    h = (host_header or "").strip().lower()
+    if not h:
+        return True
+    if h.startswith("["):
+        name = h[1:h.index("]")] if "]" in h else h[1:]
+    elif h.count(":") == 1:
+        name = h.split(":", 1)[0]
+    else:
+        name = h                       # bare name, or a bare IPv6 address
+    name = name.rstrip(".")
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    me = (hostname or socket.gethostname()).lower().split(".")[0]
+    ok = {"localhost", me, f"{me}.local",
+          str((cfg.get("notify") or {}).get("dash_host") or "").lower()}
+    ok |= {str(x).lower().rstrip(".") for x in
+           ((cfg.get("dash") or {}).get("allowed_hosts") or [])}
+    if name in ok:
+        return True
+    parts = name.split(".")
+    return len(parts) == 4 and parts[0] == me and parts[-2:] == ["ts", "net"]
+
+
+class Handler(BaseHTTPRequestHandler):
+    cfg = state = worker = None
+
+    def log_message(self, *a):
+        pass
+
+    def _json(self, obj, code=200):
+        b = json.dumps(obj, default=str).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def _host_refused(self):
+        """Refuse, with a 403 that says what to change, if the Host is not
+        this dashboard's (see host_allowed). True if it refused."""
+        host = self.headers.get("Host", "")
+        if host_allowed(host, self.cfg or {}):
+            return False
+        b = (f"This dashboard does not answer to the name {host!r}. If that "
+             f"is how you reach it, add it to dash.allowed_hosts in "
+             f"config.yaml and restart riffle-dash.\n").encode()
+        self.send_response(403)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+        return True
+
+    def do_GET(self):
+        if self._host_refused():
+            return
+        if _goals_routes(self):
+            return
+        u = urllib.parse.urlparse(self.path)
+        if u.path == "/":
+            # Substituted at serve time: PAGE is a module constant and the
+            # model id lives in config.
+            # __BUILD__ is a hash of the page source. If it does not change
+            # after a deploy, the browser is serving a cached copy — which is
+            # exactly what happened on 2026-09-15: the page kept showing a
+            # message that had been deleted from the source, and the fix
+            # looked broken when it had simply never been loaded.
+            b = PAGE.replace("%MODEL%",
+                             str(self.cfg.get("model_id", ""))[:40]) \
+                    .replace("__BUILD__",
+                             hashlib.sha256(PAGE.encode()).hexdigest()[:6])
+            b = b.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            return self.wfile.write(b)
+        if u.path == "/act":
+            b = ACT_PAGE.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            return self.wfile.write(b)
+        if u.path == "/api/action":
+            q = urllib.parse.parse_qs(u.query)
+            try:
+                aid = int(q.get("id", ["0"])[0])
+            except ValueError:
+                return self._json({"error": "bad id"}, 400)
+            if q.get("t", [""])[0] != link_token(self.state, aid):
+                return self._json({"error": "link is not valid"}, 403)
+            a = self.state.action(aid)
+            if not a:
+                return self._json({"error": "no such proposal"}, 404)
+            return self._json({"id": a["id"], "kind": a["kind"], "drive": a["drive"],
+                               "status": a["status"], "rationale": a["rationale"],
+                               "payload": json.dumps(json.loads(a["payload"]), indent=2)})
+        if u.path in ("/figures", "/api/figures.txt"):
+            # EVERY FIGURE IN ONE PLACE (2026-11-15; agent/figures.py). This
+            # process's own model calls (the chat) are stored first, so they
+            # are in it too.
+            from agent import cortex, figures
+            try:
+                figures.save_calls(self.state, cortex.CALLS)
+            except Exception:
+                pass
+            text = figures.report(self.state, self.cfg)
+            plain = u.path.endswith(".txt")
+            b = (text if plain else figures_page(text)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", ("text/plain" if plain else "text/html")
+                             + "; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            return self.wfile.write(b)
+        if u.path == "/history":
+            b = history_page(self.state).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            return self.wfile.write(b)
+        if u.path == "/api/messages":
+            _qs = urllib.parse.parse_qs(u.query)
+            after = int(_qs.get("after", ["0"])[0])
+            # `from` pulls history BACKWARDS to a given message id, so the
+            # waiting button can load the card it wants to scroll to rather
+            # than telling you to go and find it. "Scroll up to load it" was a
+            # dead end: the card was two days back, scrolling loaded nothing,
+            # and the message repeated forever.
+            _from = int(_qs.get("from", ["0"])[0])
+            if _from:
+                after = max(0, _from - 1)
+            return self._json(self.snapshot(after))
+        self._json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        if self._host_refused():
+            return
+        # --- cross-site write protection, before anything else -------------
+        #
+        # The dashboard binds 0.0.0.0:80 with no login, on the grounds that
+        # the LAN is trusted. That reasoning covers the wrong threat: the
+        # attack is not a device on the LAN, it is any web page your phone's
+        # browser opens WHILE on the LAN. Such a page can post a form to
+        # http://riffle/api/decide and approve a queued action, and the
+        # browser sends it because no credential is involved.
+        #
+        # A cross-site form can only send three content types, and
+        # application/json is not among them. Asking for JSON forces a
+        # preflight OPTIONS request, which this server does not answer, so
+        # the browser never sends the real one. Every legitimate caller here
+        # is fetch() from the dashboard's own pages, which already sets it.
+        #
+        # This is three lines and no login, and it does not depend on
+        # trusting the network.
+        _ct = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if _ct != "application/json":
+            return self._json(
+                {"error": "writes need Content-Type: application/json. This "
+                          "blocks a cross-site form from acting as you; it is "
+                          "not an authentication check."}, 415)
+
+        # The goals routes read their own body, so they must be offered the
+        # request before anything else consumes rfile.
+        # NOTE THE TRAILING SLASHES. Every entry here is a PREFIX, so a route
+        # without one — /api/interval — matches nothing and falls through to
+        # the 404 at the bottom of this method. That is why the settings page
+        # answered "not found" on save while the handler for it sat two
+        # hundred lines below, correct and unreachable.
+        if self.path.startswith(("/api/goal/", "/api/memory/",
+                                 "/api/policy/", "/api/project/",
+                                 "/api/instruction/", "/api/interval",
+                                 "/api/answer", "/api/dismiss", "/api/resolve")):
+            if _goals_routes(self):
+                return
+            # 404 HERE, not below. _goals_routes has already read rfile for
+            # any POST it looked at; falling through means do_POST reads the
+            # same stream again, gets nothing, and the handler thread blocks
+            # on a body that will never arrive. One unmatched path under
+            # these prefixes hangs a worker thread for good.
+            #
+            # The prefixes above are the contract: if the path starts with
+            # one and _goals_routes did not handle it, it does not exist.
+            return self._json({"error": f"no route for {self.path}"}, 404)
+        n = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except json.JSONDecodeError:
+            return self._json({"error": "bad json"}, 400)
+        u = urllib.parse.urlparse(self.path)
+        if u.path == "/api/send":
+            q = str(body.get("q", "")).strip()[:4000]
+            if not q:
+                return self._json({"error": "empty"}, 400)
+            steering = bool(body.get("instruct"))
+            self.state.say("user", q, {"instruct": steering})
+            # Anything you type is also an instruction the next cycle will see.
+            # The cycle prompt never contained the conversation, which is why
+            # asking for a project on #1916 produced one on something else.
+            # Only when you asked for it. Turning every question into a
+            # directive meant the next cycle woke carrying idle curiosity as a
+            # mandate.
+            if steering:
+                from agent.state import add_instruction
+                add_instruction(self.state, q,
+                                int((self.cfg.get("instructions") or {})
+                                    .get("default_cycles", 1)))
+                self.state.log("you sent an instruction to the next cycle: "
+                               + q[:160])
+            self.worker.submit(q, utcnow()[:10])
+            return self._json({"ok": True})
+        if u.path == "/api/clear-alarms":
+            return self._json(self.clear_alarms())
+        if u.path == "/api/clear-chat":
+            return self._json(self.clear_chat())
+        if u.path == "/api/restart-model":
+            return self._json(self.restart_model())
+        if u.path == "/api/run-cycle":
+            return self._json(self.run_cycle())
+        if u.path == "/api/decide":
+            # A non-number id raised out of the handler (audit F30).
+            try:
+                _did = int(body.get("id", 0))
+            except (TypeError, ValueError):
+                return self._json({"error": "that is not an action id"}, 400)
+            return self._json(self.decide(_did,
+                                          str(body.get("verdict", "reject")),
+                                          str(body.get("reason") or "")[:600]))
+        self._json({"error": "not found"}, 404)
+
+    # ---- view model ------------------------------------------------------
+    def snapshot(self, after):
+        s, cfg = self.state, self.cfg
+        # Ask the worker, not the database. A row left open with nobody writing
+        # to it is a ghost, and the page used to spin on it forever. Do this
+        # BEFORE reading the rows, or this poll still reports the stale one as
+        # open and the client waits another cycle for the truth.
+        w = self.worker
+        generating = bool(getattr(w, "busy", False)) or w.depth() > 0
+        if not generating and s.pending_generation() is not None:
+            chat.close_orphans(s, "interrupted")
+        day = utcnow()[:10]
+        out = []
+        # A streaming row must be re-sent on every poll, so the client only
+        # advances its cursor past rows marked done. Advancing past a partial
+        # row is how you end up with a reply that stops mid-sentence forever.
+        for m in s.messages(after):
+            out.append({"id": m["id"], "role": m["role"], "content": m["content"],
+                        "meta": json.loads(m["meta"]) if m["meta"] else {},
+                        "done": bool(m["done"]), "ts": m["ts"]})
+        # Acknowledged alarms stay in the journal; the badge just stops
+        # counting them. Clearing is a watermark, not a delete.
+        seen = int(s.note("alarms_acked_to") or 0)
+        arows = s.db.execute(
+            "SELECT id, ts, level, drive, text FROM journal"
+            " WHERE level IN ('alarm','error') AND id > ?"
+            " ORDER BY id DESC LIMIT 100", (seen,)).fetchall()
+        alarms = len(arows)
+        alarm_list = [{"id": r["id"], "ts": r["ts"], "level": r["level"],
+                       "drive": r["drive"], "text": r["text"]} for r in arows]
+        caps = " ".join(f"{k[0]}{cfg['caps'][k] - s.cap_used(day, k)}"
+                        for k in sorted(cfg["caps"]))
+        # A card that changes state is by definition older than the
+        # client's cursor, so it would never be re-fetched. Re-send recent
+        # proposal cards every poll; there are only ever a handful, and the
+        # client renders by id so they update in place.
+        have = {m["id"] for m in out}
+        for m in s.db.execute("SELECT * FROM messages WHERE role='proposal'"
+                              " AND archived_at IS NULL"
+                              " ORDER BY id DESC LIMIT 25"):
+            if m["id"] not in have:
+                out.append({"id": m["id"], "role": m["role"], "content": m["content"],
+                            "meta": json.loads(m["meta"]) if m["meta"] else {},
+                            "done": True, "ts": m["ts"]})
+        out.sort(key=lambda x: x["id"])
+
+        # The MESSAGE ids of the cards still waiting on you, oldest first.
+        #
+        # The client used to work these out while rendering, which fails for
+        # anything proposed before the page was opened: polling is
+        # incremental, so render() is never called for older messages and the
+        # list stayed empty. The server knows which actions are pending and
+        # which message carries each one; it should just say.
+        # And `unknown` (audit F38): a send with no answer waits for you to
+        # say what you found, unless the cycle settles it first.
+        _pending = s.db.execute(
+            "SELECT id FROM actions WHERE status IN ('queued','sending','unknown')"
+            " ORDER BY id").fetchall()
+        _pids = {r["id"] for r in _pending}
+        _waiting = []
+        # Through the index on the action id (audit F26): this parsed the meta
+        # of every proposal message ever written, every poll.
+        if _pids:
+            _ph = ",".join("?" * len(_pids))
+            _waiting += [m["id"] for m in s.db.execute(
+                "SELECT id FROM messages WHERE role='proposal' AND json_valid(meta)"
+                f" AND json_extract(meta,'$.action_id') IN ({_ph}) ORDER BY id",
+                tuple(_pids))]
+
+        # OPEN QUESTIONS ARE WAITING ON YOU TOO (2026-11-14). A question was
+        # one message in the chat log and nothing more. The page loads the
+        # newest 400 messages, about two days of riffle's reports, and the
+        # clear button archives everything, so on the box all three open
+        # questions (asked 10-08, 11-07 and 11-08) had scrolled out or been
+        # cleared, and you were never shown one. riffle meanwhile sat at its
+        # limit of three and could ask nothing more. Queued proposals had the
+        # same weakness once (re-sent below by id); questions never got it.
+        #
+        # Every open question's card is now sent on every poll, archived or
+        # not, and counts in "waiting"; and a pending proposal's card is sent
+        # even if a clear archived it.
+        from agent.state import open_questions as _oq
+        _openq = {r["id"] for r in _oq(s)}
+        if _openq:
+            _ph = ",".join("?" * len(_openq))
+            _waiting += [m["id"] for m in s.db.execute(
+                "SELECT id FROM messages WHERE role='question' AND json_valid(meta)"
+                f" AND json_extract(meta,'$.qid') IN ({_ph}) ORDER BY id",
+                tuple(_openq))]
+        _waiting = sorted(set(_waiting))
+        # And questions answered in the last day, so the card turns to
+        # "answered" on every device, not only the one you answered from
+        # (2026-11-15: answered cards stayed at "sending..." because only
+        # open questions were re-sent).
+        _recent_q = set()
+        try:
+            _done = {r["id"] for r in s.db.execute(
+                "SELECT id FROM questions WHERE answered_at IS NOT NULL"
+                " AND answered_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 day')")}
+            if _done:
+                _ph = ",".join("?" * len(_done))
+                _recent_q |= {m["id"] for m in s.db.execute(
+                    "SELECT id FROM messages WHERE role='question' AND json_valid(meta)"
+                    f" AND json_extract(meta,'$.qid') IN ({_ph})", tuple(_done))}
+        except Exception:
+            pass
+        have = {m["id"] for m in out}
+        for _mid in sorted(set(_waiting) | _recent_q):
+            if _mid not in have:
+                m = s.db.execute("SELECT * FROM messages WHERE id=?", (_mid,)).fetchone()
+                if m:
+                    out.append({"id": m["id"], "role": m["role"], "content": m["content"],
+                                "meta": json.loads(m["meta"]) if m["meta"] else {},
+                                "done": True, "ts": m["ts"]})
+        out.sort(key=lambda x: x["id"])
+
+        return {"messages": out, "queued": len(s.queued()),
+                "questions": len(_openq),
+                "unsettled": s.db.execute("SELECT COUNT(*) FROM actions"
+                                          " WHERE status='unknown'").fetchone()[0],
+                "waiting_ids": _waiting,
+                "alarms_list": alarm_list,
+                "model_restarting": type(self)._restarting,
+                "cycle_running": cycle_running(),
+                "generating": generating,
+                "alarms": alarms, "caps": caps}
+
+    _cycle_lock = __import__("threading").Lock()
+    _cycle_running = False
+
+    _restart_lock = __import__("threading").Lock()
+    _restarting = False
+
+    _sched_started = False
+
+    @classmethod
+    def start_scheduler(cls):
+        """Honour the agent's requests for extra cycles.
+
+        Deliberately here rather than in the cycle: the agent writes a request
+        into the database and something outside it decides whether to act. It
+        cannot reach this loop, and it cannot start a cycle directly.
+        """
+        if cls._sched_started:
+            return
+        cls._sched_started = True
+
+        def loop():
+            import datetime as _dt
+            import time as _t
+            while True:
+                _t.sleep(30)
+                try:
+                    st = cls.state
+                    req = st.note("cycle_requested_at")
+                    if not req:
+                        continue
+                    e = (cls.cfg.get("extra_cycles") or {})
+                    gap = int(e.get("min_gap_seconds", 300))
+                    last = st.note("extra_cycle_ran_at")
+                    now = _dt.datetime.now(_dt.timezone.utc)
+                    if last:
+                        try:
+                            if (now - _dt.datetime.fromisoformat(last)
+                                    ).total_seconds() < gap:
+                                continue
+                        except ValueError:
+                            pass
+                    if cycle_running() or getattr(cls.worker, "busy", False):
+                        continue
+                    st.note("cycle_requested_at", "")
+                    st.note("extra_cycle_ran_at", now.isoformat())
+                    why = st.note("cycle_requested_why") or ""
+                    st.log("starting the extra cycle it asked for: " + why[:160])
+                    cls().run_cycle() if False else _run_cycle_detached(cls)
+                except Exception as exc:
+                    try:
+                        cls.state.log("scheduler error: " + str(exc)[:200],
+                                      level="warn")
+                    except Exception:
+                        pass
+
+        _th.Thread(target=loop, daemon=True).start()
+
+    _tel_started = False
+
+    @classmethod
+    def start_telemetry(cls):
+        """A sample a minute, and a prune each hour.
+
+        In the dashboard because it is the only long-lived process. The
+        cycle samples at its own start and, via an atexit hook, at its end —
+        which is what pairs a reading with the work that produced it. This
+        docstring claimed both for months while only the start existed, so a
+        cycle-start row had no interval to compare against.
+        """
+        if cls._tel_started:
+            return
+        cls._tel_started = True
+        from agent import storage, telemetry
+        telemetry.install(cls.state, cls.cfg)
+        try:
+            telemetry.keep_last_boot(cls.state, cls.state.log)
+        except Exception as e:
+            cls.state.log(f"could not keep the last boot's telemetry: {e}",
+                          level="warn")
+
+        def loop():
+            import time as _t
+            n = 0
+            while True:
+                # TIME ONLY THE SLEEP.
+                #
+                # `due` was set AFTER sample() ran, so the sample's own
+                # duration — five systemctl calls, a health check, journal
+                # reads, an insert — was counted as lateness. On a busy box
+                # that is seconds, and the 30-second threshold could be
+                # crossed by the detector measuring itself.
+                #
+                # Sleeping is the only interval that means anything here: if
+                # a 60-second sleep takes 95 seconds, the scheduler did not
+                # run this thread, and that is the stall.
+                try:
+                    telemetry.sample(cls.state, cls.cfg, "tick")
+                    n += 1
+                    # Hourly: the disk rule (agent/storage.py), which
+                    # replaced telemetry's own 24-hour prune on 2026-11-19.
+                    # The cycle checks after every cycle too; this covers
+                    # the hours when no cycle runs.
+                    if n % 60 == 0:
+                        storage.check(cls.state, cls.cfg, cls.state.log)
+                except Exception:
+                    pass          # never let the watcher break the watched
+                # monotonic, not time() (L17, audit 2026-10-27): a clock
+                # correction faked a stall or hid one; this clock still runs
+                # through a real stall.
+                _before = _t.monotonic()
+                _t.sleep(60)
+                late = _t.monotonic() - _before - 60
+
+                # --- the loop times ITSELF ---------------------------------
+                # This thread is supposed to wake every 60 seconds. When it
+                # wakes late, the lateness is not a clock problem: the whole
+                # box was stalled, and nothing else on it was running either.
+                # That is why entering a chat message can take the dashboard
+                # AND ssh away for minutes while the journal shows nothing —
+                # no process was alive enough to write a line, so there was
+                # never going to be one. A thread that measures its own
+                # lateness is the cheapest stall detector available, because
+                # it needs no cooperation from whatever is doing the stalling.
+                if late >= 30:
+                    try:
+                        cls.state.log(
+                            f"STALL: the telemetry thread woke {round(late)}s "
+                            f"late. The box was unresponsive for about that "
+                            f"long — check memory around this timestamp.",
+                            level="error")
+                        telemetry.sample(cls.state, cls.cfg, "stall")
+                        cls.state.say("error",
+                                      f"The machine stalled for about "
+                                      f"{round(late)}s and has come back. "
+                                      f"A full telemetry dump was written at "
+                                      f"the moment it recovered.")
+                    except Exception:
+                        pass
+
+        _th.Thread(target=loop, daemon=True).start()
+
+    def clear_chat(self):
+        """Archive everything currently visible. Nothing is deleted."""
+        s = self.state
+        # Microseconds, not seconds: two clears inside the same second would
+        # otherwise share a stamp and merge into one batch in history.
+        import datetime as _dt
+        stamp = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        # Not what is still waiting on you (2026-11-14): an open question, or
+        # a proposal still queued or sending. Clearing the screen should not
+        # hide the things you have yet to answer.
+        cur = s.db.execute(
+            "UPDATE messages SET archived_at=? WHERE archived_at IS NULL"
+            " AND NOT (role IN ('question','proposal') AND"
+            " COALESCE(json_extract(meta,'$.status'),'open') IN ('open','queued','sending'))",
+            (stamp,))
+        s.db.commit()
+        n = cur.rowcount
+        s.log(f"you cleared the chat; {n} message(s) moved to history")
+        return {"ok": True, "archived": n}
+
+    def restart_model(self):
+        """Restart llama-composer and report back when it answers again."""
+        cls = type(self)
+        w = self.worker
+        if getattr(w, "busy", False) or w.depth() > 0 or cycle_running():
+            return {"error": "something is generating; wait for it to finish"}
+        with cls._restart_lock:
+            if cls._restarting:
+                return {"error": "already restarting"}
+            cls._restarting = True
+
+        def run():
+            import time as _t
+            import urllib.request as _u
+            import subprocess as _sp
+            REQ = "/var/lib/riffle/restart-composer.request"
+
+            def healthy():
+                try:
+                    with _u.urlopen("http://127.0.0.1:8080/health", timeout=4) as r:
+                        return r.status == 200
+                except Exception:
+                    return False
+
+            def unit_failed():
+                try:
+                    return _sp.run(["systemctl", "show", "-p", "ActiveState", "--value",
+                                    "riffle-restart-composer.service"],
+                                   capture_output=True, text=True,
+                                   timeout=10).stdout.strip() == "failed"
+                except Exception:
+                    return False
+
+            t0 = _t.time()
+            self.state.say("report", "Restarting the composer. It has to read "
+                                     "20.6 GB off disk, so give it a couple of "
+                                     "minutes.")
+            try:
+                # Ask systemd rather than becoming root. riffle-restart-composer.path
+                # is watching this file; the matching service deletes it and does
+                # the restart. The dashboard needs no privilege of any kind.
+                open(REQ, "w").close()
+            except Exception as e:
+                self.state.say("error", f"could not signal a restart: {e}")
+                cls._restarting = False
+                return
+            try:
+                # DOWN FIRST, THEN UP (U10, audit round 2). This checked
+                # /health two seconds in: with the restart unit still waiting
+                # on the cycle or composer lock, the OLD composer answered and
+                # the card said it was back. Loading the model takes minutes,
+                # so a real restart always shows /health failing first. The
+                # unit gives up after 900 s; once it has taken the request (it
+                # deletes the file), a failed unit is said, not waited out.
+                down = False
+                while _t.time() - t0 < 960:
+                    _t.sleep(3)
+                    if not healthy():
+                        down = True
+                        break
+                    if not os.path.exists(REQ) and unit_failed():
+                        self.state.say("error", "The restart unit gave up: it waited "
+                                                "15 minutes for a running cycle or "
+                                                "chat to finish. Nothing was "
+                                                "restarted; try again.")
+                        return
+                if not down:
+                    self.state.say("error", "The composer did not go down within 16 "
+                                            "minutes, so nothing was restarted. "
+                                            "Check `systemctl status "
+                                            "riffle-restart-composer`.")
+                    return
+                t1 = _t.time()
+                while _t.time() - t1 < 400:
+                    _t.sleep(3)
+                    if healthy():
+                        self.state.say("report", f"Composer is back, "
+                                                 f"{int(_t.time() - t0)}s. Fresh "
+                                                 f"KV cache and slot state.")
+                        self.state.log("you restarted the composer")
+                        return
+                self.state.say("error", "the composer went down but did not answer "
+                                        "/health within 400s; check "
+                                        "`journalctl -u llama-composer`.")
+            except Exception as e:
+                self.state.say("error", f"restart failed: {e}")
+            finally:
+                cls._restarting = False
+
+        _th.Thread(target=run, daemon=True).start()
+        return {"ok": True}
+
+    def run_cycle(self):
+        """Start a wake cycle out of band.
+
+        Reachable only from this page, which is on your LAN behind
+        IPAddressAllow. The model cannot call it: its outbound reach is the
+        three read-only board lookups in chat.py and nothing else. A POST here
+        is you pressing a button, not the agent deciding to act.
+        """
+        cls = type(self)
+        with cls._cycle_lock:
+            if cls._cycle_running:
+                return {"error": "a cycle is already running"}
+            cls._cycle_running = True
+
+        ok = request_cycle_run(self.state, "run-cycle button")
+        # Nothing to wait on and no child to track: systemd owns the cycle
+        # now. _cycle_running was guarding a subprocess that no longer
+        # exists, and the real guard against overlap is the flock the cycle
+        # takes for itself.
+        cls._cycle_running = False
+        if not ok:
+            return {"error": "could not write the cycle request"}
+        self.state.log("you started a cycle from the dashboard")
+        return {"ok": True}
+
+    def clear_alarms(self):
+        """Acknowledge every alarm up to now. The journal itself is untouched."""
+        s = self.state
+        row = s.db.execute(
+            "SELECT MAX(id) m FROM journal WHERE level IN ('alarm','error')").fetchone()
+        top = row["m"] or 0
+        s.note("alarms_acked_to", top)
+        s.log(f"you cleared the alarm badge up to journal id {top}; "
+              f"the entries themselves are still on record")
+        return {"ok": True, "acked_to": top}
+
+    def _local_time(self):
+        import datetime as _dt
+        tz = (self.cfg.get("notify") or {}).get("timezone", "America/Los_Angeles")
+        try:
+            from zoneinfo import ZoneInfo
+            now = _dt.datetime.now(ZoneInfo(tz))
+        except Exception:
+            now = _dt.datetime.now()
+        return now.strftime("%-I:%M %p, %b %-d")
+
+    def _card_for(self, aid):
+        """Find the chat card that announced this action, so it can be updated
+        in place rather than answered by a second card beside it."""
+        return card_for(self.state, aid)
+
+    def _update_card(self, aid, **fields):
+        update_card(self.state, aid, **fields)
+
+    def decide(self, aid, verdict, reason=""):
+        """Claim the action, then decide it.
+
+        CLAIMED IN ONE STATEMENT (L10, audit 2026-10-27). This read the
+        status and wrote it later, so approving from two devices at once could
+        send twice: both read "queued". Now the first caller turns it from
+        queued to sending in a single UPDATE and the second finds nothing to
+        claim. Every path below sets a final status; if anything unexpected
+        breaks first, the claim is handed back as queued.
+        """
+        s = self.state
+        cur = s.db.execute("UPDATE actions SET status='sending' WHERE id=?"
+                           " AND status='queued'", (aid,))
+        s.db.commit()
+        if cur.rowcount != 1:
+            return {"error": "not queued"}
+        try:
+            return self._decide_claimed(aid, verdict, reason)
+        except BaseException:
+            s.db.execute("UPDATE actions SET status='queued' WHERE id=?"
+                         " AND status='sending'", (aid,))
+            s.db.commit()
+            raise
+
+    def _decide_claimed(self, aid, verdict, reason=""):
+        s = self.state
+        a = s.action(aid)
+        payload = json.loads(a["payload"])
+
+        if verdict != "approve":
+            # THE REASON REACHES RIFFLE (audit F9): its next prompt lists what
+            # you turned down, with this, and a repeat is refused.
+            reason = " ".join(str(reason or "").split())[:600]
+            s.set_status(aid, "rejected", {"by": "you", "reason": reason})
+            self._update_card(aid, status="rejected", sent_at=self._local_time(),
+                              ref=(f"why: {reason[:120]}" if reason else ""))
+            s.log(f"you rejected {a['kind']} #{aid}"
+                  + (f": {reason[:200]}" if reason else ""), drive=a["drive"])
+            return {"ok": True}
+
+        # Local actions change the agent or its workspace, not the square.
+        # Approving one must never become an HTTP POST to the registry.
+        #
+        # This used to know only three kinds. Every other local action was
+        # dispatched inside the cycle regardless of its policy, so none of
+        # them ever reached this path — and if one had, approving it would
+        # have stranded it here with no executor. Both halves are fixed: the
+        # cycle queues them, and apply_local runs them.
+        if a["kind"] in cycle_mod.LOCAL_KINDS and a["kind"] not in (
+                "adjust_drive", "add_goal", "remember"):
+            # MARK APPROVED AND HAND IT TO A CYCLE. Do not run it here.
+            #
+            # Running apply_local in this process puts it in THIS unit's
+            # sandbox: NoNewPrivileges=true, a bounding set of
+            # CAP_NET_BIND_SERVICE, no ReadWritePaths. That is exactly the
+            # sandbox C4 moved cycles out of, and it was reintroduced one
+            # change later by calling the dispatcher from here.
+            #
+            # sudo is refused under NoNewPrivileges, so sign, read_page and
+            # build cannot work; library writes hit a read-only filesystem.
+            # On this box sign, read_page and library_put are all 'queue', so
+            # approving any of them could only ever fail.
+            #
+            # riffle-run-cycle.service has the cycle's privileges. The cycle
+            # picks up approved local actions when it takes the lock.
+            s.set_status(aid, "approved", {"by": "you"})
+            self._update_card(aid, status="approved",
+                              sent_at=self._local_time(),
+                              ref="waiting for the next cycle to run it")
+            s.log(f"you approved {a['kind']} #{aid}; a cycle will run it with "
+                  f"the privileges it needs", drive=a["drive"])
+            request_cycle_run(s, f"approved {a['kind']} #{aid}")
+            return {"ok": True}
+
+        if a["kind"] in ("adjust_drive", "add_goal", "remember"):
+            try:
+                if a["kind"] == "adjust_drive":
+                    old, new = goals.set_weight(s, self.cfg, payload["name"],
+                                                payload["weight"], "you",
+                                                payload.get("reason", "approved by operator"))
+                    ref = f"{payload['name']} {old} -> {new}"
+                elif a["kind"] == "add_goal":
+                    goals.add(s, self.cfg, payload["name"], payload["weight"],
+                              payload["description"], "you",
+                              payload.get("reason", "approved by operator"))
+                    ref = f"goal '{payload['name']}'"
+                else:
+                    # PINNING IS YOURS (audit F30). riffle asking for
+                    # `pinned: true` was honoured here, while the cycle's own
+                    # path refuses it. You pin from the memory page.
+                    memory.remember(s, payload["text"], kind="self",
+                                    source=f"action:{aid}", pinned=False)
+                    ref = ("remembered; it asked for a pin, which is yours to "
+                           "give on the memory page" if payload.get("pinned")
+                           else "remembered")
+                s.set_status(aid, "executed", {"applied": "locally"})
+                self._update_card(aid, status="executed", sent_at=self._local_time(),
+                                  ref=ref)
+                return {"ok": True}
+            except goals.Rejected as e:
+                s.set_status(aid, "failed", {"error": str(e)})
+                self._update_card(aid, status="failed", error=str(e)[:200])
+                return {"error": str(e)}
+
+        # Board actions: send in the background so the page is not held open
+        # across an HTTPS round trip, then wake a cycle so riffle sees that its
+        # own action landed and can react to whatever follows.
+        # The ROW as well as the card.
+        #
+        # This set the card's meta only, so the database row stayed 'queued'
+        # for the whole send. A send that died therefore looked like an action
+        # still waiting on you — which is how one sat at "sending" for hours
+        # while the header counted it as waiting — and the startup sweep for
+        # rows stuck at 'sending' found nothing, because none were.
+        #
+        # Two places holding the same fact and only one of them updated. The
+        # same shape as the hardcoded ACTS list and the two copies of the
+        # brand selector.
+        # RE-CHECK BEFORE SENDING.
+        #
+        # A queued action can sit for hours. In that time the daily cap can
+        # fill, riffle can say the same thing another way, or it can vote on
+        # the same target from a later cycle. Approval ran none of those
+        # checks again — they all happened when the action was proposed, and
+        # approving meant sending whatever the state was now.
+        # ONE DAY SOURCE. This used utcnow() while cap_bump below uses the
+        # server's now_utc, so for part of every day the check and the
+        # increment disagreed about which day it was: a cap could read full
+        # against one day and be spent against another.
+        #
+        # BUT ONLY WHILE THE NOTE IS CURRENT. server_day is written by a cycle,
+        # so between midnight UTC and the next cycle it still names yesterday,
+        # and an approval in that window was checked against yesterday's
+        # spend: "today's comment allowance is used up" with nothing spent
+        # today. The longest such window is when cycles have stopped. The note
+        # is trusted when it is today or later (the server past midnight
+        # before this clock, which is what it exists to match); a stale one
+        # falls back to this machine's UTC date.
+        _today = utcnow()[:10]
+        _noted = (self.state.note("server_day") or "")[:10]
+        _day = _noted if _noted >= _today else _today
+        # The code's cap defaults too (the porch's 3), and sends of this kind
+        # still in flight: the cap was counted only once a send finished, so
+        # two approved at once both passed it (L10).
+        _left = cycle_mod.effective_caps(self.cfg).get(a["kind"])
+        _inflight = s.db.execute(
+            "SELECT COUNT(*) AS c FROM actions WHERE kind=? AND status='sending'"
+            " AND id<>?", (a["kind"], aid)).fetchone()["c"]
+        if _left is not None and s.cap_used(_day, a["kind"]) + _inflight >= _left:
+            s.set_status(aid, "rejected",
+                         {"by": "cap", "how": "the daily allowance was used up "
+                                              "while this waited"})
+            self._update_card(aid, status="rejected",
+                              error=f"today's {a['kind']} allowance was spent "
+                                    f"while this was waiting")
+            s.log(f"approved {a['kind']} #{aid} not sent: the {a['kind']} cap "
+                  f"filled while it waited", level="warn", drive=a["drive"])
+            return {"error": f"today's {a['kind']} allowance is used up"}
+        # The comment checks the cycle runs, run again here. A queued
+        # comment can sit for hours; the comment above has said since C11
+        # that riffle "can say the same thing another way" in that window,
+        # and then only checked caps and votes.
+        if a["kind"] in ("comment", "post", "porch") and payload.get("body"):
+            _dup, _ov = cycle_mod.near_duplicate(
+                s, a["kind"], payload["body"], exclude_id=aid)
+            if _dup:
+                s.set_status(aid, "rejected",
+                             {"by": "duplicate",
+                              "how": f"{_ov:.0%} the same as #{_dup['id']}"})
+                self._update_card(aid, status="rejected",
+                                  error=f"{_ov:.0%} the same as the "
+                                        f"{a['kind']} you sent on "
+                                        f"{_dup['created_at'][:16]} "
+                                        f"(#{_dup['id']})")
+                return {"error": f"{_ov:.0%} the same as #{_dup['id']}"}
+        if (a["kind"] == "comment" and not payload.get("parent_id")
+                and payload.get("post_id")):
+            _tl = cycle_mod.top_level_today(s, payload["post_id"],
+                                            exclude_id=aid)
+            if _tl:
+                s.set_status(aid, "rejected",
+                             {"by": "second-top-level",
+                              "how": f"already commented on that post "
+                                     f"(#{_tl['id']})"})
+                self._update_card(aid, status="rejected",
+                                  error=f"you already made a top-level "
+                                        f"comment on that post today "
+                                        f"(#{_tl['id']})")
+                return {"error": "already commented on that post today"}
+
+        if a["kind"] == "vote" and payload.get("target_id"):
+            _dupe = s.db.execute(
+                "SELECT id FROM actions WHERE kind='vote' AND id<>?"
+                " AND status IN ('sent','sending','executed','unknown')"
+                " AND json_extract(payload,'$.target_id') = ?"
+                " AND COALESCE(json_extract(payload,'$.target_type'),'post') = ?",
+                (aid, payload["target_id"],
+                 payload.get("target_type") or "post")).fetchone()
+            if _dupe:
+                s.set_status(aid, "rejected",
+                             {"by": "duplicate", "how": f"already voted "
+                                                        f"(#{_dupe['id']})"})
+                self._update_card(aid, status="rejected",
+                                  error=f"already voted on that "
+                                        f"(action #{_dupe['id']})")
+                return {"error": "already voted on that target"}
+
+        # SIGNED BY THE CYCLE, NOT SENT FROM HERE (audit F8; your decision,
+        # 2026-11-14). Sent from this process a seal or an attestation went
+        # out unsigned: riffle-dash.service has NoNewPrivileges=true, which
+        # refuses the sudo that reaches riffle-sign. So putting seal and
+        # attestation on queue, the safer setting, gave the weaker record.
+        # Now they are marked approved and handed to the next cycle, which
+        # can sign, the way local actions are. `send_by: cycle` is what the
+        # cycle looks for: a row it left `approved` itself (on auto, before a
+        # crash) carries no such mark and is never sent a second time.
+        if a["kind"] in cycle_mod.SIGNED_BY_CYCLE:
+            s.set_status(aid, "approved", {"by": "you", "send_by": "cycle"})
+            self._update_card(aid, status="approved",
+                              sent_at=self._local_time(),
+                              ref="waiting for the next cycle to sign and send it")
+            s.log(f"you approved {a['kind']} #{aid}; the next cycle will sign "
+                  f"and send it", drive=a["drive"])
+            request_cycle_run(s, f"approved {a['kind']} #{aid}")
+            return {"ok": True}
+
+        s.set_status(aid, "sending")
+        self._update_card(aid, status="sending")
+
+        def worker():
+            # LANDED IS FINAL (audit F11). Everything after a successful send
+            # (the cap, the card, the log, on_posted, the follow-up cycle) sat
+            # in the same `try` as the send, so if any of it raised, the catch-
+            # all below marked a comment the registry HAD received as failed:
+            # invisible to the duplicate checks, its cooldown never started,
+            # free to be sent again. And the secret was read before the `try`,
+            # so a missing secret killed the thread with the row at `sending`,
+            # the exact failure that catch-all exists to prevent.
+            landed = False
+            try:
+                data = os.path.expanduser(self.cfg["data_dir"])
+                secret = open(os.path.join(data,
+                                           f"{self.cfg['handle']}.secret")).read().strip()
+                resp = execute(Writer(self.cfg["base"], secret), a["kind"], payload)
+                landed = True
+                s.set_status(aid, "executed", resp)
+                # Unsigned, said out loud (U6): from here the signer cannot run.
+                cycle_mod._report_unsigned(s, None, a["kind"], aid, resp,
+                                           lambda m, **k: s.log(m, drive=a["drive"], **k))
+                # The SERVER's day, which is the boundary the registry
+                # counts by. utcnow()[:10] is this machine's idea of the
+                # date, and the two disagree for part of every day if the
+                # clock drifts or the registry rolls over on a different
+                # schedule.
+                _sday = (resp.get("now_utc") or utcnow())[:10]
+                s.cap_bump(_sday, a["kind"])
+                ref = (resp.get("comment_id") or resp.get("post_id")
+                       or resp.get("id") or "")
+                self._update_card(aid, status="executed", sent_at=self._local_time(),
+                                  ref=(f"#{ref}" if ref else ""))
+                s.log(f"you approved and sent {a['kind']} #{aid}", drive=a["drive"])
+                # A post you approved is still a post the project produced.
+                # This used to happen only when the CYCLE sent one, and post is
+                # queued, so it never happened at all: no project was ever
+                # marked posted, no cooldown started, nothing was promoted off
+                # the queue.
+                if a["kind"] == "post":
+                    from agent import project as _pj
+                    _pj.on_posted(s, self.cfg, aid,
+                                  log=lambda m: s.log(m, drive=a["drive"]))
+                self.run_cycle()
+            except HttpError as e:
+                # NO ANSWER IS NOT A REFUSAL (L7). With status 0 the send may
+                # have landed before the connection failed. Recorded as
+                # failed, it was invisible to every duplicate check, so the
+                # same comment could be proposed and sent again; the cycle's
+                # path already records it as unknown.
+                # Counted against the day unless it never left, and a "spent"
+                # refusal believed: the cycle's path does the same (2026-11-09).
+                _eday = utcnow()[:10]
+                # Never left: failed, which every check reads as not sent (F38).
+                if getattr(e, "status", None) == 0 and cycle_mod._never_left(e):
+                    s.set_status(aid, "failed", {"error": str(e), "never_left": True})
+                    self._update_card(aid, status="failed",
+                                      error=f"never left the box: {e}"[:200])
+                    s.log(f"{a['kind']} #{aid} never left the box ({e}); nothing "
+                          f"was sent", level="warn", drive=a["drive"])
+                    return
+                if getattr(e, "status", None) == 0:
+                    s.set_status(aid, "unknown", {"error": str(e)})
+                    cycle_mod._count_uncertain_send(s, _eday, a["kind"], e)
+                    self._update_card(aid, status="unknown", error=str(e)[:200])
+                    s.log(f"{a['kind']} #{aid}: no answer from the registry "
+                          f"({e}); it may or may not have landed",
+                          level="error", drive=a["drive"])
+                    return
+                s.set_status(aid, "failed", {"error": str(e)})
+                cycle_mod._sync_spent_allowance(s, self.cfg, _eday, a["kind"], e)
+                self._update_card(aid, status="failed", error=str(e)[:200])
+                s.log(f"the registry refused {a['kind']} #{aid}: {e}",
+                      level="error", drive=a["drive"])
+            except BaseException as e:
+                if landed:
+                    # Sent, and recorded as sent; only the bookkeeping after
+                    # it failed. Said, never turned into `failed`.
+                    try:
+                        s.log(f"{a['kind']} #{aid} was sent, but recording what "
+                              f"followed failed: {type(e).__name__}: {e}",
+                              level="warn", drive=a["drive"])
+                    except Exception:
+                        pass
+                    return
+                # CATCH EVERYTHING ELSE TOO.
+                #
+                # This caught only HttpError. A timeout, a DNS failure, a
+                # missing secret file, a bug in on_posted — any of them killed
+                # the thread with the card still reading "sending", the queue
+                # still counting it, and nothing anywhere saying why. One has
+                # been sending for several hours.
+                #
+                # A daemon thread that dies silently is the worst shape a
+                # failure can take: the interface keeps asserting the thing is
+                # in progress, which is a stronger claim than saying nothing.
+                s.set_status(aid, "failed", {"error": f"{type(e).__name__}: {e}"})
+                self._update_card(aid, status="failed",
+                                  error=f"{type(e).__name__}: {e}"[:200])
+                s.log(f"sending {a['kind']} #{aid} failed: {type(e).__name__}: {e}",
+                      level="error", drive=a["drive"])
+
+        _th.Thread(target=worker, daemon=True).start()
+        return {"ok": True, "status": "sending"}
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config",
+                    default=os.path.join(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__))), "config.yaml"))
+    a = ap.parse_args()
+    cfg = load_config(a.config)
+    st = State(os.path.join(os.path.expanduser(cfg["data_dir"]), "state.sqlite"))
+    goals.seed(st, cfg)
+    from agent import policy as _policy
+    _policy.ensure(st, cfg)
+    orphans = chat.close_orphans(st)
+    if orphans:
+        print(f"closed {orphans} interrupted reply row(s) from a previous run")
+        st.log(f"startup: closed {orphans} reply row(s) left open by a restart")
+    Handler.cfg, Handler.state = cfg, st
+    # Same idea as the orphaned reply rows above: a restart is the moment to
+    # close out anything a dead thread left mid-flight.
+    # UNKNOWN, not failed, and the cards get updated too.
+    #
+    # This marked them 'failed' and logged "Nothing was sent", which it
+    # cannot know: the thread died somewhere between the request leaving and
+    # the reply arriving, and the registry may well have applied it. The
+    # same distinction C2 drew for transport errors applies here.
+    #
+    # It also left the chat cards reading "sending…" forever, because it
+    # wrote to the actions table and not to the message meta. One of those
+    # sat on screen for hours.
+    _stuck = st.db.execute(
+        "SELECT id, kind FROM actions WHERE status='sending'").fetchall()
+    if _stuck:
+        st.db.execute(
+            "UPDATE actions SET status='unknown',"
+            " response=json_object('error','the dash restarted while this was"
+            " in flight; whether it reached the registry is unknown')"
+            " WHERE status='sending'")
+        st.db.commit()
+        for _r in _stuck:
+            try:
+                update_card(st, _r["id"], status="unknown",
+                            error="the dash restarted mid-send. This may or "
+                                  "may not have reached the square — check "
+                                  "before retrying.")
+            except Exception as _e:
+                st.log(f"could not update the card for #{_r['id']}: {_e}",
+                       level="warn")
+        print(f"closed {len(_stuck)} action(s) left mid-send")
+        st.log(f"startup: {len(_stuck)} action(s) were in flight when the dash "
+               f"stopped. Marked unknown: whether they reached the registry "
+               f"cannot be determined from here.", level="warn")
+    Handler.worker = chat.Worker(st, cfg)
+    Handler.worker.start()
+    Handler.start_scheduler()
+    Handler.start_telemetry()
+    bind, port = cfg["dash"]["bind"], int(cfg["dash"]["port"])
+    print(f"riffle on http://{bind}:{port}")
+    ThreadingHTTPServer((bind, port), Handler).serve_forever()
+
+
+
+
+# --------------------------------------------------------------------------
+# The goals page. Second page, deliberately separate: this is where you look
+# at what the agent wants, change it, and read the history of it changing
+# itself.
+# --------------------------------------------------------------------------
+
+
+
+
+
+def link_token(state, aid):
+    """HMAC so a review link cannot be found by guessing an id."""
+    import hmac
+    import hashlib
+    import secrets
+    sec = state.note("notify_link_secret")
+    if not sec:
+        sec = secrets.token_hex(32)
+        state.note("notify_link_secret", sec)
+    return hmac.new(sec.encode(), str(aid).encode(), hashlib.sha256).hexdigest()[:20]
+
+
+
+
+
+
+def figures_page(text):
+    """The figures report with one button that copies all of it."""
+    return (
+        "<!doctype html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>"
+        "<title>riffle &mdash; figures</title>"
+        f"<style>{_chat_css()}"
+        "#fig{white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,"
+        "SFMono-Regular,Menlo,monospace;padding:12px 16px 40px;margin:0}"
+        ".figbar{display:flex;gap:8px;align-items:center;padding:10px 16px}"
+        ".figbar button{font:inherit;padding:10px 18px;border-radius:10px;border:0;"
+        "background:var(--sig);color:#111;font-weight:600}</style></head><body>"
+        "<header><a class=brand href=\"/\">riffle</a><span style=\"flex:1\"></span>"
+        "<a class=link href=\"/\">chat</a></header>"
+        "<div class=figbar><button id=cp onclick=copyAll()>copy all</button>"
+        f"<span class=pill>{len(text):,} characters</span></div>"
+        f"<pre id=fig>{_esc(text)}</pre>"
+        "<script>function copyAll(){const t=document.getElementById('fig').textContent;"
+        "const b=document.getElementById('cp');const done=()=>{b.textContent='copied';"
+        "setTimeout(()=>b.textContent='copy all',1500)};"
+        "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t)"
+        ".then(done).catch(fb)}else{fb()}"
+        "function fb(){const a=document.createElement('textarea');a.value=t;"
+        "a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);"
+        "a.focus();a.select();a.setSelectionRange(0,t.length);"
+        "try{document.execCommand('copy');done()}catch(e){}document.body.removeChild(a)}}"
+        "</script></body></html>")
+
+
+def history_page(state):
+    rows = state.db.execute(
+        "SELECT * FROM messages WHERE archived_at IS NOT NULL"
+        " ORDER BY archived_at, id").fetchall()
+    out, batch = [], None
+    for m in rows:
+        if m["archived_at"] != batch:
+            batch = m["archived_at"]
+            n = sum(1 for r in rows if r["archived_at"] == batch)
+            out.append(f"<div class=batch>cleared {_esc(_pretty(batch))} "
+                       f"&middot; {n} message{'' if n == 1 else 's'}</div>")
+        out.append(_render_static(m))
+    body = "".join(out) or "<div class=empty>nothing has been cleared yet</div>"
+    return (f"<!doctype html><html><head><meta charset=utf-8>"
+            f"<meta name=viewport content='width=device-width,initial-scale=1,"
+            f"viewport-fit=cover'><title>riffle &mdash; history</title>"
+            f"<style>{_chat_css()}{HISTORY_EXTRA}</style></head><body>"
+            f"<header><a class=brand href=\"/\">riffle</a>"
+            f"<span class=pill>{len(rows)} archived</span>"
+            f"<span style='flex:1'></span>"
+            f"<a class=link href=\"/\">chat</a>"
+            # /settings and /goals are the same page; the pill said "goals"
+            # while the page it opens is titled settings.
+            f"<a class=link href=\"/settings\">settings</a></header>"
+            f"<div id=log>{body}</div></body></html>")
+
+
+def _pretty(ts):
+    import datetime as _dt
+    try:
+        t = _dt.datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
+        from zoneinfo import ZoneInfo
+        tz = (Handler.cfg.get("notify") or {}).get("timezone",
+                                                   "America/Los_Angeles")
+        return t.astimezone(ZoneInfo(tz)).strftime("%-I:%M %p, %b %-d")
+    except Exception:
+        return ts or ""
+
+
+def _esc(x):
+    import html as _h
+    return _h.escape(str(x if x is not None else ""))
+
+
+def _render_static(m):
+    """Same shapes as the live chat, minus the controls. A card in history is
+    a record of a decision, so its buttons are gone and its outcome is text."""
+    meta = json.loads(m["meta"]) if m["meta"] else {}
+    if m["role"] == "proposal":
+        status = meta.get("status", "")
+        line = {"executed": "&#10003; sent " + _esc(meta.get("sent_at", "")),
+                "rejected": "&#10005; rejected " + _esc(meta.get("sent_at", "")),
+                "failed": "&#10005; refused &middot; " + _esc(meta.get("error", "")),
+                }.get(status, _esc(status))
+        return (f"<div class=card><h4>{_esc(meta.get('kind', 'action'))} "
+                f"&middot; drive {_esc(meta.get('drive', ''))}</h4>"
+                f"<div class=why>{_esc(m['content'])}</div>"
+                f"<pre>{_esc(meta.get('payload', ''))}</pre>"
+                f"<div class=sentline>{line}</div></div>")
+    cls = {"user": "msg user", "report": "msg report",
+           "error": "msg err"}.get(m["role"], "msg agent")
+    if m["role"] == "user" and meta.get("instruct"):
+        cls = "msg user instr"
+    when = (f"<div class=when>{_esc(_pretty(m['ts']))}</div>"
+            if m["role"] != "user" else "")
+    return f"<div class='{cls}'>{_esc(m['content'])}{when}</div>"
+
+
+def _run_cycle_detached(cls):
+    """Start a cycle without an HTTP request behind it."""
+    with cls._cycle_lock:
+        if cls._cycle_running:
+            return
+        cls._cycle_running = True
+
+    def run():
+        # Same reason as the button: ask systemd rather than spawning a
+        # child that would inherit this unit's sandbox.
+        try:
+            request_cycle_run(cls.state, "extra cycle")
+        finally:
+            cls._cycle_running = False
+
+    _th.Thread(target=run, daemon=True).start()
+
+
+POLICY_NOTES = {'post': 'one per UTC day, and only after a project clears the bar', 'comment': 'the main way it takes part', 'read_thread': 'opens a post and files it into the project', 'read_more': 'the next batch of replies on a thread already opened', 'request_cycle': 'asks to wake again sooner; capped daily', 'open_project': 'starts the thing a post has to come out of', 'project_note': 'an observation, source, draft, objection or correction', 'adjust_drive': 'moves its own goal weights, within goal_policy bounds', 'add_goal': 'always a proposal, never an act', 'remember': 'writes a durable memory', 'listing_submission': 'the only way it can be paid'}
+
+
+def request_cycle_run(state, why=""):
+    """Ask systemd for a cycle instead of spawning one.
+
+    subprocess.run from here makes the cycle a child of riffle-dash.service
+    and gives it that unit's sandbox: NoNewPrivileges=true and a bounding set
+    of CAP_NET_BIND_SERVICE. sudo is refused under NoNewPrivileges, so such a
+    cycle cannot build, cannot sign, cannot fetch a page, cannot write to the
+    library, and cannot read its own public key — which makes situation()
+    report "you do NOT have: a signing key" to a citizen holding a bound one.
+
+    Touching a file is the whole interface, same as the composer restart.
+    riffle-run-cycle.path sees it and starts riffle-run-cycle.service, which
+    carries the same privileges as the timer unit.
+
+    Returns True if the request was written.
+    """
+    try:
+        # data_dir, not a fixed path (T4): the state database lives in it.
+        # riffle-run-cycle.path watches this file by its own literal path, so
+        # the two must agree.
+        path = os.path.join(os.path.dirname(os.path.abspath(state.path)),
+                            "run-cycle.request")
+        with open(path, "w") as fh:
+            fh.write(f"{dt.datetime.now(dt.timezone.utc).isoformat()} {why}\n")
+        return True
+    except OSError as e:
+        state.say("error", f"could not request a cycle: {e}")
+        state.log(f"cycle request failed: {e}", level="error")
+        return False
+
+
+def card_for(state, aid):
+    """Find the chat card that announced this action.
+
+    Module level and taking `state`, so callers outside the handler can use
+    it. The dash's own startup sweep called Handler._update_card(Handler,
+    ...) — passing the CLASS as self, so _card_for received the action id as
+    self and raised TypeError, swallowed by `except Exception: pass`. The
+    sends were correctly marked unknown and their cards kept reading
+    "sending..." forever, which is the half of C12 that was supposed to fix
+    exactly that.
+    """
+    # By its action_id, however old (T2, audit 2026-10-27): this scanned only
+    # the last 200 cards, so an older one could read "sending..." forever.
+    m = state.db.execute(
+        "SELECT id, meta FROM messages WHERE role='proposal' AND json_valid(meta)"
+        " AND json_extract(meta, '$.action_id') = ? ORDER BY id DESC LIMIT 1",
+        (aid,)).fetchone()
+    if not m:
+        return None, None
+    try:
+        return m["id"], json.loads(m["meta"])
+    except Exception:
+        return None, None
+
+
+def update_card(state, aid, **fields):
+    mid, meta = card_for(state, aid)
+    if mid is None:
+        return
+    meta.update(fields)
+    state.db.execute("UPDATE messages SET meta=? WHERE id=?",
+                     (json.dumps(meta), mid))
+    state.db.commit()
+
+
+def _uptime_report():
+    """How long this boot has lasted, and the boots before it.
+
+    riffle has been power-cycling itself every couple of hours since
+    September: no panic, no MCE, nothing in pstore, cores at 34 C and load
+    at 0.01 when it goes. Every diagnosis has needed `last -x` over ssh,
+    which means it only gets looked at when something already looks wrong.
+
+    `last -x` reports a boot as "crash" whenever it was not preceded by a
+    clean shutdown, so that word covers a power cut, a reset and a panic
+    alike. It is reported as "unclean" here rather than "crash" because
+    the log cannot tell those apart and should not pretend to.
+    """
+    out = {"uptime_s": 0, "boots": [], "unclean": 0, "error": None}
+    try:
+        with open("/proc/uptime") as fh:
+            out["uptime_s"] = float(fh.read().split()[0])
+    except OSError as e:
+        out["error"] = str(e)
+    try:
+        r = subprocess.run(["last", "-x", "--time-format=iso", "reboot",
+                            "shutdown"],
+                           capture_output=True, text=True, timeout=10)
+        for line in r.stdout.splitlines():
+            if not line.strip() or line.startswith("wtmp"):
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            kind = "boot" if parts[0] == "reboot" else "shutdown"
+            stamp = next((p for p in parts if p[:2] == "20" and "T" in p), "")
+            if not stamp:
+                continue
+            ended = "still running" if "still running" in line else (
+                "unclean" if "crash" in line else "clean")
+            out["boots"].append({"at": stamp, "kind": kind, "ended": ended})
+        out["boots"] = out["boots"][:40]
+    except (OSError, subprocess.SubprocessError) as e:
+        out["error"] = (out["error"] or "") + f" last: {e}"
+    # Pair each boot with the one after it to get a length.
+    boots = [b for b in out["boots"] if b["kind"] == "boot"]
+    for i, b in enumerate(boots):
+        try:
+            a = dt.datetime.fromisoformat(b["at"])
+            z = (dt.datetime.now(a.tzinfo) if b["ended"] == "still running"
+                 else dt.datetime.fromisoformat(boots[i - 1]["at"]))
+            b["hours"] = round(max(0.0, (z - a).total_seconds() / 3600), 2)
+        except (ValueError, IndexError):
+            b["hours"] = None
+    # Count over the SAME list the table shows.
+    #
+    # This counted every unclean line in the whole of wtmp while the table
+    # was capped at forty rows, so the card read "262 unclean restarts ·
+    # 37 boots recorded" — two numbers that cannot both describe the same
+    # thing, from one function, in one sentence. A summary that disagrees
+    # with the table under it is worse than no summary.
+    out["unclean"] = sum(1 for b in boots if b["ended"] == "unclean")
+    out["boots"] = boots
+    return out
+
+
+def _goals_routes(h):
+    """Extra routes bolted onto Handler. Returns True if it handled the path."""
+    u = urllib.parse.urlparse(h.path)
+    s, cfg = h.state, h.cfg
+    if h.command == "GET" and u.path == "/api/uptime":
+        return h._json(_uptime_report()) or True
+    if h.command == "GET" and u.path in ("/settings", "/goals"):
+        b = GOALS_PAGE.encode()
+        h.send_response(200)
+        h.send_header("Content-Type", "text/html; charset=utf-8")
+        h.send_header("Content-Length", str(len(b)))
+        h.end_headers()
+        h.wfile.write(b)
+        return True
+    if h.command == "GET" and u.path == "/api/telemetry":
+        from agent import telemetry
+        rows = telemetry.recent(s, 400)
+        ent = []
+        for r in rows:
+            try:
+                body = json.loads(r["payload"])
+            except Exception:
+                body = {}
+            mem = body.get("mem") or {}
+            cp = body.get("cpu") or {}
+            tp = body.get("temps") or {}
+            hot = max([v for v in tp.values() if isinstance(v, (int, float))],
+                      default=None)
+            co = body.get("cores") or {}
+            us = co.get("usage") if isinstance(co.get("usage"), dict) else {}
+            busy = round(sum(us.values()) / len(us), 0) if us else None
+            fan = max((body.get("fans") or {}).values(), default=None)
+            thr = len(co.get("throttle") or {})
+            line = (f"{mem.get('PctUsed', '?')}% mem, "
+                    f"{mem.get('MemAvailable', '?')}MiB free, "
+                    + (f"cpu {busy:.0f}%, " if busy is not None else "")
+                    + f"{cp.get('mhz_avg', '?')}MHz"
+                    + (f", {hot}\u00b0C" if hot is not None else "")
+                    + (f", fan {fan}" if fan else "")
+                    + (f", THROTTLED x{thr}" if thr else ""))
+            ent.append({"id": r["id"], "ts": r["ts"], "kind": r["kind"],
+                        "label": r["label"], "summary": {"line": line},
+                        "pretty": json.dumps(body, indent=1, default=str)[:12000]})
+        h._json({"entries": ent,
+                 "dumps": sum(1 for e in ent if e["kind"] == "dump")})
+        return True
+    if h.command == "GET" and u.path == "/api/telemetry.jsonl":
+        from agent import telemetry
+        b = telemetry.as_jsonl(s, 24).encode()
+        h.send_response(200)
+        h.send_header("Content-Type", "application/x-ndjson")
+        h.send_header("Content-Disposition",
+                      'attachment; filename="riffle-telemetry.jsonl"')
+        h.send_header("Content-Length", str(len(b)))
+        h.end_headers()
+        h.wfile.write(b)
+        return True
+    if h.command == "GET" and u.path == "/api/policy":
+        from agent import policy, project as _pj, state as _state
+        policy.ensure(s, cfg)
+        interval = int(s.note("cycle_interval_minutes")
+                       or (cfg.get("cycle") or {}).get("interval_minutes", 60))
+        rows = s.db.execute("SELECT * FROM projects ORDER BY id DESC LIMIT 12").fetchall()
+        # Queue position is the row's place in project.queue(), not its id:
+        # dropping #1 has to renumber the rest, and ids never do.
+        qpos = {r["id"]: i + 1 for i, r in enumerate(_pj.queue(s))}
+        projects = []
+        for p in rows:
+            st_ = _pj.stats(s, p["id"])
+            ok, _why = _pj.ready(s, cfg, p["id"])
+            reads = []
+            for r in _pj.reads(s, p["id"]):
+                try:
+                    left = _pj.unread_count(s, r["id"])
+                except Exception:
+                    left = 0
+                reads.append({"post_id": r["post_id"], "title": r["title"],
+                              "seen": (r["comments_total"] or 0) - left,
+                              "total": r["comments_total"] or 0, "left": left})
+            projects.append({"id": p["id"], "title": p["title"],
+                             "question": p["question"], "status": p["status"],
+                             "notes": st_["notes"], "sources": st_["sources"],
+                             "age": st_["age_hours"], "ready": bool(ok),
+                             "queue_pos": qpos.get(p["id"]),
+                             "reads": reads})
+        # Running first, then the queue in the order it will actually run,
+        # then everything finished. Plain id order buried the active project
+        # under whatever had been queued after it.
+        projects.sort(key=lambda d: (0 if d["status"] == "active"
+                                     else 1 if d["queue_pos"] else 2,
+                                     d["queue_pos"] or -d["id"]))
+        # Lifetime counts, straight from the actions table. Every proposal is
+        # recorded there — including the reflexive ones since 2026-09-04 — so
+        # this is "times riffle has ever chosen this", not "times it worked".
+        # That is the number worth showing: an action set to auto that has
+        # never once been chosen is a different problem from one that keeps
+        # failing, and the settings page could not tell them apart.
+        uses = {r["kind"]: r["n"] for r in s.db.execute(
+            "SELECT kind, COUNT(*) n FROM actions GROUP BY kind")}
+        h._json({"modes": policy.modes(s),
+                 "uses": uses,
+                 "interval": interval,
+                 "kinds": policy.ACTION_KINDS,
+                 "square": sorted(policy.REACHES_THE_SQUARE),
+                 "notes": POLICY_NOTES,
+                 "drives": [r["name"] for r in goals.all_drives(s)],
+                 "restrictions": policy.restrictions(s),
+                 "instructions": [
+                     {"id": r["id"], "ts": r["ts"], "text": r["text"],
+                      "left": r["cycles_left"], "total": r["cycles_total"]}
+                     for r in _state.recent_instructions(s)],
+                 "projects": projects})
+        return True
+    if h.command == "GET" and u.path == "/api/goals":
+        goals.seed(s, cfg)
+        h._json({
+            "goals": [{"name": r["name"], "weight": r["weight"],
+                       "locked": bool(r["locked"]), "description": r["description"]}
+                      for r in goals.all_drives(s)],
+            "firing": goals.firing(s, 14),
+            "history": [{"ts": x["ts"], "name": x["name"], "field": x["field"],
+                         "old": x["old"], "new": x["new"], "by": x["actor"],
+                         "reason": x["reason"]} for x in goals.history(s, 40)],
+            "memory_count": memory.count(s),
+            "memories": [{"id": m["id"], "ts": m["ts"], "kind": m["kind"],
+                          "text": m["text"], "pinned": bool(m["pinned"]),
+                          "use_count": m["use_count"],
+                          "tier": dict(m).get("tier") or "short",
+                          "expired": bool(dict(m).get("expired"))}
+                         for m in memory.recent(s, 60)],
+        })
+        return True
+    if h.command != "POST":
+        return False
+    n = int(h.headers.get("Content-Length", 0))
+    try:
+        b = json.loads(h.rfile.read(n) or b"{}")
+    except json.JSONDecodeError:
+        h._json({"error": "bad json"}, 400)
+        return True
+    try:
+        if u.path == "/api/policy/mode":
+            from agent import policy
+            old, new = policy.set_mode(s, b["kind"], b["mode"], "you")
+            s.say("report", f"You set {b['kind']} to {b['mode']}"
+                            + (f" (was {old})" if old and old != new else "") + ".")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/policy/restrict":
+            from agent import policy
+            only, never = policy.set_restrictions(
+                s, b["drive"], b.get("only"), b.get("never"), "you")
+            s.say("report", f"You set what '{b['drive']}' may propose. "
+                            + (f"Only: {', '.join(only)}. " if only else "")
+                            + (f"Never: {', '.join(never)}." if never else "")
+                            + ("No restrictions." if not only and not never else ""))
+            return h._json({"ok": True}) or True
+        if u.path == "/api/instruction/cycles":
+            from agent import state as _state
+            _state.set_instruction_cycles(s, int(b["id"]), int(b["cycles"]))
+            return h._json({"ok": True}) or True
+        if u.path == "/api/instruction/clear":
+            from agent import state as _state
+            n = _state.clear_instructions(s)
+            s.say("report", f"You cleared {n} standing instruction(s).")
+            return h._json({"ok": True, "cleared": n}) or True
+        if u.path == "/api/dismiss":
+            # Take an action out of the queue without sending it.
+            #
+            # Rejecting already exists on the card's own buttons, but a card
+            # can be stuck at 'sending' with no buttons at all, and a queue of
+            # five near-identical posts needs four of them gone rather than
+            # four rejections argued with. This is the plain "I am not going
+            # to deal with this" and it records that you chose it.
+            aid = int(b.get("id") or 0)
+            row = s.action(aid) if aid else None
+            if not row:
+                return h._json({"error": "no such action"}) or True
+            if row["status"] in ("executed", "sent"):
+                return h._json({"error": "that one already went out"}) or True
+            # NOR WHAT RAN ON THE BOX (audit F30). `accepted` is a local action
+            # (a build, a read, a note) that was carried out, and `running` one
+            # being carried out now. Dismissing turned either into `rejected`
+            # and said "It was not sent", which is not what happened.
+            if row["status"] in ("accepted", "running"):
+                return h._json({
+                    "error": "that one is a step riffle takes on its own box, and "
+                             + ("it has already been done"
+                                if row["status"] == "accepted" else
+                                "it is being done right now")
+                             + ". Nothing of it goes to the square, so there is "
+                               "nothing to hold back."}) or True
+            # SENDING is not dismissable. The request is on the wire; if it
+            # completes a second later the row flips to executed and you have
+            # been told "It was not sent" about something that was.
+            # UNKNOWN is not dismissable either. Dismissing set it to
+            # `rejected`, and the duplicate checks count `unknown` but not
+            # `rejected` — so clearing the card off your screen is the thing
+            # that lets riffle resend a comment that may already be on the
+            # square. The card is in the way; the risk is real.
+            if row["status"] == "unknown":
+                return h._json({
+                    "error": "that one may already be on the square. It was "
+                             "sent and the reply was lost, so dismissing it "
+                             "would let riffle send it again. Check the "
+                             "square and use its card's buttons: \"it is on "
+                             "the square\" or \"it is not there\"."}) or True
+            if row["status"] == "sending":
+                return h._json({
+                    "error": "that one is being sent right now. Wait for it "
+                             "to land or fail — dismissing it would tell you "
+                             "it was not sent while it still might be."}) or True
+            # `was` keeps what it had been: riffle is told about a proposal
+            # you turned down, not a failed or refused card you cleared away.
+            s.set_status(aid, "rejected", {"by": "you", "how": "discarded",
+                                           "was": row["status"]})
+            # h, not self. This endpoint lives in _goals_routes(h), a module
+            # level function with no self in scope — so pressing discard
+            # raised NameError every time and the card never changed. Both
+            # deploy gates pass it because the name is only looked up when
+            # the branch runs.
+            h._update_card(aid, status="rejected", sent_at=h._local_time())
+            s.log(f"you discarded {row['kind']} #{aid} without sending it",
+                  drive=row["drive"])
+            s.say("report", f"You discarded the {row['kind']} I proposed "
+                            f"(#{aid}). It was not sent and I will not retry "
+                            f"it. If it was wrong in a way I should know about, "
+                            f"tell me and I will not write that again.")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/resolve":
+            # YOU SETTLE A SEND NOBODY COULD CONFIRM (audit F38). A send with no
+            # answer could not be dismissed (rightly: it may be on the square)
+            # and could not be approved again (decide claims queued rows only),
+            # so the card said "check the square" and offered no way to record
+            # what you found. The cycle settles comments, posts, porch lines,
+            # votes and tags by itself; a seal, attestation, flag or submission
+            # it cannot look up, and you can.
+            aid = int(b.get("id") or 0)
+            row = s.action(aid) if aid else None
+            if not row or row["status"] != "unknown":
+                return h._json({"error": "that one is not waiting to be settled"}) or True
+            landed = bool(b.get("landed"))
+            s.set_status(aid, "executed" if landed else "failed",
+                         {"settled": "you checked: " + ("it is on the square" if landed
+                                                        else "it is not there"),
+                          "by": "you"})
+            h._update_card(aid, status="executed" if landed else "failed",
+                           sent_at=h._local_time(),
+                           ref="you found it on the square" if landed else "",
+                           error="" if landed else "you checked: it is not on the square")
+            s.log(f"you settled {row['kind']} #{aid}: "
+                  + ("it is on the square" if landed else "it is not there"),
+                  drive=row["drive"])
+            return h._json({"ok": True}) or True
+        if u.path == "/api/answer":
+            # Imported here rather than relying on _state from a sibling
+            # branch: those imports are local to their own `if`, so using the
+            # name here would be a NameError the moment you answered a
+            # question. ast.parse and the import gate both miss that.
+            from agent import state as _state
+            from agent.state import answer_question
+            qid = int(b.get("qid") or 0)
+            text = str(b.get("answer") or "")
+            if not answer_question(s, qid, text):
+                return h._json({"error": "no open question with that id"}) or True
+            # Update the card in place rather than appending a second message,
+            # so the question and its answer stay one object in the log.
+            for m in s.db.execute(
+                    "SELECT id, meta FROM messages WHERE role='question'"):
+                try:
+                    meta = json.loads(m["meta"] or "{}")
+                except ValueError:
+                    continue
+                if int(meta.get("qid") or 0) == qid:
+                    meta.update(status="answered", answer=text,
+                                answered_at=_state.utcnow())
+                    s.db.execute("UPDATE messages SET meta=? WHERE id=?",
+                                 (json.dumps(meta), m["id"]))
+            s.db.commit()
+            s.log(f"you answered question #{qid}")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/interval":
+            try:
+                mins = max(5, min(1440, int(b.get("minutes"))))
+            except (TypeError, ValueError):
+                return h._json({"error": "minutes must be a number"}) or True
+            old = s.note("cycle_interval_minutes")
+            s.note("cycle_interval_minutes", mins)
+            s.say("report", f"Wake interval set to {mins} minutes"
+                            + (f" (was {old})" if old else "") + ".")
+            return h._json({"ok": True, "minutes": mins}) or True
+        if u.path == "/api/project/dequeue":
+            from agent import project as _pj
+            pid = int(b.get("id") or 0)
+            row = s.db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
+            # drop_queued only ever touches a row whose status is 'queued', so
+            # a stale page cannot use this to kill the running project.
+            if not row or not _pj.drop_queued(s, pid):
+                return h._json({"error": "not a queued project"}) or True
+            s.say("report", f"You removed '{row['title']}' from the project "
+                            f"queue. It never started, so nothing is lost.")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/project/close":
+            from agent import project as _pj
+            p = _pj.active(s)
+            if not p:
+                return h._json({"error": "no project is open"}) or True
+            nxt = _pj.close_project(s, p["id"], "abandoned")
+            s.say("report", f"You closed the project '{p['title']}'. Its notes "
+                            f"and reads are kept."
+                  + (f" Started the next one in the queue: {nxt['title']}"
+                     if nxt else ""))
+            return h._json({"ok": True}) or True
+        if u.path == "/api/goal/weight":
+            old, new = goals.set_weight(s, cfg, b["name"], b["weight"], "you",
+                                        str(b.get("reason", ""))[:600])
+            s.say("report", f"You moved '{b['name']}' from {old} to {new}. "
+                            f"{b.get('reason', '')}")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/goal/lock":
+            goals.set_lock(s, b["name"], bool(b["locked"]), "you", "set from the goals page")
+            s.say("report", f"You {'locked' if b['locked'] else 'unlocked'} "
+                            f"'{b['name']}'.")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/goal/add":
+            name = goals.add(s, cfg, b.get("name"), b.get("weight", 0.1),
+                             b.get("description"), "you", str(b.get("reason", ""))[:600])
+            s.say("report", f"You gave me a new goal: '{name}' at weight "
+                            f"{b.get('weight')}. {b.get('description', '')}")
+            memory.remember(s, f"He added the goal '{name}': {b.get('description', '')}",
+                            kind="operator", source="goals-page", pinned=1)
+            return h._json({"ok": True}) or True
+        if u.path == "/api/goal/remove":
+            goals.remove(s, b["name"], "you", "removed from the goals page")
+            s.say("report", f"You removed the goal '{b['name']}'.")
+            return h._json({"ok": True}) or True
+        if u.path == "/api/memory/pin":
+            # Pinning brings an expired memory back (L12, audit 2026-10-27):
+            # it set pinned and left expired, so the memory stayed hidden
+            # from recall and was still purged later. Pinned means permanent.
+            # And LONG TERM (audit F42): left in short term, a pinned memory
+            # stayed a candidate for the daily pass, which could drop it.
+            if b.get("pinned"):
+                s.db.execute("UPDATE memories SET pinned=1, expired=0,"
+                             " expires_at=NULL, tier='long' WHERE id=?", (int(b["id"]),))
+            else:
+                s.db.execute("UPDATE memories SET pinned=0 WHERE id=?",
+                             (int(b["id"]),))
+            s.db.commit()
+            return h._json({"ok": True}) or True
+        if u.path == "/api/memory/forget":
+            memory.forget(s, int(b["id"]))
+            return h._json({"ok": True}) or True
+    except goals.Rejected as e:
+        h._json({"error": str(e)})
+        return True
+    except (KeyError, TypeError, ValueError) as e:
+        h._json({"error": f"bad request: {e}"})
+        return True
+    return False
+
+
+if __name__ == "__main__":
+    main()
