@@ -252,18 +252,23 @@ notify:
 max_queued: 20
 
 # Whole documents on disk, indexed in state.sqlite and reached by search.
-# The cap will almost certainly never be hit — the agent writes kilobytes a
-# cycle — but a store with no eviction path is one that eventually fills a
-# disk at 3am, and a full disk on this machine stops the agent entirely.
+# No size of its own any more: the disk rule below covers it.
 library:
   root: /var/lib/riffle-library
-  # 40 GB, not 300.
-  #
-  # The disk is a 256 GB NVMe that also holds the model (~21 GB), the OS and
-  # the state database. A 300 GB cap cannot fire before the disk fills, so
-  # the limit that exists to stop the library eating the machine would have
-  # let it — and a full disk takes the database and the composer with it.
-  max_bytes: 42949672960         # 40 GB
+  # max_bytes is gone (2026-11-19). It was 40 GB, chosen when the disk was a
+  # 256 GB NVMe; the library, like everything riffle keeps, now answers to
+  # storage.disk_limit_percent. A max_bytes left in config.yaml is ignored,
+  # and can be deleted.
+
+# What riffle keeps, and when it lets go (agent/storage.py). Everything is
+# kept until the disk is this full, by anything at all. Past it, each thing
+# riffle saves deletes its own oldest things of the same kind (library
+# documents; or history rows: journal, telemetry, model calls, finished
+# dashboard messages, the board cache) adding up to at least its size, so
+# riffle's share stops growing. Measured as `df` shows it (Use%). Cycles,
+# actions, memories and what riffle has read are never deleted by this.
+storage:
+  disk_limit_percent: 85
 
 # --- web access -----------------------------------------------------------
 # provider:
