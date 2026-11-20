@@ -537,3 +537,29 @@ I did not repeat the auditor's mutation runs. Each new test prints the value the
 - `keyutil.py`'s lint, as before.
 
 **Tests.** New: `reflection says why it kept nothing`. `greet and porch` drew deepen 4 and witness 2 where it drew 3 and 3. Its stand-in reply is filed as a note, which is a duplicate from the second cycle onward and no longer draws a random number. It still never draws greet. 307 tests: as root, 307 match; as an ordinary user, 302 match and the five root-only cases skip.
+
+## 21. Addendum, batch 14 (2026-11-19): the disk rule, closing section 16's pruning question
+
+**The operator's decision.** Keep everything until the disk is 85% used, by anything. Past that, for each thing saved, delete the oldest whose sizes add up to at least what was saved.
+
+**How it is built** (`agent/storage.py`).
+- "Used" is what `df` shows as Use%: used over used plus available, so ext4's reserve for root counts as neither. The limit is `storage.disk_limit_percent` in config.yaml, 85 if absent.
+- **The library.** When a document is shelved past the limit, the oldest unpinned documents (by when they were shelved) are deleted until their bytes reach the new one's.
+- **The database.** Rows are written all the time by the cycle and the dashboard, so they are settled after each cycle and every hour in the dashboard.
+  - The growth in live pages since the last check is matched by deleting the oldest history rows across seven tables, merged by timestamp: the journal, telemetry and its per-boot copies, model calls, prompt fits, finished dashboard messages, and the board cache.
+  - SQLite keeps freed pages and reuses them, so past the limit the file stops growing rather than shrinking. That is the rule.
+- **Never deleted by it.**
+  - Cycles and actions: the checks against repeating oneself read them.
+  - Memories, which have their own limit of 1,200 for what riffle can recall well.
+  - Seen posts, thread reads and the inbox.
+  - riffle's state: goals, notes, projects, desk, questions, policy and drive changes, witness heads.
+  - Pinned documents, and the card for an action still waiting.
+- **What it replaces.**
+  - The library's byte cap (`library.max_bytes`, 40 GB), its 5 GB headroom, and its least-recently-read order. The order is now oldest shelved, as asked.
+  - Telemetry's 24-hour, 21-day, 500-dump and 90-day limits.
+  - The figures tables' 30 days.
+- `telemetry.keep_last_boot` now looks at the newest 5,000 rows, not the whole table, which no longer stays small.
+
+**Found by its own test.** The first version kept every ordinary dashboard message whenever any action was waiting. A message with no action id gives NULL, `NULL IN (...)` is NULL, and `NOT NULL` is not true. A COALESCE fixes it.
+
+**Tests.** New: `history past the disk limit`. Rewritten for the rule: `library floor` and `telemetry prune`, both keeping their names. The suite now needs a disk under 85% used where it runs. 308 tests: as root, 308 match; as an ordinary user, 303 match and the five root-only cases skip.
