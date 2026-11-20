@@ -46,7 +46,8 @@ RestartSec=10
 # daily consolidation had nothing to promote in that time.
 #
 # --mlock also removed: it pins the model unreclaimable, which matters on a box
-# with swap. The composer keeps it for now; triage does not need it.
+# with swap. (This said "the composer keeps it for now"; the composer dropped it
+# on 2026-10-25, see its unit. Corrected 2026-11-19.)
 # Lower priority: the composer must never wait on triage for CPU.
 Nice=10
 LimitMEMLOCK=infinity

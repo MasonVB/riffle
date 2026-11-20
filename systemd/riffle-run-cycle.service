@@ -55,7 +55,9 @@ ExecStartPre=/bin/rm -f /var/lib/riffle/run-cycle.request
 # --force skips the INTERVAL check, which is the entire reason for
 # asking. It does not skip the cycle lock, which is taken inside main()
 # and is what stops two cycles overlapping; a requested cycle arriving
-# while one is running exits immediately and says so.
+# while one is running waits for it, up to 40 minutes, as said above. (This
+# line said it "exits immediately"; corrected 2026-11-19, audit second pass,
+# section 8.)
 ExecStart=/usr/bin/python3 -m agent.cycle --config /opt/riffle/config.yaml --force
 # 6 HOURS (L21, audit 2026-10-27; raised in audit round 2). Every wait inside
 # a cycle has its own timeout, and the worst path that hits each of them is
