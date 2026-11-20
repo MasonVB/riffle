@@ -412,9 +412,15 @@ def keep_last_boot(state, log=None, hours=1):
     state.note("telemetry_boot", cur)
     if not prev:
         return 0                  # the first boot this has seen: nothing to compare
+    # THE NEWEST ROWS ONLY (2026-11-19). Telemetry is no longer deleted
+    # after a day, so a scan of the whole table for the previous boot's rows
+    # would read months of samples on every restart of the dashboard. That
+    # boot's last hour is among the newest rows whatever the clock says: a
+    # day of samples, plus room for the dumps an error run makes.
     rows = state.db.execute(
         "SELECT ts, kind, label, payload FROM telemetry"
-        " WHERE json_extract(payload, '$.boot') = ? ORDER BY ts", (prev,)).fetchall()
+        " WHERE id > (SELECT COALESCE(MAX(id), 0) FROM telemetry) - 5000"
+        " AND json_extract(payload, '$.boot') = ? ORDER BY ts", (prev,)).fetchall()
     if not rows:
         return 0
     last = dt.datetime.fromisoformat(rows[-1]["ts"].replace("Z", "+00:00"))
@@ -516,29 +522,11 @@ def _journal_tail(unit, n):
         return [f"({type(e).__name__}: {e})"[:120]]
 
 
-def prune(state, hours=24, dump_days=21, max_dumps=500, kept_days=90):
-    """Samples after `hours`; dumps after `dump_days`, at most `max_dumps`
-    of them past that first day; the per-boot copies after `kept_days`.
-
-    Dumps used to go after 24 hours with everything else (M6). They are kept
-    longer now, but capped by count too: every error in the journal takes
-    one, with no rate limit, and errors have come in runs.
-    """
-    ensure(state)
-    cur = state.db.execute(
-        "DELETE FROM telemetry WHERE ts < ? AND kind != 'dump'", (_ago(hours),))
-    n = cur.rowcount
-    n += state.db.execute(
-        "DELETE FROM telemetry WHERE kind = 'dump' AND ts < ?",
-        (_ago(dump_days * 24),)).rowcount
-    n += state.db.execute(
-        "DELETE FROM telemetry WHERE kind = 'dump' AND ts < ? AND id NOT IN"
-        " (SELECT id FROM telemetry WHERE kind = 'dump' ORDER BY id DESC LIMIT ?)",
-        (_ago(hours), max_dumps)).rowcount
-    n += state.db.execute(
-        "DELETE FROM telemetry_kept WHERE ts < ?", (_ago(kept_days * 24),)).rowcount
-    state.db.commit()
-    return n
+# prune() IS GONE (2026-11-19). It deleted samples after 24 hours, dumps
+# after 21 days or past 500, and each boot's kept copies after 90 days. The
+# operator's rule is to keep everything until the disk is 85% used, and then
+# to delete only as much of the oldest as is newly saved: agent/storage.py,
+# run by the dashboard every hour and after every cycle.
 
 
 def recent(state, limit=400, kind=None):

@@ -516,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
         if cls._tel_started:
             return
         cls._tel_started = True
-        from agent import telemetry
+        from agent import storage, telemetry
         telemetry.install(cls.state, cls.cfg)
         try:
             telemetry.keep_last_boot(cls.state, cls.state.log)
@@ -542,8 +542,12 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     telemetry.sample(cls.state, cls.cfg, "tick")
                     n += 1
+                    # Hourly: the disk rule (agent/storage.py), which
+                    # replaced telemetry's own 24-hour prune on 2026-11-19.
+                    # The cycle checks after every cycle too; this covers
+                    # the hours when no cycle runs.
                     if n % 60 == 0:
-                        telemetry.prune(cls.state, 24)
+                        storage.check(cls.state, cls.cfg, cls.state.log)
                 except Exception:
                     pass          # never let the watcher break the watched
                 # monotonic, not time() (L17, audit 2026-10-27): a clock

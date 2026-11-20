@@ -22,16 +22,18 @@ would make every backup enormous and every query slower for the sake of blobs
 nothing joins against. The documents live on disk; only the index is a table.
 
 PRUNING
+Nothing is dropped for age or size until the disk is 85% used, by anything
+(the operator's rule, 2026-11-19; agent/storage.py). Past that, each
+document shelved deletes the oldest unpinned documents, by when they were
+shelved, until their bytes add up to the new one's: riffle's share of the
+disk stops growing, and a disk filled by something else cannot empty the
+library, since no more goes than comes in. Pinned documents are never dropped.
 
-Bounded by total bytes, default 300 GB, dropping least-recently-READ first.
-Reading protects a document, which is the opposite of the desk's rule, and for
-the opposite reason: a desk item is protected by being worked, a library
-document by being wanted. Pinned documents are never dropped.
-
-The cap will very likely never be reached. Written anyway, because a store
-with no eviction path is a store that eventually fills a disk at three in the
-morning, and the failure mode of a full disk on this machine is the agent
-stopping entirely.
+Before that, the library had a byte cap (config.yaml's library.max_bytes,
+40 GB; 300 GB earlier), kept 5 GB of the disk free, and dropped the least
+recently READ first, never below half the cap. The cap and the 5 GB are gone;
+the order is now oldest shelved, as the operator asked, so a document read
+every week can go before one shelved later and never opened.
 """
 import datetime as dt
 import hashlib
@@ -39,7 +41,6 @@ import os
 import re
 
 ROOT = "/var/lib/riffle-library"
-MAX_BYTES = 300 * 1024 * 1024 * 1024        # 300 GB
 MAX_DOC = 8 * 1024 * 1024                   # 8 MB per document
 READ_CHARS = 12000                          # how much a read puts in the prompt
 # "draft" is here because drives.py added it to the gate on 2026-10-10 and
@@ -100,18 +101,11 @@ def total_bytes(state):
     return int(r["b"])
 
 
-def _free_bytes(root):
-    """Bytes actually available on the filesystem holding the library."""
-    try:
-        st = os.statvfs(root)
-        return st.f_bavail * st.f_frsize
-    except OSError:
-        return None
-
-
 def put(state, title, body, kind="note", tags="", summary="", source="",
-        pinned=False, root=ROOT, cap=MAX_BYTES):
-    """Shelve a document. Returns (id, evicted_titles).
+        pinned=False, root=ROOT, cfg=None):
+    """Shelve a document. Returns (id, evicted_titles): what went to make
+    room for it, which is nothing until the disk is past its limit (cfg's
+    storage.disk_limit_percent, 85 by default; agent/storage.py).
 
     Deduplicated by content hash: shelving the same bytes twice returns the
     existing row rather than a second copy. An agent that re-reads a thread
@@ -162,7 +156,11 @@ def put(state, title, body, kind="note", tags="", summary="", source="",
         (rel, title, kind, str(tags)[:300], str(summary)[:600],
          str(source)[:300], len(raw), digest, _now(), 1 if pinned else 0))
     state.db.commit()
-    return cur.lastrowid, prune(state, root, cap)
+    from agent import storage
+    if storage.over_limit(root, cfg):
+        return cur.lastrowid, storage.make_room_in_library(
+            state, root, len(raw), keep_id=cur.lastrowid)
+    return cur.lastrowid, []
 
 
 def sources(state, kinds=None):
@@ -294,47 +292,7 @@ def forget(state, doc_id, root=ROOT):
     return True
 
 
-def prune(state, root=ROOT, cap=MAX_BYTES):
-    """Drop least-recently-read documents until under the cap. Never pinned.
-
-    NULL last_read sorts first, so something shelved and never opened goes
-    before something read once a year ago. Shelving is cheap and reading is a
-    decision; the decision is the signal.
-    """
-    dropped = []
-    # THE DISK IS ALSO A LIMIT. A cap larger than free space never fires, so
-    # the configured number was doing nothing until it was lowered — and a
-    # correctly sized cap still cannot see a disk filling for other reasons
-    # (the model, logs, build directories). Evict down to whichever binds.
-    _free = _free_bytes(root)
-    if _free is not None:
-        _used = total_bytes(state)
-        # Keep 5 GB clear for the database, the journal and a build.
-        _room = max(0, _used + _free - 5 * 1024 ** 3)
-        # BUT NEVER BELOW HALF THE CAP (M10, audit 2026-10-27). Free space
-        # can vanish for reasons that have nothing to do with the library (a
-        # runaway build, logs); evicting down to it meant one full disk could
-        # empty the library on the next shelve. Disk pressure may halve it.
-        if _room < cap:
-            cap = max(_room, cap // 2)
-    while total_bytes(state) > cap:
-        row = state.db.execute(
-            "SELECT id,title,path FROM library WHERE pinned=0"
-            " ORDER BY last_read IS NOT NULL, last_read, id LIMIT 1").fetchone()
-        if not row:
-            break                       # everything left is pinned
-        try:
-            os.remove(os.path.join(root, row["path"]))
-        except OSError:
-            pass
-        state.db.execute("DELETE FROM library WHERE id=?", (row["id"],))
-        state.db.execute("DELETE FROM library_aliases WHERE lib_id=?", (row["id"],))
-        state.db.commit()
-        dropped.append(row["title"])
-    return dropped
-
-
-def as_context(state, cap=MAX_BYTES):
+def as_context(state, cfg=None, root=ROOT):
     """One line in the prompt. The library is reached by search, not by being shown."""
     r = state.db.execute(
         "SELECT COUNT(*) n, COALESCE(SUM(bytes),0) b FROM library").fetchone()
@@ -348,7 +306,8 @@ def as_context(state, cap=MAX_BYTES):
     gb = r["b"] / (1024 ** 3)
     recent = state.db.execute(
         "SELECT title FROM library ORDER BY id DESC LIMIT 5").fetchall()
-    return (f"YOUR LIBRARY: {r['n']} document(s), {gb:.2f} GB of "
-            f"{cap / (1024 ** 3):.0f} GB. Search it with `library_find` before "
+    from agent import storage
+    return (f"YOUR LIBRARY: {r['n']} document(s), {gb:.2f} GB; "
+            f"{storage.describe(cfg, root)}. Search it with `library_find` before "
             f"deciding you do not know something.\n  most recent: "
             + "; ".join(x["title"][:60] for x in recent))

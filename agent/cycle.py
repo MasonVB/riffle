@@ -2143,7 +2143,7 @@ def _main():
     if _desk_board:
         parts.append(_desk_board)
     parts.append(library.as_context(
-        state, int((cfg.get("library") or {}).get("max_bytes", library.MAX_BYTES))))
+        state, cfg, (cfg.get("library") or {}).get("root", library.ROOT)))
     _lf2 = state.note("last_library_read")
     if _lf2 and _cycles_since_note(state, "last_library_read") <= 2:
         parts.append("THE DOCUMENT YOU OPENED LAST CYCLE (it is replaced the "
@@ -5718,7 +5718,7 @@ def apply_read_page(state, cfg, cid, p, drive, log):
                  + (f" {_tag.replace(' ', '-')}" if _tag else ""),
             summary=(p.get("why") or "")[:600], source=out["url"],
             root=lcfg.get("root", library.ROOT),
-            cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+            cfg=cfg)
     except (ValueError, OSError) as e:
         did = None
         log(f"read_page fetched but could not shelve: {e}", level="warn", drive=drive)
@@ -5910,7 +5910,6 @@ def apply_library(state, cfg, cid, kind, p, drive, log):
     """
     lcfg = cfg.get("library") or {}
     root = lcfg.get("root", library.ROOT)
-    cap = int(lcfg.get("max_bytes", library.MAX_BYTES))
 
     if kind == "library_find":
         hits = library.find(state, p["query"], root=root)
@@ -5980,7 +5979,7 @@ def apply_library(state, cfg, cid, kind, p, drive, log):
         did, dropped = library.put(
             state, p["title"], p["body"], kind=p.get("kind") or "note",
             tags=p.get("tags") or "", summary=p.get("summary") or "",
-            source=p.get("source") or "", root=root, cap=cap)
+            source=p.get("source") or "", root=root, cfg=cfg)
     except (ValueError, OSError) as e:
         log(f"library refused: {e}", level="warn", drive=drive)
         state.say("error", f"Cycle {cid} \u00b7 the library refused that: {e}")
@@ -5989,7 +5988,8 @@ def apply_library(state, cfg, cid, kind, p, drive, log):
     log(f"library: shelved #{did} {p['title'][:60]} ({len(p['body'])} chars)"
         + (f"; pruned {len(dropped)}" if dropped else ""), drive=drive)
     state.say("report", f"Cycle {cid} \u00b7 shelved '{p['title']}' as #{did}."
-              + (f"\nThe library was over its cap, so these were dropped: "
+              + (f"\nThe disk is past its limit, so the oldest documents "
+                 f"went to make room for it: "
                  f"{', '.join(dropped[:5])}" if dropped else ""),
               {"drive": drive})
     state.end_cycle(cid, "library-shelved", str(did))
@@ -6172,7 +6172,7 @@ def apply_build(state, cfg, cid, p, drive, log):
                     summary=(p.get("note") or "")[:600],
                     source=f"build:{run_id}",
                     root=lcfg.get("root", library.ROOT),
-                    cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+                    cfg=cfg)
             except (ValueError, OSError) as e:
                 log(f"build {run_id} worked but {_n} could not be shelved: {e}",
                     level="warn", drive=drive)
@@ -6185,7 +6185,7 @@ def apply_build(state, cfg, cid, p, drive, log):
                     summary=f"what {p['entry']} printed in run {run_id}",
                     source=f"build:{run_id}:stdout",
                     root=lcfg.get("root", library.ROOT),
-                    cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+                    cfg=cfg)
             except (ValueError, OSError) as e:
                 log(f"build {run_id}: its output could not be shelved: {e}",
                     level="warn", drive=drive)
@@ -6367,7 +6367,7 @@ def apply_fetch(state, cfg, reader, writer, cid, p, drive, log):
             tags=what, summary=f"the square's {what} surface as of {utcnow()}",
             source=f"1f916:/api/{what}",
             root=lcfg.get("root", library.ROOT),
-            cap=int(lcfg.get("max_bytes", library.MAX_BYTES)))
+            cfg=cfg)
     except (ValueError, OSError) as e:
         log(f"fetched {what} but could not shelve it: {e}", level="warn", drive=drive)
     # Kept as a note, not a memory. memory.remember caps at 600 characters and

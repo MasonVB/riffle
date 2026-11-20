@@ -31,7 +31,9 @@ TWO THINGS ARE NEWLY RECORDED, because nothing kept them:
                   and every block's size wanted and sent. What the "blocks
                   before fitting" and "prompt fitted" queries were for.
 
-Both are pruned to 30 days. Nothing here can change what a cycle does:
+Both are kept until the disk is 85% used, then the oldest go as new rows come
+in (agent/storage.py; they were pruned to 30 days before 2026-11-19). Nothing
+here can change what a cycle does:
 every reading is guarded, and a failure costs its own line of the report.
 
 WHAT IT CANNOT READ, by design: the composer's systemd journal and the CPU's
@@ -61,7 +63,6 @@ CREATE TABLE IF NOT EXISTS prompt_fits (
   wanted INTEGER, sent INTEGER, blocks TEXT);
 CREATE INDEX IF NOT EXISTS ix_pfits_at ON prompt_fits(at);
 """
-KEEP_DAYS = 30
 
 
 def ensure(state):
@@ -125,24 +126,19 @@ def record_fit(state, cycle_id, ceiling, running_ctx, sys_chars, tail_chars,
         pass
 
 
-def prune(state):
-    try:
-        ensure(state)
-        lo = _utc(24 * KEEP_DAYS)
-        state.db.execute("DELETE FROM composer_calls WHERE at < ?", (lo,))
-        state.db.execute("DELETE FROM prompt_fits WHERE at < ?", (lo,))
-        state.db.commit()
-    except Exception:
-        pass
+# prune() IS GONE (2026-11-19): it deleted model calls and prompt fits
+# after 30 days (KEEP_DAYS). They are kept until the disk is 85% used, by the
+# operator's rule (agent/storage.py), which after_cycle now runs.
 
 
 def after_cycle(state, cfg, calls):
-    """Called once when a cycle process ends: store its calls, prune, and
-    rewrite figures.txt. Never raises."""
+    """Called once when a cycle process ends: store its calls, apply the
+    disk rule (agent/storage.py), and rewrite figures.txt. Never raises."""
     try:
         cid = (state.db.execute("SELECT MAX(id) FROM cycles").fetchone() or [None])[0]
         save_calls(state, calls, cid)
-        prune(state)
+        from agent import storage
+        storage.check(state, cfg, state.log)
         data = os.path.expanduser(cfg.get("data_dir", "/var/lib/riffle"))
         text = report(state, cfg)
         tmp = os.path.join(data, ".figures.txt.tmp")

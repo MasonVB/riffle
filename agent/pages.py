@@ -1084,9 +1084,9 @@ apart and neither can this table.</div>
 
 <h2>log &mdash; the last 24 hours</h2>
 <div class=note>A sample a minute; a full dump whenever an error or alarm is
-written. Tap a row to expand it. Dumps are marked in red. Anything older than
-24 hours is deleted, so this is for tracing something that just happened
-rather than for keeping.</div>
+written. Tap a row to expand it. Dumps are marked in red. This shows the last
+24 hours; older rows are kept until the disk is 85% used, then the oldest go
+as new ones come in.</div>
 <div class=ctl style="margin-bottom:9px">
   <a class=link href="/api/telemetry.jsonl" download>download the whole window</a>
   <button class=ghost onclick="loadTel()">refresh</button>
