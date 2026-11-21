@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent import (chat, consolidate, cortex, desk, drives, figures, goals,
                    library, memory,
-                   notify, policy, project, reference, web)  # noqa: E402
+                   notify, outgoing, policy, project, reference, web)  # noqa: E402
 from agent.client import HttpError, Reader, Writer  # noqa: E402
 from agent import inbox as inbox_mod  # noqa: E402
 from agent.state import State, utcnow  # noqa: E402
@@ -195,6 +195,18 @@ def _recent_rejections(state, days=3, limit=6):
         # A card cleared away after it failed or was refused is not a
         # judgement on what it said (dash /api/dismiss records what it was).
         if _resp.get("was") not in (None, "queued"):
+            continue
+        # A CHECK THAT REFUSED IT AT APPROVAL IS NOT HIM (2026-11-20). The
+        # dashboard re-runs the cycle's checks when he approves (the cap,
+        # duplicates, and now agent/outgoing.py), and a refusal there is
+        # stored as rejected with "by" naming the check. It was listed under
+        # YOUR OPERATOR TURNED THESE DOWN with "(no reason given)": he had
+        # approved it.
+        _by = _resp.get("by")
+        if _by and _by != "you":
+            out.append((r, f"(not him: he approved it, and the {_by} check "
+                           f"refused it before it was sent) "
+                           + str(_resp.get("how") or "").strip()))
             continue
         out.append((r, str(_resp.get("reason") or "").strip()))
     return out
@@ -2323,8 +2335,11 @@ def _main():
                                for n, h in sorted((_lb.get("file_sha256") or {}).items()))
                    + (f"; its output = {_lb['output_sha']} (library "
                       f"#{_lb['output_library_id']})" if _lb.get("output_sha") else "")
-                   + ". Cite one of these, whole or by its first 12 or more "
-                     "characters; to seal one, seal its library number.\n"
+                   + ". A hash is checkable only by someone who has the "
+                     "file, and the file is in your library, which nobody else "
+                     "can open: cite one only in a post that carries that file "
+                     "in full, or that links your post that does. To seal one, "
+                     "seal its library number.\n"
                    if _lb.get("file_sha256") else "")
                 + (f"stdout:\n{_lb['stdout'][:2000]}\n" if _lb["stdout"] else "")
                 + (f"stderr:\n{_lb['stderr'][:1500]}\n" if _lb["stderr"] else "")
@@ -2942,6 +2957,23 @@ def _main():
             state.end_cycle(cid, "payout-without-work", _mrow.group(1))
             return 0
 
+    # AN INSTRUCTION RIFFLE DOES NOT HAVE (communications audit, 2026-11-20).
+    # Action 3762 opened the project that took 62% of four days with "The
+    # operator has instructed to focus on Listing 65". The operator had not.
+    # A rationale that says he told riffle something has to match something
+    # he wrote: an instruction, an answer, a chat message, a reason he gave
+    # for a rejection, or a listing he set aside (agent/outgoing.py).
+    if kind != "noop":
+        _inv = outgoing.invented_instruction(state, cfg, rationale)
+        if _inv:
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"{kind} refused: its rationale cites an instruction the "
+                f"operator never gave", level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not propose that: {_inv}",
+                      {"drive": drive})
+            state.end_cycle(cid, "instruction-invented", rationale[:120])
+            return 0
+
     # THE SAME THING ALREADY WAITING (2026-11-07). A14 refuses a second post
     # while one waits for the operator; nothing did for other kinds, and on
     # 2026-11-07 two close_project actions for the same project were queued
@@ -3173,7 +3205,29 @@ def _main():
                 # only evidence was a figure that numcheck could not back.
                 log(f"could not read library #{_lid} for numcheck: "
                     f"{type(_e3).__name__}: {_e3}", level="warn", drive=drive)
-        passed, report = run_numcheck(body, _src, _evid, _declared)
+        # A PAGE CITED BY ITS URL (2026-11-20). "library #N" above was the
+        # way to back a figure from a page older than the newest sixty; it
+        # is now refused in public text (agent/outgoing.py: a reader cannot
+        # open the library). The URL is what riffle is told to give, so a
+        # page it read is found by its URL too.
+        for _u in set(re.findall(r"https?://[^\s<>\"')\]]+", body)):
+            try:
+                for _r3 in state.db.execute(
+                        "SELECT id FROM library WHERE kind='page' AND source=?"
+                        " ORDER BY id DESC LIMIT 1", (_u.rstrip(".,;:"),)):
+                    _row3, _text3 = library.read(state, int(_r3["id"]),
+                                                 cfg["library"]["root"], count=False)
+                    if _row3 and _fetched_doc(_row3):
+                        _src[f"library_{_r3['id']}"] = (_text3 or "")[:20000]
+            except Exception as _e4:
+                log(f"could not read the page at {_u[:80]} for numcheck: "
+                    f"{type(_e4).__name__}: {_e4}", level="warn", drive=drive)
+        # A BUILD FILE IN A CODE BLOCK IS CODE, NOT FIGURES (2026-11-20).
+        # riffle is now told to publish its scripts in full; their literals
+        # (0.5, 100, a seed) are not claims, and the file is the evidence.
+        # Only a block that is byte for byte a file a build shelved.
+        passed, report = run_numcheck(outgoing.mask_published_code(state, body),
+                                      _src, _evid, _declared)
         # A CRASH IS NOT A BLOCK (M13, audit 2026-10-27). A numcheck crash or
         # timeout came back as a report with no findings and was announced as
         # a block "containing 0 figures", with the real error never logged.
@@ -3447,7 +3501,7 @@ def _main():
         for _n in _named:
             if library.from_build(state, _n):         # or a build alias (F33)
                 _built = state.db.execute(
-                    "SELECT id, title, sha256 FROM library WHERE id=?", (_n,)).fetchone()
+                    "SELECT * FROM library WHERE id=?", (_n,)).fetchone()
                 if _built:
                     break
         if not _built:
@@ -3464,7 +3518,9 @@ def _main():
                       "something a build of yours produced" if _named else
                       "its evidence names nothing your builds produced")
                    + ". Put \"library #N\" in the evidence for the file or "
-                     "output your build shelved; its sha256 is added for you"
+                     "output your build shelved, once a post of yours has "
+                     "carried it: it is replaced with the file's sha256 and "
+                     "that post's URL"
                    + ("; your builds' newest: " + "; ".join(
                        f"#{r['id']} {r['title'][:50]}" for r in _recent)
                       if _recent else
@@ -3478,9 +3534,38 @@ def _main():
             state.end_cycle(cid, "replication-unbuilt",
                             str(_named[0]) if _named else "none")
             return 0
-        _line = f"library #{_built['id']} sha256 {str(_built['sha256']).lower()}"
+        # AND WHAT RAN IS SOMETHING A READER CAN SEE (the operator,
+        # 2026-11-20: riffle "shouldn't reference a library only it has
+        # access to"). The evidence went out as "library #N sha256 ...":
+        # a number nobody else can open and the hash of a file nobody else
+        # has. Now the file has to be in a post riffle sent, and the
+        # evidence names that post and the file's sha256 instead.
+        _where = outgoing.published_in(state, cfg, _built)
+        if not (_where or "").startswith("post "):
+            why = (f"a replication's evidence has to be something the reader "
+                   f"can check, and #{_built['id']} ({_built['title'][:60]}) "
+                   f"is in your library, which nobody else can open. Publish "
+                   f"it first: a post with the file in full, in a code block, "
+                   f"and what it printed. Then attest; the evidence will name "
+                   f"that post and the file's sha256.")
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log("attestation refused: the replication's build is not published",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                      {"drive": drive})
+            state.end_cycle(cid, "replication-unpublished", str(_built["id"]))
+            return 0
+        _pid_pub = int(_where.split()[1])
+        _line = (f"{outgoing.doc_label(_built)} sha256 "
+                 f"{str(_built['sha256']).lower()}, published in "
+                 f"{outgoing.post_url(cfg, _pid_pub)}")
+        # The entries that named the library go: they were riffle's pointer
+        # to the build, and mean nothing to anyone else.
+        _ev = [e for e in _ev if not outgoing.LIBRARY_RE.search(e)
+               and not re.fullmatch(r"\s*#\s*\d+\s*", e)]
         if _line not in _ev:
-            payload["evidence"] = (_ev + [_line])[-10:] if len(_ev) >= 10 else _ev + [_line]
+            _ev = _ev[-9:] + [_line]
+        payload["evidence"] = _ev
 
     # --- you cannot vote for yourself ----------------------------------------
     # The registry answers 403 "You cannot vote for yourself. Nice try." and
@@ -4086,6 +4171,25 @@ def _main():
                       {"drive": drive})
             state.end_cycle(cid, "already-replied", str(payload["parent_id"]))
             return 0
+
+    # --- what may be said in public (communications audit, 2026-11-20) ----------
+    # agent/outgoing.py: private library references, hashes of files nobody
+    # can see, a hash named as the wrong file, a [[...]] left in the text,
+    # a reply addressed to someone else, a promise to edit a post, a claim
+    # of notes never written, a vote on something unread, a second
+    # submission to a listing, an artifact that is not riffle's post, and a
+    # post that repeats one from the same project. The dashboard runs the
+    # same check again when you approve.
+    _out = outgoing.check(state, cfg, kind, payload, rationale)
+    if _out:
+        _oc, why = _out
+        state.propose(cid, kind, drive, payload, rationale, "blocked")
+        log(f"{kind} refused ({_oc}): {why[:160]}", level="warn", drive=drive)
+        state.say("report", f"Cycle {cid} \u00b7 I did not send that: {why}",
+                  {"drive": drive})
+        state.end_cycle(cid, _oc, why[:200])
+        return 0
+    payload = outgoing.finish(kind, payload)
 
     # --- execute or queue --------------------------------------------------------
     mode = cfg["autonomy"].get(kind, "queue")

@@ -26,7 +26,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from agent import chat, goals, memory  # noqa: E402
+from agent import chat, goals, memory, outgoing  # noqa: E402
 import subprocess  # noqa: E402
 import threading as _th  # noqa: E402
 from agent.client import HttpError, Writer  # noqa: E402
@@ -957,6 +957,32 @@ class Handler(BaseHTTPRequestHandler):
                                   error=f"already voted on that "
                                         f"(action #{_dupe['id']})")
                 return {"error": "already voted on that target"}
+
+        # THE CYCLE'S PUBLIC-TEXT CHECKS, AGAIN (communications audit,
+        # 2026-11-20; agent/outgoing.py). Two submissions to listing 65 were
+        # each checked when proposed, both queued, and both approved: the
+        # second went two seconds after the first. What riffle has sent,
+        # read and voted on changes while a card waits, so the same check
+        # runs at approval. And a [[...]] still in the text goes out as
+        # plain arithmetic, as the cycle now sends it.
+        if a["kind"] in outgoing.TEXT_FIELDS or a["kind"] == "vote":
+            _pj = a["project_id"] if "project_id" in a.keys() else None
+            _out = outgoing.check(s, self.cfg, a["kind"], payload,
+                                  a["rationale"] or "", exclude_id=aid,
+                                  project_id=_pj)
+            if _out:
+                _oc, _why = _out
+                s.set_status(aid, "rejected", {"by": _oc, "how": _why[:600]})
+                self._update_card(aid, status="rejected", error=_why[:200])
+                s.log(f"approved {a['kind']} #{aid} not sent ({_oc}): "
+                      f"{_why[:200]}", level="warn", drive=a["drive"])
+                return {"error": _why[:300]}
+            _fin = outgoing.finish(a["kind"], payload)
+            if _fin != payload:
+                payload = _fin
+                s.db.execute("UPDATE actions SET payload=? WHERE id=?",
+                             (json.dumps(payload), aid))
+                s.db.commit()
 
         # SIGNED BY THE CYCLE, NOT SENT FROM HERE (audit F8; your decision,
         # 2026-11-14). Sent from this process a seal or an attestation went

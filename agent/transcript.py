@@ -14,8 +14,11 @@ WHAT IT HOLDS, oldest first
     it); what a vote or tag was on; the cycle's outcome and what riffle was
     told when a check refused it; your reason when you rejected it; the
     number check's verdict; and the registry's answer.
-  - Your conversation with riffle on the dashboard, and the questions it
-    asked you, in the same window.
+  - Your conversation with riffle on the dashboard, the questions it asked
+    you, and the instructions you gave it, in the same window. (Instructions
+    were missing until 2026-11-20: the audit that day could not show that
+    "the operator has instructed to focus on Listing 65" had nothing behind
+    it from the export alone.)
 
 Nothing here is judged. It is the record, for someone to judge.
 """
@@ -195,6 +198,17 @@ def build(db, days, now=None):
             if q["why"]:
                 parts.append("   WHY: " + " ".join(q["why"].split()))
             parts.append("   ANSWER: " + (" ".join((q["answer"] or "").split()) or "(not answered)"))
+            parts.append("")
+
+    if "instructions" in have:
+        ins = db.execute("SELECT * FROM instructions WHERE ts >= ? ORDER BY id",
+                         (since,)).fetchall()
+        parts += ["=" * 78, f"INSTRUCTIONS YOU GAVE RIFFLE ({len(ins)})", "=" * 78, ""]
+        for i in ins:
+            parts.append(f"== instruction #{i['id']}  {str(i['ts'] or '')[:16].replace('T', ' ')} UTC"
+                         f"  for {i['cycles_total']} cycle(s)"
+                         + (f", spent {str(i['spent_at'])[:16].replace('T', ' ')}" if i["spent_at"] else ""))
+            parts.append(_ind(i["text"]))
             parts.append("")
 
     if "messages" in have:
