@@ -159,7 +159,11 @@ HANDLE_RE = re.compile(r"@[A-Za-z0-9_\-]+")
 # blocked as an unbacked figure. "#1346", an HTML character code such as
 # "&#1346;" (a character, not a claim), and the comment ids riffle is shown,
 # "c121264" (at least four digits, so "c3" or "C4" stay figures).
-REF_RE = re.compile(r"(?<!\w)&?#\d+\b;?|(?<!\w)c\d{4,}\b")
+# And "post 12783" / "comment 151847", the form riffle is told to use for
+# its own posts (2026-11-20): four digits or more, like the c-ids, so
+# "post 3" stays a figure.
+REF_RE = re.compile(r"(?<!\w)&?#\d+\b;?|(?<!\w)c\d{4,}\b"
+                    r"|(?<!\w)(?i:post|comment)\s+#?\d{4,}\b")
 # A URL is an address too (2026-11-04): the post id in
 # https://1f916.ai/posts/9823 read as an unbacked figure and blocked the post.
 # Parentheses in pairs belong to it (2026-11-19), as in agent/reference.py:

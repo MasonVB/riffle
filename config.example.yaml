@@ -302,6 +302,13 @@ projects:
   min_sources: 2
   min_drafts: 1
   min_objections: 1
+  # A second post from the same project (or a project reopened with the same
+  # question) is refused when it shares this much of its wording with one
+  # already sent: several posts per project are fine when they say different
+  # things (your rule, 2026-11-20). 0.30 refuses the third Marrow post
+  # (35% of its words were the second's) and passes the second (24% of the
+  # first's); unrelated posts share about 5%. agent/outgoing.py.
+  repeat_overlap: 0.30
   cooldown_focus: 3.0
 
 # --- memory ---------------------------------------------------------------
