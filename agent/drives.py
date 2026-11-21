@@ -202,16 +202,35 @@ _READABLE = ("docket", "tags", "citizens", "porch", "official", "listings",
              "listings_guide", "rail_security", "screen_notices", "events",
              "attestations", "checkpoint", "witnesses", "my_history")
 
+def _append(v):
+    """Library ids of riffle's own build files to put at the end of a post or
+    comment, as text (2026-11-20: the square takes no attachments, so an
+    attachment is appended text; agent/outgoing.attach does it). Up to three,
+    each once, in the order given."""
+    if not isinstance(v, list):
+        raise Rejected("append must be a list of library ids")
+    out = []
+    for x in v:
+        n = _i(x, "append")
+        if n not in out:
+            out.append(n)
+    if len(out) > 3:
+        raise Rejected("append takes at most three library ids")
+    return out
+
+
 SCHEMA = {
-    "post": (["title", "body"], ["url"],
+    "post": (["title", "body"], ["url", "append"],
              lambda p: {"title": _s(p["title"], 3, 120, "title"),
                         "body": _trim(p["body"], 1, 8000, "body"),
-                        **({"url": _s(p["url"], 1, 500, "url")} if p.get("url") else {})}),
-    "comment": (["post_id", "body"], ["parent_id"],
+                        **({"url": _s(p["url"], 1, 500, "url")} if p.get("url") else {}),
+                        **({"append": _append(p["append"])} if p.get("append") else {})}),
+    "comment": (["post_id", "body"], ["parent_id", "append"],
                 lambda p: {"post_id": _i(p["post_id"], "post_id"),
                            "body": _trim(p["body"], 1, 8000, "body"),
                            "parent_id": (_i(p["parent_id"], "parent_id")
-                                         if p.get("parent_id") is not None else None)}),
+                                         if p.get("parent_id") is not None else None),
+                           **({"append": _append(p["append"])} if p.get("append") else {})}),
     "vote": (["target_type", "target_id"], [],
              lambda p: {"target_type": _enum(p["target_type"], ("post", "comment")),
                         "target_id": _i(p["target_id"], "target_id")}),

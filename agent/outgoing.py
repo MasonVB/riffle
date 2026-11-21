@@ -252,25 +252,25 @@ def published_in(state, cfg, row, text="", posts=None):
     return None
 
 
-FENCE_RE = re.compile(r"(?ms)^[ \t]*```[^\n]*\n(.*?)^[ \t]*```[ \t]*$")
+FENCE_RE = re.compile(r"(?ms)^[ \t]*(```|~~~~)[^\n]*\n(.*?)^[ \t]*\1[ \t]*$")
 
 
 def mask_published_code(state, text):
     """text with each fenced code block that is, byte for byte, a file one of
-    riffle's builds shelved, blanked out (line count kept, so the number
+    riffle's builds shelved (or a build's output), blanked out (line count kept, so the number
     check's line numbers still match). Its literals are code, not figures,
     and the file is what the reader is being given to check. A block that is
     anything else, an output pasted by hand included, is left for the check."""
     import hashlib
 
     def one(m):
-        body = m.group(1).replace("\r\n", "\n")
+        body = m.group(2).replace("\r\n", "\n")
         cands = {body, body.rstrip("\n") + "\n", body.rstrip("\n")}
         for c in cands:
             h = hashlib.sha256(c.encode("utf-8")).hexdigest()
             try:
                 if state.db.execute(
-                        "SELECT 1 FROM library WHERE sha256=? AND kind='code'"
+                        "SELECT 1 FROM library WHERE sha256=? AND kind IN ('code','data')"
                         " AND source LIKE 'build:%' LIMIT 1", (h,)).fetchone():
                     return "\n" * m.group(0).count("\n")
             except Exception:
@@ -279,8 +279,176 @@ def mask_published_code(state, text):
     return FENCE_RE.sub(one, text or "")
 
 
+def outside_fences(text):
+    """text with every fenced code block's contents blanked, lines kept."""
+    return FENCE_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text or "")
+
+
 def post_url(cfg, pid):
     return f"{((cfg or {}).get('base') or 'https://1f916.ai').rstrip('/')}/api/post/{pid}"
+
+
+# ------------------------------------------- attaching, and the ways to cite
+#
+# The square takes text only. So an attachment is text at the end of the
+# post: riffle names its build files in "append", and attach() puts each one
+# there in full, byte for byte, under its name and sha256. A reader can copy
+# it, hash it and run it, and the number check knows the block for the file
+# it is (mask_published_code). The operator, 2026-11-21: riffle should be
+# able to "provide evidence even if the attachment is just appended text on
+# the post", and a citation that cannot go should come back with the ways it
+# can, not a bare refusal. ways() is those ways, with the real URL, file name,
+# size and room filled in.
+
+BODY_MAX = 8000
+APPENDIX_MARK = "\n\n---\nAppendix A: "
+_LETTERS = "ABC"
+_TEXT_MAX = {"post": 8000, "comment": 8000, "porch": 500, "flag": 200}
+
+
+def is_build(row):
+    return (str(row["kind"] or "") in ("code", "data")
+            and str(row["source"] or "").startswith("build:"))
+
+
+def _page_url(row):
+    src = str(row["source"] or "")
+    return src if src.startswith(("http://", "https://")) else None
+
+
+def _doc(state, n):
+    try:
+        return state.db.execute("SELECT * FROM library WHERE id=?", (int(n),)).fetchone()
+    except Exception:
+        return None
+
+
+def _appendix(cfg, row, letter):
+    text = _doc_text(cfg, row)
+    if text is None:
+        return None
+    fence = "~~~~" if "```" in text else "```"
+    if not text.endswith("\n"):
+        text += "\n"
+    return (f"Appendix {letter}: {doc_label(row)}, sha256 {str(row['sha256']).lower()}\n"
+            f"{fence}\n{text}{fence}")
+
+
+def _numbered(opts):
+    return " Ways to do it: " + " ".join(f"({i}) {o}" for i, o in enumerate(opts, 1))
+
+
+def ways(state, cfg, kind, payload, row=None):
+    """The ways riffle can give a reader what it meant to cite."""
+    payload = payload or {}
+    body = str(payload.get("body") or payload.get("note") or "")
+    opts = []
+    if row is not None:
+        url, label, n = _page_url(row), doc_label(row), row["id"]
+        if url:
+            return _numbered([
+                f"cite the page itself, {url}, and quote the sentence you rely on, "
+                f"in quotation marks, so a reader can find it there",
+                "or say what it says in your own words, with that URL"])
+        if is_build(row):
+            size = int(row["bytes"] or 0)
+            pub = published_in(state, cfg, row, "", my_posts(state))
+            if pub and pub.startswith("post "):
+                p = int(pub.split()[1])
+                opts.append(f"cite post {p}, which already carries {label} in full: "
+                            f"{post_url(cfg, p)}")
+            room = BODY_MAX - len(body) - size - 120
+            if kind in ("post", "comment") and room >= 0:
+                opts.append(f"add \"append\": [{n}] to this {kind}. {label} goes at "
+                            f"the end in full, as text, with its sha256 ({size} "
+                            f"characters, and there is room); call it \"Appendix A\"")
+            elif size + 200 <= BODY_MAX:
+                opts.append(f"post it first: a short post saying what {label} is and "
+                            f"what it printed, with \"append\": [{n}] ({size} "
+                            f"characters); then cite that post here by its URL")
+            else:
+                opts.append(f"{label} is {size} characters, more than a post holds "
+                            f"({BODY_MAX}): say what it does and what it printed, and "
+                            f"build a shorter script if a reader needs to run it")
+            opts.append("or leave the file out and say in words what it does and "
+                        "what it printed")
+            return _numbered(opts)
+        return _numbered([
+            f"say the point itself here, in your own words: #{n} ({label[:50]}) is "
+            f"your own writing, and a note of yours is not evidence to anyone else"]
+            + ([f"cite where it came from: {row['source']}"]
+               if str(row["source"] or "").startswith("http") else []))
+    return _numbered([
+        "a file one of your builds made: add \"append\": [its library id] to a "
+        "post or comment, and it goes at the end in full, as text, with its sha256",
+        "a page you read: cite its URL and quote the sentence you rely on",
+        "a post of yours that carries it: cite that post's URL",
+        "or say it in your own words"])
+
+
+def attach(state, cfg, kind, payload):
+    """(payload with its "append" files at the end of the body and "append"
+    gone, why not or None). Run again on a rewritten body, it replaces the
+    appendices rather than adding a second set."""
+    p = dict(payload or {})
+    ids = p.pop("append", None) or []
+    if not ids or kind not in ("post", "comment"):
+        return p, None
+    body = str(p.get("body") or "")
+    i = body.find(APPENDIX_MARK)
+    if i >= 0:
+        body = body[:i].rstrip()
+    parts = []
+    for k, n in enumerate(ids[:3]):
+        row = _doc(state, n)
+        if row is None:
+            return p, (f"\"append\" names library #{n}, and there is no such "
+                       f"document. library_find it first." + ways(state, cfg, kind, p))
+        if not is_build(row):
+            return p, (f"\"append\" takes your build files and their output; "
+                       f"#{n} ({doc_label(row)[:60]}) is a {row['kind']}."
+                       + ways(state, cfg, kind, p, row))
+        a = _appendix(cfg, row, _LETTERS[k])
+        if a is None:
+            return p, f"library #{n} could not be read from the shelf, so it cannot be appended."
+        parts.append(a)
+    new = body + "\n\n---\n" + "\n\n".join(parts)
+    if len(new) > BODY_MAX:
+        return p, (f"with its appendices this {kind} would be {len(new)} characters, "
+                   f"and the square takes {BODY_MAX}. Post each file on its own (a "
+                   f"short post with \"append\": [one id]) and cite those posts by "
+                   f"URL here, or append fewer, or say in words what they show.")
+    p["body"] = new
+    return p, None
+
+
+ATTACH_RE = re.compile(
+    r"\b(?:see|in|find|check|read|open)\s+(?:the\s+|my\s+)?attach(?:ed|ment)\b"
+    r"|\bI(?:'ve|\s+have)?\s+(?:also\s+)?attach(?:ed)?\b"
+    r"|\b(?:the\s+)?attached\s+(?:script|file|code|csv|output|data|log|notebook|simulation)\b"
+    r"|\b(?:is|are)\s+(?:also\s+)?attached\b"
+    r"|\battachments?\b",
+    re.I)
+
+
+def attachment_claimed(state, cfg, kind, payload, text):
+    """A post that says something is attached, with nothing appended."""
+    m = ATTACH_RE.search(text or "")
+    if not m or APPENDIX_MARK in str((payload or {}).get("body") or ""):
+        return None
+    row = None
+    for fm in FILE_RE.finditer(text or ""):
+        try:
+            row = state.db.execute(
+                "SELECT * FROM library WHERE kind IN ('code','data') AND source LIKE 'build:%'"
+                " AND (lower(title)=? OR lower(title) LIKE ?) ORDER BY id DESC LIMIT 1",
+                (fm.group(1).lower(), fm.group(1).lower() + " \u2014%")).fetchone()
+        except Exception:
+            row = None
+        if row:
+            break
+    return (f"you wrote \"{m.group(0)}\", and nothing is attached: the square "
+            f"takes text only." + ways(state, cfg, kind, payload, row))
 
 
 # ------------------------------------------------------------- the checks
@@ -298,15 +466,15 @@ def orphan_declaration(text):
     return None
 
 
-def library_reference(text):
+def library_reference(state, cfg, kind, payload, text):
     m = LIBRARY_RE.search(text or "")
     if not m:
         return None
+    num = re.search(r"\d+", m.group(0))
+    row = _doc(state, num.group(0)) if num else None
     return (f"you wrote \"{m.group(0)}\". Your library is on this machine: nobody "
-            f"reading can open it, so it is not a source and not evidence. Put "
-            f"what it holds into what you write (the passage, the code in a code "
-            f"block, the output), or link a post of yours that carries it. For a "
-            f"page you read, give the page's URL.")
+            f"reading can open it, so it is not a source and not evidence."
+            + ways(state, cfg, kind, payload, row))
 
 
 def _hash_tokens(text):
@@ -330,10 +498,23 @@ def hash_wrong_file(state, text):
                 min(after, key=lambda x: x[1]) if after else None)
         if near and near[0].lower() not in names:
             d = docs[0]
+            try:
+                other = state.db.execute(
+                    "SELECT id, sha256 FROM library WHERE kind IN ('code','data')"
+                    " AND (lower(title)=? OR lower(title) LIKE ?) ORDER BY id DESC LIMIT 1",
+                    (near[0].lower(), near[0].lower() + " \u2014%")).fetchone()
+            except Exception:
+                other = None
             return (f"you name {h} as {near[0]}, and {h} is {_doc_name(d)} "
                     f"(library #{d['id']}, \"{d['title'][:60]}\"). A hash is a "
-                    f"claim about one file. Give the file its own hash, or say "
-                    f"which file you mean.")
+                    f"claim about one file. Ways to do it: (1) if you mean "
+                    f"{_doc_name(d)}, call it {_doc_name(d)} "
+                    + (f"(2) if you mean {near[0]}, its hash is "
+                       f"{str(other['sha256'])[:12]} (library #{other['id']}) "
+                       if other else
+                       f"(2) if you mean {near[0]}, you have no build of it: leave "
+                       f"the hash out ")
+                    + "(3) whichever it is, append the file so a reader can check it.")
     return None
 
 
@@ -352,16 +533,10 @@ def hash_unpublished(state, cfg, kind, text):
         if any(published_in(state, cfg, d, t, posts) for d in docs):
             continue
         d = docs[0]
-        big = int(d["bytes"] or 0) > 7000
-        return (f"{h} is the hash of {_doc_name(d)} (library #{d['id']}), a file "
+        return (f"{h} is the hash of {doc_label(d)} (library #{d['id']}), a file "
                 f"only you have. Nobody reading this {kind} can see it, so its "
-                f"hash proves nothing to them. "
-                + ("It is too long for a post: put the part that matters in a "
-                   "code block, with the hash of exactly that text, or leave the "
-                   "hash out." if big else
-                   "Publish it: put the file in a post, in full, in a code block, "
-                   "then cite that post with the hash; or put it in this "
-                   f"{kind} if it fits; or leave the hash out."))
+                f"hash proves nothing to them."
+                + ways(state, cfg, kind, {"body": t}, d))
     return None
 
 
@@ -539,12 +714,36 @@ def artifact_not_a_post(state, cfg, payload):
     if posts:
         return None          # another citizen's post: refused as artifact-not-yours
     mine = sorted(my_posts(state), reverse=True)[:5]
+    # What the artifact meant, if it names a file of riffle's.
+    row = None
+    m = re.search(r"library\s*#?\s*(\d+)", art, re.I)
+    if m:
+        row = _doc(state, m.group(1))
+    for _s, _e, h in ([] if row else _hash_tokens(art)):
+        docs = _docs_for(state, h)
+        if docs:
+            row = docs[0]
+            break
+    opts = []
+    if row is not None and is_build(row):
+        pub = published_in(state, cfg, row, "", my_posts(state))
+        if pub and pub.startswith("post "):
+            p = int(pub.split()[1])
+            opts.append(f"post {p} already carries {doc_label(row)} in full: "
+                        f"submit {post_url(cfg, p)}")
+        opts.append(f"post the work first, a post saying what it is and what it "
+                    f"printed, with \"append\": [{row['id']}] so {doc_label(row)} "
+                    f"goes at its end in full; then submit that post's URL")
+    else:
+        opts.append("post the work first, with the build file appended (\"append\": "
+                    "[its library id]); then submit that post's URL")
+    if mine:
+        opts.append(f"if one of your posts already carries the work, submit its URL "
+                    f"(your latest: {', '.join(str(p) for p in mine)})")
     return (f"the artifact \"{art[:80]}\" is not a post of yours. The square "
             f"takes text only and your library is on this machine, so the one "
             f"thing a funder can fetch and check is a post you sent that carries "
-            f"the work in full: for code, the code itself in a code block, with "
-            f"its sha256. Publish that, then submit {post_url(cfg, '<its id>')}."
-            + (f" Your latest posts: {', '.join(str(p) for p in mine)}." if mine else ""))
+            f"the work in full." + _numbered(opts))
 
 
 def _related_projects(state, pid):
@@ -613,12 +812,18 @@ def check(state, cfg, kind, payload, rationale="", exclude_id=None, project_id=N
             return "voted-unread", why
     text = public_text(kind, payload)
     if text:
-        for outcome, fn in (("declaration-orphan", lambda: orphan_declaration(text)),
-                            ("library-private", lambda: library_reference(text)),
+        # What riffle wrote, as against what it attached. A file one of its
+        # builds made, appended or pasted byte for byte, is the file: a
+        # "[[0, 2]]" index or a "# my library" comment in it is code, not a
+        # claim. The hash checks still read everything.
+        prose = mask_published_code(state, text)
+        for outcome, fn in (("declaration-orphan", lambda: orphan_declaration(outside_fences(text))),
+                            ("library-private", lambda: library_reference(state, cfg, kind, payload, prose)),
+                            ("attachment-claimed", lambda: attachment_claimed(state, cfg, kind, payload, prose)),
                             ("hash-wrong-file", lambda: hash_wrong_file(state, text)),
                             ("hash-unpublished", lambda: hash_unpublished(state, cfg, kind, text)),
-                            ("post-cannot-change", lambda: edit_promise(text)),
-                            ("claim-unbacked", lambda: claim_unbacked(state, text))):
+                            ("post-cannot-change", lambda: edit_promise(prose)),
+                            ("claim-unbacked", lambda: claim_unbacked(state, prose))):
             why = fn()
             if why:
                 return outcome, why
@@ -648,7 +853,15 @@ def finish(kind, payload):
     for f in TEXT_FIELDS.get(kind, ()):
         v = out.get(f)
         if isinstance(v, str) and "[[" in v:
-            out[f] = DECL_RE.sub(lambda m: "(" + m.group(1).strip() + ")", v)
+            # Never inside a code block: there "[[0, 2]]" is code, and an
+            # appended file has to go out byte for byte or its sha256 lies.
+            parts, at = [], 0
+            for m in FENCE_RE.finditer(v):
+                parts.append(DECL_RE.sub(lambda d: "(" + d.group(1).strip() + ")", v[at:m.start()]))
+                parts.append(m.group(0))
+                at = m.end()
+            parts.append(DECL_RE.sub(lambda d: "(" + d.group(1).strip() + ")", v[at:]))
+            out[f] = "".join(parts)
     return out
 
 

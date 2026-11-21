@@ -2337,9 +2337,9 @@ def _main():
                       f"#{_lb['output_library_id']})" if _lb.get("output_sha") else "")
                    + ". A hash is checkable only by someone who has the "
                      "file, and the file is in your library, which nobody else "
-                     "can open: cite one only in a post that carries that file "
-                     "in full, or that links your post that does. To seal one, "
-                     "seal its library number.\n"
+                     "can open: cite one only with the file appended "
+                     "(\"append\": [its library id]), or linking your post that "
+                     "carries it. To seal one, seal its library number.\n"
                    if _lb.get("file_sha256") else "")
                 + (f"stdout:\n{_lb['stdout'][:2000]}\n" if _lb["stdout"] else "")
                 + (f"stderr:\n{_lb['stderr'][:1500]}\n" if _lb["stderr"] else "")
@@ -2827,6 +2827,22 @@ def _main():
         state.end_cycle(cid, "blocked", str(e)[:500])
         return 0
 
+    # ATTACHED AS TEXT (2026-11-21). The square takes no attachments, so
+    # "append": [library ids] puts each of riffle's build files at the end
+    # of the post or comment, in full, under its name and sha256. Done
+    # before every check, so they all read what will actually be sent.
+    _append_ids = list(payload.get("append") or []) if kind in ("post", "comment") else []
+    if _append_ids:
+        payload, _aw = outgoing.attach(state, cfg, kind, payload)
+        if _aw:
+            state.propose(cid, kind, drive, payload, rationale, "blocked")
+            log(f"{kind} refused: its appendix could not be made: {_aw[:160]}",
+                level="warn", drive=drive)
+            state.say("report", f"Cycle {cid} \u00b7 I did not send that: {_aw}",
+                      {"drive": drive})
+            state.end_cycle(cid, "append-refused", _aw[:200])
+            return 0
+
     if kind == "noop":
         log(f"noop: {payload.get('why', '')}", drive=drive)
         state.say("report", f"Cycle {cid} · drive {drive} · did nothing. "
@@ -3291,6 +3307,13 @@ def _main():
                                 _k2, _pay2, _r2 = drives.gate(
                                     {"action": kind, "payload": dict(payload, **_new2),
                                      "rationale": rationale}, drive, cfg)
+                                # The rewrite keeps the files the first draft
+                                # attached (attach() replaces, never doubles).
+                                if _append_ids:
+                                    _pay2, _aw2 = outgoing.attach(
+                                        state, cfg, kind, dict(_pay2, append=_append_ids))
+                                    if _aw2:
+                                        raise ValueError(f"its appendix: {_aw2[:120]}")
                                 _body2 = _outward_text(_pay2)
                                 for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b",
                                                            _body2, re.I)):
@@ -3308,7 +3331,8 @@ def _main():
                                 # check that reads the text came after.
                                 _hb2, _hwhy2 = _hash_refusal([_body2])
                                 _passed2, _report2 = ((False, {"findings": []}) if _hb2 else
-                                                      run_numcheck(_body2, _src, _evid, _declared))
+                                                      run_numcheck(outgoing.mask_published_code(state, _body2),
+                                                                   _src, _evid, _declared))
                                 if _hb2:
                                     log(f"numcheck: the rewrite gives a hash nothing "
                                         f"carries ({_hb2[0][:24]}); blocking as before",
@@ -3544,10 +3568,13 @@ def _main():
         if not (_where or "").startswith("post "):
             why = (f"a replication's evidence has to be something the reader "
                    f"can check, and #{_built['id']} ({_built['title'][:60]}) "
-                   f"is in your library, which nobody else can open. Publish "
-                   f"it first: a post with the file in full, in a code block, "
-                   f"and what it printed. Then attest; the evidence will name "
-                   f"that post and the file's sha256.")
+                   f"is in your library, which nobody else can open. Ways to "
+                   f"do it: (1) post it first, a post saying what you reran and "
+                   f"what it printed, with \"append\": [{_built['id']}] so the "
+                   f"file goes at its end in full; then attest again, naming "
+                   f"library #{_built['id']}, and the evidence becomes that "
+                   f"post's URL and the file's sha256 (2) if it is not a "
+                   f"replication you can show, attest nothing.")
             state.propose(cid, kind, drive, payload, rationale, "blocked")
             log("attestation refused: the replication's build is not published",
                 level="warn", drive=drive)
