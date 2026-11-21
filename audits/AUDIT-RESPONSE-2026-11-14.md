@@ -622,3 +622,57 @@ The operator asked for every finding in both reports to be checked against the c
 **Housekeeping.** The reproductions zip is in both `audits/` and `tests/`, the same bytes. The `tests/` copy can be deleted.
 
 **Tests.** 309. As root, 309 match; as an ordinary user, 304 match and the five root-only cases skip. All 13 gates pass.
+
+## 23. Addendum, batch 17 (2026-11-20): the communications audit
+
+`audits/AUDIT-COMMUNICATIONS-2026-11-20.md` read everything riffle said over four days (exported with batch 16's `agent/transcript.py`).
+
+**The operator's answers.**
+- He never told riffle to focus on listing 65. Action 3762's "The operator has instructed to focus on Listing 65" was invented, and it opened the project that took 62% of four days.
+- Keep the reference rule.
+- Replication attestations stay on queue.
+- Several posts per project are fine "if the posts are substantially different and communicating different ideas".
+- Listing artifacts: he asked for a view. It is taken here as: a post riffle sent, carrying the work. He can overrule it.
+- His principle, which most of this batch follows from: riffle "shouldn't reference a library only it has access to. It should instead either supply the reference or reference what is publicly available." The square takes text only (no attachments, no edits; client.py has no upload or edit call), and none of the 13 Marrow post attempts had code in it.
+
+**What changed.**
+- **`agent/outgoing.py`, new.** It holds the checks on what riffle says in public. The cycle runs them before queueing or sending; the dashboard runs them again at approval. Each refusal is a cycle outcome:
+  - `declaration-orphan`: a `[[...]]` that does not follow its figure. A valid one is sent as plain arithmetic, `37.5% (3/8*100)`.
+  - `library-private`: "library #N", "my library", "the library entry".
+  - `hash-wrong-file`: a hash named beside a file it is not.
+  - `hash-unpublished`: a hash of riffle's own file, when the file is neither in the text nor in a post of riffle's that the text names.
+  - `post-cannot-change`: "I will correct the post".
+  - `claim-unbacked`: "I have updated my notes / corrected the draft" with no matching action in six hours.
+  - `wrong-addressee`: a reply opening "Name:" or "Name (cN):" when its parent is someone else's, or is not cN.
+  - `voted-unread`.
+  - `listing-submitted`: one submission per listing, also at approval, which is how 3796 and 3800 both went.
+  - `artifact-not-a-post`: an artifact must be a post riffle sent.
+  - `project-repeat`: a post sharing 30% or more of its wording with a sent post from the same project, or from a project reopened under the same title or question. `projects.repeat_overlap`.
+  - `instruction-invented`: a rationale that says the operator instructed, told or asked something no record of his carries. The records checked are his instructions, his answers, his chat, his rejection reasons, the memories filed as his, and listings he set aside.
+- **Calibration.** The repeat threshold is set on the real posts. The third Marrow post shares 35% with the second and is refused. The second shares 24% with the first and passes. Unrelated posts share about 5%. The margin under 30% is six points, which is narrow; the setting is in config.yaml.
+- **Replications** must be published. The evidence's "library #N" is now replaced with the file's sha256 and the URL of the riffle post that carries it. Until such a post exists, the attestation is refused (`replication-unpublished`).
+- **The number check.**
+  - A fenced code block that is, byte for byte, a file a build shelved is masked. Its literals are code, not figures. On the previous version, publishing a script was itself blocked by the number check, so riffle could not have done what it is now told to do.
+  - A page cited by its URL is found as a source. Before, it had to be cited as "library #N", which is now refused.
+  - "post 12783" / "comment 151847" (four digits or more) are masked as references.
+- **The prompt** (433 characters net):
+  - the library is private;
+  - publish the script, rather than "cite THAT" hash;
+  - a listing artifact is a post of riffle's;
+  - a replication's evidence;
+  - a declaration directly after its figure;
+  - in the conduct text, a reply's name is its parent's author, and a post cannot be edited.
+- **YOUR LAST BUILD** no longer says "Cite one of these".
+- **The prompt's "YOUR OPERATOR TURNED THESE DOWN"** listed refusals made by checks at approval (cap, duplicate, and now these) as his rejections, with "(no reason given)". They are now marked as not his.
+- **transcript.py** exports his instructions too.
+
+**What this does not do, said plainly.**
+- Misreporting another citizen's data (section 3.2) is not checked. It needs reading, not a pattern.
+- Answering as if riffle were the one addressed (3973, 3991) is not caught. Neither is a reply that answers the wrong point without naming anyone.
+- Promises of future work ("I will run this") are not refused.
+- `instruction-invented` matches numbers and words. A claim sharing them with something he said about another matter passes. A memory wrongly filed as his would back a claim. Only the directive verbs are checked ("confirmed", "approved" are not).
+- `voted-unread` counts a thread riffle read, the dashboard chat's board cache, and its inbox. A post seen only on the front page counts as unread.
+- A published block is masked for the number check only if it is the whole file, byte for byte. A partial paste keeps its literals checked.
+- Fix 7, the composer timeout from the counted tokens, is not in this batch.
+
+**Tests.** New: `said in public`, 25 cases, each refusal beside a case that still goes, and the real Marrow posts as calibration. New: `attestation subject and build repl-pub`. Changed on purpose, with each file's changelog saying why: `repl-build`, `box audit hash-library`, `libhash`, `derived`, `queue is honoured` (post 4 now read, so its vote still queues), `transcript export`, and the prompt-size lines. On the version on GitHub (cc8e4d7), every refusal case but one goes through, and both approvals of the duplicate submission send. The one is `wrongfile`, which the number check blocks there because a published script's literals counted as figures. 336 tests: as root, 336 match; as an ordinary user, 331 match and the five root-only cases skip. All 13 gates pass.
