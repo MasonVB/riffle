@@ -710,3 +710,30 @@ The operator asked for every finding in both reports to be checked against the c
 - `approvals cap` gave its two answers in the other order once in four runs. It is a thread race in the test, which has been there since it was written, and the record was kept.
 
 **Tests.** 342. New: `said in public append`, `append-code`, `append-page`, `append-big`, `attach-claim` and `library-page`. Changed on purpose: the five refusals that now carry their ways, and the prompt-size lines. As root, 342 match; as an ordinary user, 337 match and the five root-only cases skip. All 13 gates pass.
+
+## 25. Addendum, batch 19 (2026-11-21): the composer's time limit
+
+**What happened.** At 2026-11-21 02:53Z an `answer` cycle failed with "composer failed: timed out". It was the second such failure in three days. The first, on 11-19 at 17:24Z, left its dump in the telemetry. llama-server's own log shows the composer still writing when the clock ran out: 3,570 tokens of a 4,000-token ceiling, at 3.1 tokens a second. The cycle's work was lost.
+
+**The cause.** Every composer call had a flat 1,800 s. The figures report measures the composer reading an uncached prompt at 19.6 tokens/s and writing at 3.2 tokens/s. The worst prompt the deploy allows is about 32,400 tokens. A full-length call with nothing cached therefore needs about 2,900 s: roughly 1,650 s to read and 1,250 s to write. 1,800 s could not hold it, and a long write after a mostly cached read could not either.
+
+**What changed.**
+- **A limit sized from the call.** `cortex.complete` with no timeout of its own (the composer's calls) now sizes its limit with `call_timeout`:
+  - the prompt's tokens (characters / 3.3, so the count runs high) at `llm.composer.read_tok_s` (15);
+  - plus its `max_tokens` at `write_tok_s` (2.5);
+  - a quarter more, plus two minutes;
+  - between 300 s and `CALL_CAP`, 3,600 s.
+  
+  The 11-19 call gets 3,600 s; it needed about 2,200. The triage calls pass their own 900 s and are unchanged.
+- **One budget per cycle.** All of one cycle's composer calls share `CYCLE_BUDGET`, 10,800 s, set at the start of `cycle._main`. Those calls are the memory pass, the main call and its cut-off retry, and the number check's rewrite and its retry. Gate 6 had counted those six calls at 1,800 s each, which is the same 10,800 s, so the worst path (21,200 s) and both units' 21,600 s do not move. Gate 6 mirrors the new lines.
+- **No call it cannot finish.** A call is not started with under 300 s of the budget left. It raises `OutOfTime`, saying so, instead of starting work that will be cut off.
+- **A timeout says what it had.** It now reads like "timed out after 3600 s of the 3600 s this call had (19296 prompt tokens at 15/s and up to 4000 written at 2.5/s)". Before, all the journal kept was "timed out", so a call still writing could not be told from a hung server.
+- **The speeds are in `config.example.yaml`** under `llm.composer` (`read_tok_s`, `write_tok_s`), with the measurement they come from.
+- **A flaky test.** `approvals race` and `approvals cap` print their two answers sorted. In thread order, `cap` flipped two runs in six.
+
+**Limits.**
+- A hung composer now holds a call for up to an hour rather than 30 minutes.
+- The 11-21 call's own figures were not in hand when this was written. If its dump shows a prompt read slower than 15 tokens/s, lower `read_tok_s`.
+- The request still waits in llama-server's single slot behind any dashboard chat, and that wait counts against the call.
+
+**Tests.** 343. New: `composer time by size`. Changed: `approvals race`, printed sorted. As root, 343 match; as an ordinary user, 338 match and the five root-only cases skip. All 13 gates pass.
