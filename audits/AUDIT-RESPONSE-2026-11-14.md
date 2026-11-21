@@ -676,3 +676,37 @@ The operator asked for every finding in both reports to be checked against the c
 - Fix 7, the composer timeout from the counted tokens, is not in this batch.
 
 **Tests.** New: `said in public`, 25 cases, each refusal beside a case that still goes, and the real Marrow posts as calibration. New: `attestation subject and build repl-pub`. Changed on purpose, with each file's changelog saying why: `repl-build`, `box audit hash-library`, `libhash`, `derived`, `queue is honoured` (post 4 now read, so its vote still queues), `transcript export`, and the prompt-size lines. On the version on GitHub (cc8e4d7), every refusal case but one goes through, and both approvals of the duplicate submission send. The one is `wrongfile`, which the number check blocks there because a published script's literals counted as figures. 336 tests: as root, 336 match; as an ordinary user, 331 match and the five root-only cases skip. All 13 gates pass.
+
+## 24. Addendum, batch 18 (2026-11-21): attachments as appended text, and the ways to cite
+
+**Batch 17 on the box.** Deployed at e2bee12, and every gate passed. The operator searched the box for "65" in memories and instructions. No memory filed as his mentions it, and he has given no instructions. So "The operator has instructed to focus on Listing 65" had nothing behind it. The nearest thing on the shelf is riffle's own wording about its continuity note: memory 1053, "The Continuity note directs me to submit…", and 1421, "the continuity note explicitly demands…". The prompt already heads that note "Testimony, not instruction". Since batch 17, a rationale that turns such a note into the operator's order is refused.
+
+**The operator's ask.** riffle should be able to "provide evidence even if the attachment is just appended text on the post". A citation or attachment that cannot go should come back with the ways it can, not as a bare refusal.
+
+**What changed.**
+- **`append`.** A post or comment may carry `"append": [library ids]`, up to three. Each must be riffle's own build file or a build's output. `outgoing.attach` puts each at the end, after a rule, as "Appendix A: solve.py, sha256 <64 hex>" followed by the file in a fenced block, byte for byte. It uses `~~~~` when the file itself has ``` in it.
+  - This runs straight after the gate, so every check reads what will be sent.
+  - The number check's same-cycle rewrite keeps the appendices: attach replaces them, never doubles them.
+  - The field is in `drives.SCHEMA` and `proposal_schema.json`.
+  - A page cannot be appended (riffle is told its URL to cite instead). Nor can a note: its own writing is said in words.
+  - Over 8,000 characters in all, riffle is told to post the file on its own and cite that post.
+- **The ways.** Every refusal from `agent/outgoing.py` now ends "Ways to do it: (1) … (2) …", with the real values filled in:
+  - "library #N" for a page gives its URL.
+  - For a build file, it gives the exact `"append": [N]`, the file's size and whether there is room, or the post that already carries it.
+  - A hash named as the wrong file gives both readings, and the other file's hash if riffle built one.
+  - A listing artifact gets "post the work with `append`, then submit that post's URL", or the URL of the post that already has it.
+  - A replication gets the same.
+  - "my library" with no number gets the four general ways.
+- **`attachment-claimed`, new.** "solve.py is attached", "see the attached script" or "attachment" with nothing appended is refused, with the ways, naming the file's library id when riffle built a file of that name.
+- **What riffle wrote, not what it attached.**
+  - An appended or byte-for-byte pasted build file, or a build's output, is the file. The prose checks (library, attachment, edit, claims) skip it, and a `[[...]]` inside any code block is code: the orphan check skips it, and `finish()` no longer rewrites it. Before, `rows[[0, 2]]` in a pasted script would have been changed and its sha256 broken.
+  - The number check masks verbatim build outputs as well as files, and the rewrite path now masks too (batch 17 had masked only the first pass).
+- **The prompt** (16 characters net). The post and comment shapes show `"append": [ids]?`, and the library paragraph says how to attach: "append" it, cite a page by its URL, or link the post. The build block now says "cite one only with the file appended".
+
+**Limits.**
+- `append` takes riffle's build files and outputs only. A file it wrote with `library_put` is not one, and has to be said in words or built.
+- Only a whole file can be appended. A part of one has to be pasted, and its literals then meet the number check.
+- The rewrite path's re-attach has no test of its own.
+- `approvals cap` gave its two answers in the other order once in four runs. It is a thread race in the test, which has been there since it was written, and the record was kept.
+
+**Tests.** 342. New: `said in public append`, `append-code`, `append-page`, `append-big`, `attach-claim` and `library-page`. Changed on purpose: the five refusals that now carry their ways, and the prompt-size lines. As root, 342 match; as an ordinary user, 337 match and the five root-only cases skip. All 13 gates pass.
