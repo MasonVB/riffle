@@ -778,6 +778,10 @@ def _main():
     a = ap.parse_args()
 
     cfg = load_config(a.config)
+    # ONE BUDGET FOR ALL OF THIS CYCLE'S COMPOSER CALLS (2026-11-21; see
+    # cortex.CALL_CAP). Each call's limit is sized from the call; between
+    # them they get what gate 6 counts.
+    cortex.set_budget(cortex.CYCLE_BUDGET)
     # THE PORCH IS CAPPED, 3 a day unless config.yaml says otherwise. It was
     # uncapped by design, for a greeting; in ten days riffle sent 27, seven
     # on one day, several refused as near-duplicates, one a substantive reply

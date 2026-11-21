@@ -565,12 +565,73 @@ def overflowed(err):
     return "context" in t and ("exceed" in t or "too long" in t or "too large" in t)
 
 
-def complete(llm_cfg, system, user, timeout=1800, schema=None):
+# HOW LONG ONE CALL MAY TAKE, FROM ITS OWN SIZE (2026-11-21).
+#
+# Every composer call had 1,800 s, whatever it carried. Two cycles died at
+# it: 11-19 17:24Z, a `make` cycle still writing at 3,570 of its 4,000
+# tokens when the clock ran out (llama-server's own log: 3.1 tokens/s), and
+# 11-21 02:53Z. The figures report measures the composer reading an uncached
+# prompt at 19.6 tokens/s and writing at 3.2; the worst prompt the deploy
+# allows is about 32,400 tokens, so a full-length call with nothing cached is
+# about 1,650 s of reading and 1,250 s of writing: 2,900 s. 1,800 could not
+# hold it, and when it ran out the work was lost.
+#
+# So a call with no timeout of its own gets one from its size: its tokens
+# (characters / CHARS_PER_TOKEN, a little under the 3.6 measured, so the
+# count runs high) read at read_tok_s, plus its max_tokens written at
+# write_tok_s, with a quarter more and two minutes, between CALL_FLOOR and
+# CALL_CAP. read_tok_s and write_tok_s default below the measured speeds and
+# can be set under llm.composer in config.yaml.
+#
+# And all of one cycle's such calls share CYCLE_BUDGET (set_budget, from
+# cycle.main): the main call, its cut-off retry, the number check's rewrite
+# and its retry, and the memory pass. Gate 6 counted those six at 1,800 s
+# each, 10,800 s; the budget is that same 10,800, so the worst path one cycle
+# can take, and the systemd units, do not move, while one long call can now
+# have up to an hour. A call is not started with less than CALL_FLOOR left:
+# it says so instead of starting work it cannot finish.
+CHARS_PER_TOKEN = 3.3
+READ_TOK_S = 15.0
+WRITE_TOK_S = 2.5
+CALL_FLOOR = 300
+CALL_CAP = 3600
+CYCLE_BUDGET = 10800
+_BUDGET = {"left": None}
+
+
+def set_budget(seconds):
+    """Give this process's composer calls `seconds` between them (None: no
+    budget, as the dashboard and chat have)."""
+    _BUDGET["left"] = None if seconds is None else float(seconds)
+
+
+def call_timeout(llm_cfg, body):
+    """Seconds one call of this size may take, and the arithmetic behind it."""
+    chars = sum(len(m.get("content") or "") for m in body.get("messages", []))
+    toks = chars / CHARS_PER_TOKEN
+    read = float(llm_cfg.get("read_tok_s") or READ_TOK_S)
+    write = float(llm_cfg.get("write_tok_s") or WRITE_TOK_S)
+    out = int(body.get("max_tokens") or 1600)
+    need = 120 + 1.25 * (toks / read + out / write)
+    t = int(min(CALL_CAP, max(CALL_FLOOR, need)))
+    return t, (f"{int(toks)} prompt tokens at {read:g}/s and up to {out} "
+               f"written at {write:g}/s")
+
+
+class OutOfTime(RuntimeError):
+    """This cycle's composer time is spent; the call was not started."""
+
+
+def complete(llm_cfg, system, user, timeout=None, schema=None):
     """OpenAI-compatible /v1/chat/completions, which llama-server serves.
 
     Pass schema=proposal_schema() to constrain the sampler. Without it the
     call is unchanged, which is what the chat path and the memory extractor
     want — they produce prose, not proposals.
+
+    timeout=None (the composer's calls): sized from the call itself and
+    taken from the cycle's budget; see CALL_CAP above. A number given (the
+    triage calls) is used as it is and does not touch the budget.
     """
     body = {
         "messages": [{"role": "system", "content": system}]
@@ -585,13 +646,36 @@ def complete(llm_cfg, system, user, timeout=1800, schema=None):
                                    "json_schema": {"name": "proposal",
                                                    "strict": True,
                                                    "schema": schema}}
+    _budgeted = timeout is None
+    why = ""
+    if _budgeted:
+        timeout, why = call_timeout(llm_cfg, body)
+        left = _BUDGET["left"]
+        if left is not None:
+            if left < CALL_FLOOR:
+                raise OutOfTime(
+                    f"this cycle's composer time is spent ({int(left)} s of "
+                    f"{CYCLE_BUDGET} left, and a call needs at least "
+                    f"{CALL_FLOOR}); not started")
+            if left < timeout:
+                timeout, why = int(left), why + f", cut to the {int(left)} s this cycle has left"
     _t0 = time.monotonic()
     try:
         out = _post_json(llm_cfg["url"].rstrip("/") + "/v1/chat/completions", body,
                          timeout=timeout)
     except Exception as _e:
+        if _budgeted and _BUDGET["left"] is not None:
+            _BUDGET["left"] -= time.monotonic() - _t0
         _note_call(llm_cfg, body, schema, _t0, error=_e)
+        # SAY WHAT RAN OUT. "timed out" was all the journal kept, so a call
+        # cut off while still writing could not be told from a hung server.
+        if "timed out" in str(_e).lower():
+            raise TimeoutError(
+                f"timed out after {int(time.monotonic() - _t0)} s of the "
+                f"{timeout} s this call had ({why or 'set by its caller'})") from None
         raise
+    if _budgeted and _BUDGET["left"] is not None:
+        _BUDGET["left"] -= time.monotonic() - _t0
     _note_call(llm_cfg, body, schema, _t0, out)
     choice = out["choices"][0]
     text = choice["message"]["content"]
