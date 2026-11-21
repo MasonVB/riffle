@@ -43,6 +43,15 @@ llm:
     # time this binds it will say so rather than blaming the JSON.
     max_tokens: 4000
     temperature: 0.7
+    # How fast this box's composer reads an uncached prompt and writes, in
+    # tokens a second. Each call's time limit is sized from these and the
+    # call (agent/cortex.py, call_timeout), up to an hour, all of a cycle's
+    # calls sharing three hours. Measured 2026-11-19 (the figures report,
+    # THE COMPOSER): read 19.6, write 3.2; these sit below that so a slow
+    # call is not cut off. Lower them if a call times out while still
+    # writing; the error now says what it had and why.
+    read_tok_s: 15
+    write_tok_s: 2.5
   triage:
     url: http://127.0.0.1:8081
     max_tokens: 400

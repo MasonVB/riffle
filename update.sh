@@ -640,7 +640,12 @@ try:
         ("agent/cycle.py", "_FORCED_WAIT = 2400"),
         ("agent/cycle.py", "lock.acquire(blocking=True, timeout=900)"),
         ("agent/cycle.py", "lock.acquire(blocking=True, timeout=1200)"),
-        ("agent/cortex.py", "def complete(llm_cfg, system, user, timeout=1800, schema=None):"),
+        # 2026-11-21: a composer call's limit is sized from the call, up to
+        # CALL_CAP, and a cycle's calls share CYCLE_BUDGET between them.
+        ("agent/cortex.py", "def complete(llm_cfg, system, user, timeout=None, schema=None):"),
+        ("agent/cortex.py", "CALL_CAP = 3600"),
+        ("agent/cortex.py", "CYCLE_BUDGET = 10800"),
+        ("agent/cycle.py", "cortex.set_budget(cortex.CYCLE_BUDGET)"),
         ("agent/memory.py", "timeout=900)"),
         ("agent/cycle.py", "time.monotonic() - _rt0 > 360:"),
         ("agent/cycle.py", "def _complete_cutting(llm, system, user, schema, log):"),
@@ -677,14 +682,15 @@ try:
             # minutes of finished calls, then one more at its full timeout.
             ("reflection's model calls (up to three)", 360 + 900),
             ("the memory pass: the composer lock", 900),
-            ("the memory pass: two composer calls", 2 * 1800),
+            # The memory pass's two composer calls, the main call and its
+            # cut-off retry, and the rewrite and its retry: six calls that
+            # were counted at 1,800 s each. They now share one budget.
+            ("every composer call one cycle makes, between them (cortex.CYCLE_BUDGET)", 10800),
             ("the composer lock before the main call", 1200),
             # Both can be asked once more, shorter, when cut off
             # (_complete_cutting: A8, and U8 for the rewrite), which this
             # list missed until audit round 2.
-            ("the main composer call, and its cut-off retry", 2 * 1800),
             ("the rewrite's composer lock", 120),
-            ("the number check's same-cycle rewrite, and its cut-off retry", 2 * 1800),
             ("the number check itself, twice", 2 * 120),
             ("the action's own helper (a build, the longest)", 200),
             (f"{http} registry requests at 45 s", http * 45),
