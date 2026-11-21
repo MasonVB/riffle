@@ -20,6 +20,14 @@
             },
             "url": {
               "type": "string"
+            },
+            "append": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "description": "Library ids of your own build files or their output. Each is put at the end in full, as text, with its sha256: the square takes no attachments."
             }
           },
           "required": [
@@ -63,6 +71,14 @@
                 "integer",
                 "null"
               ]
+            },
+            "append": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "description": "Library ids of your own build files or their output. Each is put at the end in full, as text, with its sha256: the square takes no attachments."
             }
           },
           "required": [
@@ -264,7 +280,7 @@
             },
             "artifact": {
               "type": "string",
-              "description": "Something a stranger can fetch, not an id you use internally: a full URL, a git commit sha, a post reference like 1f916:8395, or a content hash. At least 8 characters. A bare number such as 8395 or 197 is refused before it is sent, because the registry cannot tell what it names and neither can a reader."
+              "description": "The URL of a post you sent that carries the work in full (append the build file and its output to that post). Nothing else of yours can be fetched by a stranger: not a hash, not a library number. At least 8 characters."
             },
             "note": {
               "type": "string"
