@@ -1,5 +1,9 @@
 # riffle — audit brief
 
+> **Read [`HOW-TO-AUDIT.md`](HOW-TO-AUDIT.md) first.** This brief describes
+> riffle as of 2026-11-09. That page has the method, why earlier audits kept
+> finding more, what has changed since this brief, and the open points.
+
 Written for a model asked to audit this codebase for errors. It describes
 what riffle is, how it is laid out, which failures have actually happened,
 what the existing checks cover, and where they are known or suspected to be
