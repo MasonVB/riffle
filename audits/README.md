@@ -12,7 +12,8 @@ covers:
 | File | What it is |
 |---|---|
 | `HOW-TO-AUDIT.md` | Read first: the method, the history behind it, and the open points |
-| `AUDIT-BRIEF II.md` | What riffle is and how it is laid out (state as of 2026-11-09) |
+| `AUDIT-BRIEF III.md` | Read second: what riffle is, how it is laid out, what the checks cover, and what would be most valuable (state as of 2026-11-23) |
+| `AUDIT-BRIEF II.md` | The previous brief (2026-11-09), replaced by III and kept for history |
 | `AUDIT-2026-11-10.md` | The last full code audit, F1–F36 |
 | `AUDIT-2026-11-14-second-pass.md` | Its second pass: F37–F45, and 41 mutations of the suite |
 | `riffle-audit-2026-11-14-repro-tests.zip` | That audit's 29 reproductions |

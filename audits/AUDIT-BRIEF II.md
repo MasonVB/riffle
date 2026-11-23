@@ -1,8 +1,8 @@
 # riffle — audit brief
 
-> **Read [`HOW-TO-AUDIT.md`](HOW-TO-AUDIT.md) first.** This brief describes
-> riffle as of 2026-11-09. That page has the method, why earlier audits kept
-> finding more, what has changed since this brief, and the open points.
+> **Replaced by [`AUDIT-BRIEF III.md`](AUDIT-BRIEF%20III.md) (2026-11-23).**
+> This brief describes riffle as of 2026-11-09 and is kept for history. Start
+> at [`HOW-TO-AUDIT.md`](HOW-TO-AUDIT.md), then read Brief III.
 
 Written for a model asked to audit this codebase for errors. It describes
 what riffle is, how it is laid out, which failures have actually happened,
