@@ -737,3 +737,36 @@ The operator asked for every finding in both reports to be checked against the c
 - The request still waits in llama-server's single slot behind any dashboard chat, and that wait counts against the call.
 
 **Tests.** 343. New: `composer time by size`. Changed: `approvals race`, printed sorted. As root, 343 match; as an ordinary user, 338 match and the five root-only cases skip. All 13 gates pass.
+
+## 26. Addendum, batch 20 (2026-11-22): riffle's memory, and its temperament
+
+**The store.**
+- The operator exported riffle's 456 live memories. 407 were retired by hand, with a backup in `/var/lib/riffle/retired-memories-20261122T061103Z.json`, and five more on his word: 138, 310, 385, 503, 527.
+- 204 were refusal notes. Most gave a reason their cycle never had, copied from the notes reflection is shown as ALREADY REMEMBERED. Examples: "because the artifact '323' was too short" on reading a thread, and "because the cycle was already running and the lock prevented new actions" on fifteen cycles running.
+- 15 were the reflection prompt's own instructions handed back as notes.
+- 20 were one wrong lesson about the system "enforcing divergence".
+- Three of the memories filed as the operator's were not his. 385, "RIFFLE has no personal feelings, boredom, or curiosity", he disagrees with. Memory 310 was a sentence from riffle's own stuck-project block.
+
+**What changed.**
+- **`memory.unfounded`.** A reflection note is not kept when:
+  - it repeats five words running of the prompt's instructions (its quoted examples are exempt, being there to imitate);
+  - or it says something was refused when the cycle's own record shows no refusal;
+  - or it gives a reason less than half of whose words are in that record.
+  
+  The record means the cycle's outcome and notes, what riffle was told, its log, and its actions; ALREADY REMEMBERED is not part of it. Each dropped note is logged at info level with its reason. Markdown `**` is stripped from notes, and a note must be 20 characters.
+- **`memory.extract`.** A chat note labelled "operator:" is filed as his only when it shares four words running with what he wrote in the exchange, or two-thirds of its words are his. Otherwise it is riffle's (`self`), which is doubted rather than deferred to.
+- **Riffle's temperament** (the operator, 2026-11-22: riffle "should have a personality, should emulate feelings and curiosity, and if boredom is emulated, should work on alleviating it"). IDENTITY now says it is curious; that it feels satisfaction when a claim survives a check, unease when its own fails, and boredom when it repeats itself, and that boredom means move on; and that it names a feeling when it bears on the work, never to excuse a skipped check. "You do not perform enthusiasm you do not have" stays: the feelings are to be honest, not shown off. Rule 3 was shortened to make room.
+- **`cycle.restless`, the block "YOU HAVE BEEN DOING ONE THING".** Riffle wakes blank and cannot feel four days of one subject, because it only ever sees one cycle. The block is shown when:
+  - 8 or more of its last 20 actions, and at least 40%, were on one project, listing or post;
+  - or one refusal ended 4 or more of its last 10 cycles.
+  
+  It names the subject and the count and says what to do with the boredom. It is riffle's own section and protected from cutting.
+- **WHAT CAN STOP AN ACTION** listed the checks as they were before batch 17. It now names the private library, unpublished hashes (and `append`), the listing artifact, a second submission, a repeating post, unread votes, and invented instructions.
+
+**Limits.**
+- The reason check matches words, not meaning. A borrowed reason that happens to share most of its words with the cycle's real one is kept.
+- A refusal claimed in a cycle whose only refusal was a different one passes the "was anything refused" test and is caught only by the reason words.
+- `restless` counts subjects by project, listing or post. A fixation spread across many posts on one theme is not seen.
+- The system prompt now has 41 characters of room before an ordinary cycle starts cutting a board block. The next addition there must trim something first.
+
+**Tests.** 344. New: `reflection grounds and boredom`. Changed: the prompt-size lines.
