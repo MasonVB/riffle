@@ -51,8 +51,10 @@ SCHEMA = {
             "type": "object",
             "properties": {"text": {"type": "string"},
                            "tier": {"type": "string", "enum": ["short", "long"]},
+                           "from": {"type": "array",
+                                    "items": {"type": "integer", "minimum": 1}},
                            "why": {"type": "string"}},
-            "required": ["text", "tier", "why"], "additionalProperties": False}},
+            "required": ["text", "tier", "from", "why"], "additionalProperties": False}},
         "drop": {"type": "array", "items": {
             "type": "object",
             "properties": {"id": {"type": "integer", "minimum": 1},
@@ -97,7 +99,8 @@ if it mattered.
 WRITE is for a memory that does not exist yet: usually one durable sentence
 standing in for several short-term ones you would otherwise promote
 separately. Consolidating three observations into the thing they add up to is
-better than promoting all three.
+better than promoting all three. In "from", give the ids of the memories it
+stands for: a long-term write has to be made of what they say.
 
 DROP is for short-term items that are already wrong, not merely unimportant.
 Unimportant things expire on their own; you do not need to act.
@@ -105,7 +108,7 @@ Unimportant things expire on their own; you do not need to act.
 Reply with ONE JSON object and nothing else:
 
 {{"promote": [{{"id": 12, "why": "..."}}],
-  "write":   [{{"text": "...", "tier": "long", "why": "..."}}],
+  "write":   [{{"text": "...", "tier": "long", "from": [12, 31], "why": "..."}}],
   "drop":    [{{"id": 31, "why": "..."}}],
   "note":    "one sentence on what today amounted to"}}
 
@@ -329,15 +332,45 @@ def run(state, cfg, log, say=None):
     # to short term with a 7-day expiry, and the report listed text that was
     # never stored. Now only a row remember() actually created is tiered, and
     # a long-term write must pass _EVENT and fit the cap, or goes to short term.
+    # A LESSON STANDS ON WHAT IT CITES (2026-11-23). Two of the wrong
+    # memories the operator retired by hand on 11-22 were written here, into
+    # long term, which never expires: "The Marrow project is complete but
+    # blocked by the 8-character minimum artifact name requirement; I must
+    # rename the artifact" (1540), and its twin (1643). They stood on
+    # refusal notes whose reasons were borrowed (memory.unfounded now keeps
+    # those out), and a write carried no record of what it came from, so
+    # nothing could check it. Now each write names its sources in "from".
+    # A long-term one must cite at least one of today's candidates, and at
+    # least half its words must be theirs, or it stays short term; it may
+    # not repeat this prompt's own instructions; its sources go in `source`;
+    # and memory.forget / a drop takes long term away from a lesson whose
+    # source was found wrong (memory.demote_citing).
+    _texts = {r["id"]: r["text"] or "" for r in cands}
+    _prompt_runs = memory._word_runs(re.sub(r'"[^"]*"', " ", PROMPT))
     _long_written = 0
     for item in (plan.get("write") or [])[:cap]:
         tier = item.get("tier", "short")
         text = item.get("text") or ""
+        _from = [i for i in (item.get("from") or []) if i in valid]
+        if memory._word_runs(text) & _prompt_runs:
+            refused.append(f"not written, it repeats this prompt's own words: "
+                           f"{' '.join(text.split())[:70]}")
+            continue
         if tier == "long":
+            _cited = " ".join(_texts[i] for i in _from).lower()
+            _w = {w for w in re.findall(r"[a-z0-9'#-]{4,}", text.lower())
+                  if w not in memory._REASON_STOP}
             if _EVENT.match(text):
                 refused.append(f"not written to long term, a record of what "
                                f"you did: {' '.join(text.split())[:70]}...; "
                                f"kept in short term")
+                tier = "short"
+            # By stem (the first five letters): "answers" stands on "answer".
+            elif not _from or (_w and len({w for w in _w if w[:5] in _cited}) * 2 < len(_w)):
+                refused.append(
+                    f"not written to long term, it does not stand on what it "
+                    f"cites ({_from or 'nothing'}): {' '.join(text.split())[:70]}; "
+                    f"kept in short term")
                 tier = "short"
             elif len(promoted) + _long_written >= cap:
                 refused.append(f"long term is full for today (cap {cap}); "
@@ -353,7 +386,9 @@ def run(state, cfg, log, say=None):
         # are trusted. A write made while any board memory was a candidate
         # is filed as `board`, and is shown inside the board tags.
         # (Incidental notes count as a stranger's words here too.)
-        mid = memory.remember(state, text, kind=_write_kind, source="consolidation")
+        mid = memory.remember(state, text, kind=_write_kind,
+                              source=("consolidation:" + ",".join(map(str, _from))
+                                      if _from else "consolidation"))
         if not mid:
             continue
         if mid <= _newest:
@@ -385,6 +420,7 @@ def run(state, cfg, log, say=None):
         _t = (state.db.execute("SELECT text FROM memories WHERE id=?",
                                (mid,)).fetchone() or {"text": ""})["text"] or ""
         state.db.execute("UPDATE memories SET expired=1 WHERE id=?", (mid,))
+        memory.demote_citing(state, mid, ttl)
         dropped.append((mid, item.get("why", "")[:160], _t))
 
     # One of the candidates it passed over may go up anyway. This is the only

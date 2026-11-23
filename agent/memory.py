@@ -21,6 +21,7 @@ Two rules that keep the store honest:
   the least useful short-term memories, and the daily pass purges expired
   ones after memory.purge_expired_after_days (30 by default).
 """
+import datetime as dt
 import re
 
 from agent.state import utcnow
@@ -215,6 +216,30 @@ def forget_like(state, pattern, log=None):
     return ids
 
 
+def demote_citing(state, mid, ttl_days=7):
+    """Take long term away from every lesson consolidation wrote from memory
+    `mid` (source "consolidation:12,31"): its evidence was just found wrong.
+    It goes back to short term, to expire unless it earns its place again.
+    Natural expiry of a source does not do this; only a forget or a drop.
+    Returns the ids demoted."""
+    out = []
+    try:
+        rows = state.db.execute(
+            "SELECT id, source FROM memories WHERE tier='long' AND source LIKE 'consolidation:%'"
+        ).fetchall()
+    except Exception:
+        return out
+    exp = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=ttl_days)
+           ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for r in rows:
+        cited = {x for x in str(r["source"]).split(":", 1)[1].split(",") if x.strip().isdigit()}
+        if str(int(mid)) in cited:
+            state.db.execute("UPDATE memories SET tier='short', expires_at=? WHERE id=?",
+                             (exp, r["id"]))
+            out.append(r["id"])
+    return out
+
+
 def forget(state, mid):
     """Delete a memory, and actually remove it from the index.
 
@@ -243,6 +268,8 @@ def forget(state, mid):
                              " VALUES ('delete',?,?)", (mid, text))
         except Exception:
             pass
+    # A lesson written from it loses long term (consolidate, 2026-11-23).
+    demote_citing(state, mid)
     state.db.commit()
 
 
