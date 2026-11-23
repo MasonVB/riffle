@@ -770,3 +770,28 @@ The operator asked for every finding in both reports to be checked against the c
 - The system prompt now has 41 characters of room before an ordinary cycle starts cutting a board block. The next addition there must trim something first.
 
 **Tests.** 344. New: `reflection grounds and boredom`. Changed: the prompt-size lines.
+
+## 27. Addendum, batch 21 (2026-11-23): lessons that stand on something, and room in the prompt
+
+**Consolidation's long-term writes.** Two of the wrong memories retired on 11-22 were written by the daily pass into long term, which never expires: 1540, "I must rename the artifact", and 1643. A write carried no record of what it came from, so nothing could check it. Now:
+- A write names its sources in `"from"`, a required field in the schema and the prompt.
+- A long-term write must cite at least one of the day's candidates, and at least half its words (by stem, the first five letters) must be theirs. Otherwise it stays short term, and the report says why. The action-log rule is checked first, as before.
+- A write that repeats five words running of the prompt's instructions is not written. Quoted examples are exempt.
+- The sources go in `source`, as "consolidation:12,31".
+- `memory.demote_citing`: when a source is forgotten (`memory.forget`) or dropped as wrong by the daily pass, a lesson citing it goes back to short term, with the usual expiry. A source expiring naturally does not do this, since standing in for notes that would expire is what a lesson is for.
+
+**The appendix through the rewrite.** Batch 18 kept the appendix when the number check's rewrite replaced the body, and nothing tested it. Now `said in public append-rewrite` does. In it the rewrite also copies the appendix back in, and the reply goes out with the rewritten words and the file attached exactly once.
+
+**The prompt's ceiling, 105,000 to 120,000 characters.** The operator, 2026-11-23: keep what belongs in the system prompt "at the expense of cycle time to within reason".
+- Batch 20 had left 41 characters before an ordinary cycle began cutting the board. At 120,000 there are about 15,000, and the heavy cycle that cut five board blocks cuts none.
+- Gate 4: the worst prompt is about 37,000 tokens of 49,152, with 4,000 to answer in.
+- Time: a cold read of the whole prompt at the measured 19.6 tokens/s plus a full answer at 3.2 is about 3,140 s, inside the hour a call may now have (batch 19).
+- The cost falls only on the cycles whose material fills the room: up to about 4,600 more tokens, around four minutes cold and much less with the cache.
+- `max_prompt_chars` is in config.yaml, so the box's copy is changed by the operator; the example now says 120,000 and why.
+
+**Limits.**
+- A lesson's words are matched by stem, not meaning. A lesson can reuse its sources' words and still say something they do not.
+- A long-term lesson written before this batch has no sources recorded, and is not demoted when its notes are retired.
+- At 120,000 the worst cold, full-length call is about 3,140 s against a 3,600 s cap. That is a 13% margin, and it holds only while the composer runs near its measured speed.
+
+**Tests.** 346. New: `lessons stand on sources`, `said in public append-rewrite`. Changed: `capped writes kept`, and the ceiling lines.
