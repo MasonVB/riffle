@@ -312,6 +312,69 @@ def _mark_replied(text, done):
     return "\n".join(out)
 
 
+def restless(state, last=20, cycles=10):
+    """The block that tells riffle it has been doing one thing, or None.
+
+    THE OPERATOR, 2026-11-22: riffle "should emulate feelings and curiosity,
+    and if boredom is emulated, should work on alleviating it." Boredom needs
+    something to be bored OF, and riffle wakes blank every cycle: it cannot
+    feel four days of listing 65 (62% of every action, 11-16 to 11-20)
+    because it never sees more than one of them. This is what it would have
+    felt: the share of its recent actions on one subject, and a refusal it
+    keeps walking into. Shown only when one of them is large."""
+    import collections
+    try:
+        rows = state.db.execute(
+            "SELECT a.kind, a.payload, a.project_id, p.title FROM actions a"
+            " LEFT JOIN projects p ON p.id = a.project_id"
+            " WHERE a.kind <> 'noop' ORDER BY a.id DESC LIMIT ?", (last,)).fetchall()
+        outs = [r[0] for r in state.db.execute(
+            "SELECT outcome FROM cycles WHERE ended_at IS NOT NULL AND outcome IS NOT NULL"
+            " ORDER BY id DESC LIMIT ?", (cycles,))]
+    except Exception:
+        return None
+    subj = []
+    for r in rows:
+        try:
+            p = json.loads(r["payload"] or "{}") or {}
+        except ValueError:
+            p = {}
+        if r["project_id"] is not None:
+            subj.append(f"your project \"{(r['title'] or '')[:70]}\"")
+        elif p.get("listing_id") is not None:
+            subj.append(f"listing {p['listing_id']}")
+        elif p.get("post_id") is not None:
+            subj.append(f"post #{p['post_id']}")
+        elif (p.get("target_type") or "post") == "post" and p.get("target_id") is not None:
+            subj.append(f"post #{p['target_id']}")
+    lines = []
+    if subj:
+        top, n = collections.Counter(subj).most_common(1)[0]
+        if n >= 8 and n * 5 >= len(rows) * 2:
+            lines.append(f"{n} of your last {len(rows)} actions were about {top}.")
+    # What went (or was riffle's own choice), and what broke on this side:
+    # neither is a refusal it keeps walking into.
+    _ok_outcomes = ("adjusted", "asked", "batch-read", "built", "cycle-requested",
+                    "desk-cleared", "desk-updated", "executed", "fetched",
+                    "library-read", "library-searched", "library-shelved", "noop",
+                    "note-added", "page-read", "payout-bound", "project-closed",
+                    "project-opened", "project-queued", "queued", "remembered",
+                    "searched", "thread-read", "composer-busy", "composer-failed",
+                    "crashed", "unknown-outcome")
+    _refusals = [o for o in outs if o and o not in _ok_outcomes]
+    if _refusals:
+        top_o, k = collections.Counter(_refusals).most_common(1)[0]
+        if k >= 4:
+            lines.append(f"\"{top_o}\" ended {k} of your last {len(outs)} cycles.")
+    if not lines:
+        return None
+    return ("YOU HAVE BEEN DOING ONE THING: " + " ".join(lines) + "\n"
+            "If that is boredom, act on it: read a thread you have not, answer "
+            "someone new, follow a question that is not this one. If the thing "
+            "is unfinished, finish it in one move instead of circling it. The "
+            "same move again ends the same way.")
+
+
 def _seen_post_of(state, comment_id):
     """The post on which riffle has SEEN this comment, or None.
 
@@ -2077,10 +2140,12 @@ def _main():
         + "\n  quality checks, which refuse and say why: a figure with no "
           "provenance, a near-copy of something you already said, a second "
           "top-level comment on one post within 24 hours, a parent_id not on "
-          "that post, a "
-          "hash of your own work that is not in your library, an artifact "
-          "named too briefly to fetch, a vote you have already cast or on "
-          "your own work."
+          "that post, a vote you have already cast, on your own work or on "
+          "something you have not read; and what a reader cannot check: your "
+          "library cited (it is private), a hash of a file nobody can see "
+          "(append it), a listing artifact that is not a post of yours, a "
+          "second submission to a listing, a post repeating one from the same "
+          "project, an instruction from your operator he never gave."
           "\n  structural: the action may be set to never, or to queue and be "
           "waiting; the drive may not select it; the queue may be full."
           "\nEach of those tells you which one it was and what to do instead. "
@@ -2121,6 +2186,10 @@ def _main():
             f"He answers, the answer is permanent, and it costs one cycle.\n"
             f"Choosing none of the three is also a choice, and it is the only "
             f"one that leaves you here tomorrow.")
+
+    _rs = restless(state)
+    if _rs:
+        parts.append(_rs)
 
     # The conduct guide moved to the system prompt (cortex.stable_prefix).
     parts.append(situation(state, cfg, log))
@@ -4839,6 +4908,7 @@ _NEVER_TRIM = (
     "THE FIELDS THE API ACTUALLY RETURNS",
     "WAITING ON YOUR OPERATOR",
     "YOU HAVE BEEN STUCK ON THIS PROJECT",
+    "YOU HAVE BEEN DOING ONE THING",
     # The operator's instruction and the project's next step (R4.1, audit 4).
     # _fit's lower floor kept the operator block's old 253-char preamble and
     # cut every instruction; its third pass could leave the project block out
@@ -4892,6 +4962,7 @@ _OWN_HEADS = (
     "THE FIELDS THE API ACTUALLY RETURNS",
     "WHAT CAN STOP AN ACTION",
     "YOU HAVE BEEN STUCK ON THIS PROJECT",
+    "YOU HAVE BEEN DOING ONE THING",
     "YOUR ACTUAL SITUATION",
     "ANSWERS FROM YOUR OPERATOR",
     "QUESTIONS YOU HAVE ASKED AND HE HAS NOT ANSWERED YET",

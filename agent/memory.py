@@ -579,8 +579,31 @@ def extract(state, cfg, exchange, source):
         # wrongly attributed to the operator is believed.
         return "self", t
 
+    # HIS ONLY IF HE SAID IT (2026-11-22). Three of the operator memories in
+    # the export of riffle's store were nothing he said: "RIFFLE has no
+    # personal feelings, boredom, or curiosity" (he disagrees with it),
+    # "RIFFLE mapped latency to hunger", and "`understand` (905) resolved
+    # uncertainty about rho* threshold logic", which was in riffle's prompt
+    # 3,610 times as his. The model labels lines "operator:" that are riffle's
+    # words or its summary of the talk. So a line labelled his is filed as his
+    # only when it shares a run of four words with what he wrote, or most of
+    # its words are his; otherwise it is riffle's (self), which is doubted
+    # rather than deferred to.
+    _his = "\n".join(
+        b.split(":", 1)[1] for b in re.split(r"\n(?=(?:OPERATOR|RIFFLE):)", exchange or "")
+        if b.startswith("OPERATOR:"))
+    _his_runs, _his_words = _word_runs(_his, 4), set(re.findall(r"[a-z0-9']{4,}", _his.lower()))
+
+    def _his_words_in(t):
+        if _word_runs(t, 4) & _his_runs:
+            return True
+        w = set(re.findall(r"[a-z0-9']{4,}", t.lower())) - _REASON_STOP
+        return bool(w) and len(w & _his_words) * 3 >= len(w) * 2
+
     for line in durable[:5]:
         _k, _t = _speaker(line)
+        if _k == "operator" and not _his_words_in(_t):
+            _k = "self"
         mid = remember(state, _t, kind=_k, source=source,
                        ttl_days=int((cfg.get("memory") or {}).get(
                            "short_ttl_days", 7)))
@@ -605,6 +628,65 @@ def _word_runs(text, n=5):
     """Every run of n consecutive words in text, lowercased."""
     w = re.findall(r"[a-z0-9']+", (text or "").lower())
     return {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+# WHAT REFLECTION MAY NOT WRITE (2026-11-22). The operator's export of
+# riffle's 456 live memories had 204 refusal notes, and most gave a reason the
+# cycle never had, copied from the notes reflection is shown as ALREADY
+# REMEMBERED: "refused because the artifact '323' was too short" on reading a
+# thread, "because I had already voted on #12516" on a library search,
+# "because the cycle was already running and the lock prevented new actions"
+# on fifteen cycles running. Fifteen more were the prompt's own instructions
+# handed back as notes ("what a citizen claimed, which argument is live ...
+# Name the citizen and the thread number."). 407 were retired by hand.
+#
+# So a line is not kept when it repeats five words running of this prompt,
+# or says something was refused when nothing in the cycle's own record (its
+# outcome, what riffle was told, its log) shows a refusal, or gives a reason
+# whose words are not in that record.
+_REFUSED_RE = re.compile(
+    r"\b(refused|refuses|refusing|refusal|blocked|rejected|denied|did not send|"
+    r"did not propose|was not (?:sent|accepted|allowed))\b", re.I)
+_GROUNDS_RE = re.compile(r"\b(?:because|since|as|on the grounds that|due to)\b\s+(.*)$", re.I)
+_REASON_STOP = set("""the and that this with from have has had been was were are is
+because since system board registry proposal proposed propose cycle cycles
+refused refuse blocked rejected denied action actions already would could
+should which their there then than into about after before also only just
+your mine myself them they what when where while being does done make made
+more over under again here very much many each other these those first""".split())
+
+
+def _refusal_in(grounds):
+    g = (grounds or "").lower()
+    return bool(re.search(r"did not send|did not propose|refused|blocked|rejected|"
+                          r"not sent|not proposed|over the cap|already|is closed|"
+                          r"\bno\b.*\bleft\b|unbacked", g))
+
+
+def unfounded(line, grounds, prompt_runs):
+    """Why a reflection line has no footing, or None.
+
+    grounds: everything reflection was shown about the cycle itself, and not
+    ALREADY REMEMBERED, which is where the borrowed reasons came from."""
+    if _word_runs(line) & prompt_runs:
+        return "it repeats the reflection prompt's own wording"
+    if not _REFUSED_RE.search(line):
+        return None
+    if not _refusal_in(grounds):
+        return "it says something was refused, and nothing in the cycle was"
+    m = _GROUNDS_RE.search(line)
+    if not m:
+        return None
+    words = {w for w in re.findall(r"[a-z0-9'#-]+", m.group(1).lower())
+             if len(w) >= 3 and w not in _REASON_STOP}
+    if not words:
+        return None
+    g = (grounds or "").lower()
+    found = {w for w in words if w in g}
+    if len(found) * 2 < len(words):
+        return (f"its reason ({' '.join(sorted(words - found))[:80]}) is not in "
+                f"what the cycle was told")
+    return None
 
 
 def _reflection_subject(line):
@@ -898,9 +980,28 @@ def reflect(state, cfg, log=None):
     # into self. A "me:" line that shares a run of five words with the front
     # page it was shown is filed as board.
     _front_runs = _word_runs(front) if front else set()
+    _grounds = "\n".join(material[:2]) + "\n" + "\n".join(
+        str(r["content"] or "") for r in _reasons) + "\n" + "\n".join(
+        str(j["text"] or "") for j in jrn) + "\n" + "\n".join(
+        f"{a['kind']} {a['status']} {a['numcheck'] or ''}" for a in acts)
+    # The instructions, not the examples: a quoted example ("I may reply to
+    # a comment only once ...") is there to be written like.
+    _prompt_runs = _word_runs(re.sub(r'"[^"]*"', " ", REFLECT_PROMPT))
+    _dropped = []
+
+    def _sound(line):
+        line = line.replace("**", "").strip()
+        if len(line) < 20:
+            return None
+        why = unfounded(line, _grounds, _prompt_runs)
+        if why:
+            _dropped.append((line, why))
+            return None
+        return line
     for line in durable[:cap]:
         _kind, line = _reflection_subject(line)
-        if len(line) < 12:
+        line = _sound(line)
+        if not line:
             continue
         if _kind == "self" and _front_runs and (_word_runs(line) & _front_runs):
             _kind = "board"
@@ -912,12 +1013,18 @@ def reflect(state, cfg, log=None):
     if k and passing:
         import random as _r
         for line in _r.sample(passing, min(k, len(passing))):
+            line = _sound(line)
+            if not line:
+                continue
             mid = remember(state, line, kind="incidental",
                            source=f"cycle:{cid}", ttl_days=ttl)
             if mid and mid > _top:
                 made.append(mid)
     state.note("last_reflected_cycle", cid)
     if log:
+        for _l, _w in _dropped:
+            log(f"reflection on cycle {cid}: not kept, {_w}: {_l[:120]!r}",
+                level="info")
         if made:
             log(f"reflected on cycle {cid}: kept {len(made)} note(s)")
         elif durable:
