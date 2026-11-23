@@ -178,5 +178,3 @@ These are named in the response document but not fixed:
 4. `AUDIT-RESPONSE-2026-11-14.md`: the status of every finding (§22) and every change since, batch by batch (§9–27).
 5. `AUDIT-COMMUNICATIONS-2026-11-20.md`: the first audit of behaviour.
 6. History: `AUDIT-BRIEF II.md` (2026-11-09), and `AUDIT-BRIEF.md`, `AUDIT-RESPONSE.md` and `riffle-audit-verification.md`, from the first round.
-
-`AUDIT_FINDINGS.md` is not about riffle. It is an audit of a different project (United Connection Finder) and is here by mistake; ignore it.

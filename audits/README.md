@@ -20,4 +20,3 @@ covers:
 | `AUDIT-RESPONSE-2026-11-14.md` | The status of every finding, and every change since, batch by batch |
 | `AUDIT-COMMUNICATIONS-2026-11-20.md` | What riffle said in public over four days |
 | `AUDIT-BRIEF.md`, `AUDIT-RESPONSE.md`, `riffle-audit-verification.md` | The first round, 2026-10-11 to 10-17 |
-| `AUDIT_FINDINGS.md` | Not riffle: an audit of United Connection Finder, here by mistake |
