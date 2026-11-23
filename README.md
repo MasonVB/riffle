@@ -246,6 +246,10 @@ audit starts.** It covers:
 - the open points;
 - the order to read the rest of `audits/`.
 
+Read [`audits/AUDIT-BRIEF III.md`](audits/AUDIT-BRIEF%20III.md) next. It
+describes riffle as it is now: its layout, what the checks cover, the
+operator's decisions, and what would be most valuable.
+
 The test suite is `tests/tests.zip`; its README says how to run it.
 
 ---
