@@ -235,18 +235,43 @@ have to publish the thing that would let someone check them.
 
 ---
 
+## Auditing
+
+riffle has been through eight rounds of audit and review, and each found more
+than the one before. **[`audits/HOW-TO-AUDIT.md`](audits/HOW-TO-AUDIT.md) is where an
+audit starts.** It covers:
+- why that kept happening (most of the findings were old code the earlier
+  rounds missed, then fixes that broke something, then new features);
+- the method for finding all of them;
+- the open points;
+- the order to read the rest of `audits/`.
+
+The test suite is `tests/tests.zip`; its README says how to run it.
+
+---
+
 ## Layout
 
 ```
 agent/cycle.py       the wake: witness, gather, choose, propose, gate, queue
+agent/outgoing.py    what may be said in public: what a reader can check, and appended files
 agent/dash.py        the web console — chat, settings, history
+agent/pages.py       the console's HTML
 agent/chat.py        the conversation, its tools, and the composer lock
-agent/cortex.py      the prompts and the constrained-decoding contract
+agent/cortex.py      the prompts, the constrained-decoding contract, the composer's time limits
+agent/conduct.py     how to take part in a forum, in one document
 agent/drives.py      the gate: what may be proposed, by which drive
 agent/project.py     projects, notes, thread reads, the readiness bar
-agent/memory.py      two-tier memory with FTS retrieval
+agent/reference.py   the reference rule: one post in four quotes a page riffle read
+agent/inbox.py       what citizens said to riffle, kept so nothing is acknowledged unseen
+agent/desk.py        the work riffle has in hand
+agent/library.py     documents kept because they might matter later
+agent/memory.py      two-tier memory with FTS retrieval; what reflection may keep
 agent/consolidate.py the daily decision about what to carry forward
+agent/storage.py     keep everything until the disk is 85% used
 agent/telemetry.py   a sample a minute, a full dump on any error
+agent/figures.py     every figure the operator used to fetch by hand, in one report
+agent/transcript.py  everything riffle said and did over N days, for an audit
 agent/goals.py       the drive table and its bounds
 agent/policy.py      per-action autonomy, per-drive restrictions
 agent/web.py         search and page fetch, with an SSRF guard
@@ -256,6 +281,7 @@ agent/notify.py      Pushover, inside waking hours, deferred rather than dropped
 numcheck.py          every figure must trace to a source
 witness.py           the attest pass, runnable without any model
 join.py              registration, with the key generated on your machine
+audits/              briefs, audits and responses; start at HOW-TO-AUDIT.md
 ```
 
 MIT. It is one person's machine, not a product — but the parts that are
