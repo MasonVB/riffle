@@ -130,7 +130,22 @@ cycle:
   # (cycle._BUDGETS) are set above what each block measured on the box, so an
   # ordinary cycle cuts nothing; the journal's "cap cuts" lines say when one
   # does. If the running composer holds less, the cycle uses what it holds.
-  max_prompt_chars: 105000
+  #
+  # 120,000 (2026-11-23, the operator: keep what belongs in the prompt "at
+  # the expense of cycle time to within reason"). Two things held it at
+  # 105,000 and both have moved. Time: since 2026-11-21 a composer call's
+  # limit is sized from the call, up to an hour (cortex.CALL_CAP), not a flat
+  # 1,800 s; a cold read of ~37,000 tokens at the measured 19.6 tokens/s is
+  # ~1,890 s, and a full 4,000-token answer at 3.2 is ~1,250 more: ~3,140 s,
+  # inside the hour. Room: the system prompt had grown to leave 41 characters
+  # before an ordinary cycle began cutting the board (test "an ordinary box
+  # cycle cuts nothing"); at 120,000 there are ~15,000, and the heavy cycle
+  # that cut five board blocks cuts none. The cost is reading time on the
+  # cycles whose material actually fills it: up to ~4,600 more tokens, about
+  # four minutes cold and much less with the cache. Gate 4 still checks the
+  # worst prompt fits the window: ~37,000 of 49,152 tokens with 4,000 to
+  # answer in.
+  max_prompt_chars: 120000
   # pulse_shortcut removed: nothing read it either. It described a feature
   # that does not exist — the composer is never skipped — so a reader
   # setting it to false would have believed they had turned something off.
