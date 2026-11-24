@@ -2108,19 +2108,41 @@ def _main():
                 + (f"\n    his reason: {_detag(reason)[:300]}" if reason else
                    "\n    (no reason given)")
                 for r, reason in _rej))
+    # WHAT IS NOT AMONG YOUR CHOICES (2026-11-24). The grammar drops what
+    # cannot succeed this cycle (_blocked), and nothing said so: in three
+    # days 21 rationales planned a post that was not among the choices, and
+    # the grammar wrote what the rationale planned as an open_project, a
+    # close, a comment or a read. Reflection then remembered the plan.
+    _nochoice = []
+    if "post" in _blocked:
+        _pq = state.db.execute("SELECT 1 FROM actions WHERE kind='post'"
+                               " AND status='queued' LIMIT 1").fetchone()
+        _nochoice.append("post (" + ("one is waiting for your operator" if _pq else
+                                     "posting is closed" if _cd else
+                                     "the project bar is not cleared") + ")")
+    for _k in sorted(_blocked - {"post", "noop"}):
+        if _k in _spent:
+            _nochoice.append(f"{_k} (today's allowance is spent)")
+        elif _k == "sign":
+            _nochoice.append("sign (nothing of yours to bind)")
     parts.append(
         "THE GATES RIGHT NOW:\n"
         f"  the project bar: {'CLEARED' if _ok else _why}\n"
         f"  posting: {'CLOSED for %.1fh more' % _cl if _cd else 'open'}\n"
         "  today's allowance: "
-        + ", ".join(f"{k}={_left[k]}" for k in sorted(_left)))
+        + ", ".join(f"{k}={_left[k]}" for k in sorted(_left))
+        + ("\n  NOT AMONG YOUR CHOICES THIS CYCLE: " + "; ".join(_nochoice)
+           + ". Reason towards something you can do now: a plan that ends in "
+             "one of these is written as something else."
+           if _nochoice else ""))
     _gates = ["  the project bar, posting and today's allowance: their state "
               "right now is under THE GATES RIGHT NOW, at the end of this "
               "cycle's material"]
     # Since audit F1 (2026-11-14) `sources` names numbers; it does not back them.
     _gates.append("  numcheck: every figure must be in something you read (a thread, "
-                  "a page, your build's output, your operator's words); listing it "
-                  "in sources does not back it")
+                  "a page, your operator's words) or printed by a build of yours "
+                  "the reader can see (appended, or in a post of yours you link); "
+                  "listing it in sources does not back it")
     # It was never told. A build written past this ceiling is cut off
     # mid-JSON and the whole cycle is lost (2026-10-23, drive `make`).
     _maxtok = int(((cfg.get("llm") or {}).get("composer") or {}).get("max_tokens", 1600))
@@ -3096,6 +3118,39 @@ def _main():
             state.end_cycle(cid, "already-queued", str(_dup["id"]))
             return 0
 
+    # A CLOSE THAT SAYS IT WAS POSTED (2026-11-24). Action 4346 asked to
+    # close project #47 "as posted. The draft synthesis … has been
+    # published", and was approved on that. Nothing from the project had
+    # been sent: every one of its 48 posts was refused. The reason is what
+    # the operator decides on, so it has to be true.
+    if kind == "close_project":
+        _pa = project.active(state)
+        _cr = str(payload.get("reason") or "")
+        if (_pa and re.search(r"\b(?:posted|published|sent|went out)\b", _cr, re.I)
+                and not re.search(r"\b(?:not|never|nothing|no|unposted|unable|cannot|"
+                                  r"can't|couldn't|could not)\b[^.;]{0,40}"
+                                  r"\b(?:posted|published|sent|go out|went out)\b", _cr, re.I)):
+            try:
+                _sent = state.db.execute(
+                    "SELECT 1 FROM actions WHERE kind='post' AND created_at >= ?"
+                    " AND status IN ('executed','sent') LIMIT 1",
+                    (_pa["opened_at"],)).fetchone()
+            except Exception:
+                _sent = True
+            if not _sent:
+                why = (f"the reason says the work was posted, and no post has gone "
+                       f"out since '{_pa['title'][:80]}' opened "
+                       f"({str(_pa['opened_at'])[:16]}). Your operator decides on "
+                       f"that reason. If you are closing it unposted, say so and "
+                       f"why: what stopped it, and what you would need to finish it.")
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log("close_project refused: its reason claims a post that was "
+                    "never sent", level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} · I did not propose that: {why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "claim-unbacked", "close says posted; nothing sent")
+                return 0
+
     if kind in LOCAL_KINDS:
         _m = (policy.modes(state) or {}).get(kind, "queue")
         # NO FORCE CLAUSE. --force skips the INTERVAL gate; it was never
@@ -3248,6 +3303,16 @@ def _main():
         # stranger at. The last build's output and any library document it
         # cites both qualify, so both are handed to numcheck as sources.
         #
+        # A BUILD A READER CAN SEE (2026-11-24). Not the last build: any build
+        # of riffle's whose file or output is in this text or in a post of
+        # its own the text names (outgoing.public_build_outputs). The last
+        # build counted whether anyone could see it or not, and no other
+        # build counted at all, so riffle's 71.7% went unbacked the moment a
+        # newer build replaced the one that printed it, and the one way left
+        # to show it, "library #414", is refused as private. 34 posts in a
+        # day were refused on that one figure. A figure from a build nobody
+        # can see is a claim nobody can check (the operator, 2026-11-20).
+        #
         # What riffle declared in `sources` is NOT among them (F1): it goes to
         # numcheck as --declared, where a value counts only if something riffle
         # read carries it, and then only as an operand for a derivation.
@@ -3260,13 +3325,10 @@ def _main():
         _src["library_sha256"] = " ".join(
             r[0] for r in state.db.execute("SELECT sha256 FROM library") if r[0])
         try:
-            _lb2 = json.loads(state.note("last_build") or "{}")
-            if _lb2.get("stdout"):
-                _src["last_build_stdout"] = _lb2["stdout"][:20000]
-            if _lb2.get("library_id"):
-                _src["last_build_library_id"] = _lb2["library_id"]
-        except (ValueError, TypeError):
-            pass
+            _src.update(outgoing.public_build_outputs(state, cfg, body))
+        except Exception as _e5:
+            log(f"could not read riffle's published builds for numcheck: "
+                f"{type(_e5).__name__}: {_e5}", level="warn", drive=drive)
         _own_cited = []
         for _lid in set(re.findall(r"\blibrary[ #:]*(\d{1,6})\b", body, re.I)):
             try:
@@ -3345,14 +3407,16 @@ def _main():
             if 1 <= len(_bad1) <= 2:
                 _named = "; ".join(f"line {f['line']}: {f['token']} "
                                    f"({f.get('status', '?').lower()})" for f in _bad1)
+                _routes1 = _build_routes(state, cfg, kind, payload, _bad1)
                 _ask = (f"\n\nYOUR DRAFT WAS NOT SENT. It contains figure(s) I "
                         f"could not trace to anything you have read: {_named}. "
                         f"Write the same {kind} again, changing only its "
                         f"{', '.join(_tfs)}: "
                         f"take those figures out, or back each one, as 37.5% "
                         f"[[3/8*100]] with the operands you used, or by quoting "
-                        f"the line it comes from with the page's URL. Keep "
-                        f"everything else as it was. Reply with the JSON object only.")
+                        f"the line it comes from with the page's URL."
+                        + _routes1 + " Keep everything else as it was. "
+                        "Reply with the JSON object only.")
                 # UNDER THE COMPOSER LOCK (U8, audit round 2). The cycle's
                 # lock is released before this check, so the rewrite could
                 # collide with a chat turn or be killed by "restart model",
@@ -3398,6 +3462,11 @@ def _main():
                                                 _src[f"library_{_lid}"] = (_text3 or "")[:20000]
                                         except Exception:
                                             pass
+                                # The same builds count as in the first pass.
+                                try:
+                                    _src.update(outgoing.public_build_outputs(state, cfg, _body2))
+                                except Exception:
+                                    pass
                                 # THE REWRITE GETS THE HASH CHECK TOO (F6). It ran
                                 # before this one and the new text was never put
                                 # through it, though the comment above said every
@@ -3452,7 +3521,13 @@ def _main():
                      if _amb else "")
             # A source for it (operator's rule, 2026-10-29): the moment a
             # figure cannot be backed is the moment a reference page helps.
-            _hint += (" If the figure comes from outside the board, back it: "
+            # NOT FOR A FIGURE ITS OWN BUILD PRINTED (2026-11-24): told this,
+            # riffle read the Wikipedia page on the hypergeometric distribution
+            # twice looking for its own simulation's 71.7%. Name the build,
+            # and the ways to show it, instead.
+            _routes = _build_routes(state, cfg, kind, payload, bad)
+            _hint += (_routes or
+                      " If the figure comes from outside the board, back it: "
                       "search_web a reference site, read_page the result, "
                       "and quote the line it is on with the page's URL.")
             # Say WHY a figure riffle "sourced" did not count (F1, F2), or it
@@ -5156,6 +5231,26 @@ def _strip_own_words(text, me):
     return text
 
 
+def _build_routes(state, cfg, kind, payload, findings):
+    """What riffle is told about the unbacked figures one of its builds
+    printed (outgoing.build_route), one per figure, at most three."""
+    out, seen = [], set()
+    for f in findings:
+        tok = str(f.get("token") or "")
+        if tok in seen:
+            continue
+        seen.add(tok)
+        try:
+            r = outgoing.build_route(state, cfg, kind, payload, tok)
+        except Exception:
+            r = None
+        if r:
+            out.append(r)
+        if len(out) >= 3:
+            break
+    return "".join(out)
+
+
 def _fetched_doc(row):
     """True for a library document the PROGRAM shelved from outside riffle:
     a page its reader fetched, a registry surface it fetched (not its own
@@ -5194,11 +5289,13 @@ def _evidence(state, cfg, parts):
             out.append(text)
             used += len(text)
 
-    try:
-        _lb = json.loads(state.note("last_build") or "{}")
-        add(str(_lb.get("stdout") or ""))
-    except (ValueError, TypeError):
-        pass
+    # NOT riffle's own build output (2026-11-24). It came in twice: the last
+    # build's stdout here, and every build output among the sixty newest
+    # documents below. Neither asked whether a reader can see the build, and
+    # the second dropped a build's output once sixty newer documents were
+    # shelved (the probe that printed 71.7% had, by 11-23). A build's output
+    # counts only where the text shows the build: public_build_outputs, at
+    # the number check.
     try:
         for r in state.db.execute(
                 "SELECT answer FROM questions WHERE answer IS NOT NULL"
@@ -5233,7 +5330,7 @@ def _evidence(state, cfg, parts):
         for r in library.sources(state, ("page", "data"))[:60]:
             if r["id"] in _seen_ids:
                 continue
-            if _fetched_doc(r):
+            if _fetched_doc(r) and not str(r["source"] or "").startswith("build:"):
                 _seen_ids.add(r["id"])
                 _row, _text = library.read(state, int(r["id"]), _root, count=False)
                 add((_text or "")[:20000])
@@ -6787,6 +6884,16 @@ def apply_project(state, cfg, cid, kind, p, drive, rationale):
     """Work on the thing between posts. Never touches the registry."""
     try:
         if kind == "open_project":
+            # NOT THE SAME PROJECT TWICE (2026-11-24): see project.duplicate.
+            _dup = project.duplicate(state, p["title"], p["question"])
+            if _dup is not None:
+                raise ValueError(
+                    f"project #{_dup['id']} '{_dup['title'][:80]}' is already "
+                    f"{_dup['status']} with this question. "
+                    + ("Work it, or close it and say why"
+                       if _dup["status"] == "active" else
+                       "It starts when the one running now is posted or closed")
+                    + "; opening it again starts the same work over")
             pid, status = project.open_project(state, p["title"], p["question"])
             if status == "queued":
                 depth = len(project.queue(state))

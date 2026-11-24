@@ -690,13 +690,49 @@ def _refusal_in(grounds):
                           r"\bno\b.*\bleft\b|unbacked", g))
 
 
-def unfounded(line, grounds, prompt_runs):
+# WHAT WENT THROUGH, AND WHAT IS ALREADY KNOWN (2026-11-24). After the
+# checks above, the operator's export still held "The system accepted the
+# post because I cited the external reference" (memories 1932 and 1938: no
+# post was accepted, the cycle had read a page), and notes stitched from
+# three older ones word for word (1934, 1936, 1939). So a line that says a
+# post, comment, vote ... went through is kept only if one did in this
+# cycle, and a line that repeats six words running of a note in ALREADY
+# REMEMBERED (quoted titles aside) is not kept: the prompt asks for neither,
+# and nothing checked.
+_WENT_RE = re.compile(
+    r"\b(?:accepted|allowed|let me|went through|got through|succeeded|"
+    r"was (?:sent|posted|published)|(?:posted|published) (?:it|the|my))\b", re.I)
+_KIND_WORDS = (
+    (r"\bposts?\b|\bposted\b|\bpublished\b", "post"),
+    (r"\bcomments?\b|\brepl(?:y|ies|ied)\b", "comment"),
+    (r"\bvot(?:e|es|ed)\b", "vote"), (r"\bporch\b", "porch"),
+    (r"\bnotes?\b", "project_note"), (r"\bbuilds?\b|\bscript\b", "build"),
+    (r"\bsubmission\b", "listing_submission"))
+
+
+def _unquoted_runs(text, n=6):
+    return _word_runs(re.sub(r'"[^"]*"|\u201c[^\u201d]*\u201d', " ", text or ""), n)
+
+
+def unfounded(line, grounds, prompt_runs, done=None, known_runs=None):
     """Why a reflection line has no footing, or None.
 
     grounds: everything reflection was shown about the cycle itself, and not
-    ALREADY REMEMBERED, which is where the borrowed reasons came from."""
+    ALREADY REMEMBERED, which is where the borrowed reasons came from.
+    done: the kinds of action that went through in the cycle (executed or
+    accepted); None skips that test. known_runs: six-word runs of the notes
+    in ALREADY REMEMBERED."""
     if _word_runs(line) & prompt_runs:
         return "it repeats the reflection prompt's own wording"
+    if known_runs and (_unquoted_runs(line) & known_runs):
+        return "it repeats a note already remembered"
+    if done is not None and _WENT_RE.search(line) and not _REFUSED_RE.search(line):
+        kinds = {k for rx, k in _KIND_WORDS if re.search(rx, line, re.I)}
+        if kinds and not (kinds & set(done)):
+            return (f"it says a {'/'.join(sorted(kinds))} went through, and none "
+                    f"did in this cycle")
+        if not kinds and not done:
+            return "it says something went through, and nothing did in this cycle"
     if not _REFUSED_RE.search(line):
         return None
     if not _refusal_in(grounds):
@@ -892,10 +928,15 @@ def reflect(state, cfg, log=None):
     _reasons = state.db.execute(
         "SELECT content FROM messages WHERE role IN ('report','error')"
         " AND content LIKE ? ORDER BY id LIMIT 4", (f"Cycle {cid} %",)).fetchall()
+    # THE ACTION, THEN THE REASONING (2026-11-24). This said "YOU PROPOSED:
+    # comment — <rationale>", and 21 rationales in three days planned a post
+    # while the action was a comment, a close or a read. Reflection wrote
+    # what the rationale planned: "I proposed posting …, but the system
+    # refused because …".
     for a in acts:
-        line = f"YOU PROPOSED: {a['kind']} — {a['rationale']}"
-        if a["status"] != "executed":
-            line += f"\n  and it was {a['status']}"
+        line = (f"THE ACTION YOU TOOK: {a['kind']}, and it was {a['status']}.\n"
+                f"  Your reasoning beforehand (it may have planned something "
+                f"else; the action above is what you did): {a['rationale']}")
         material.append(line)
     if _reasons:
         material.append(
@@ -1014,13 +1055,17 @@ def reflect(state, cfg, log=None):
     # The instructions, not the examples: a quoted example ("I may reply to
     # a comment only once ...") is there to be written like.
     _prompt_runs = _word_runs(re.sub(r'"[^"]*"', " ", REFLECT_PROMPT))
+    _done = {a["kind"] for a in acts if a["status"] in ("executed", "accepted")}
+    _known_runs = set()
+    for _r in known:
+        _known_runs |= _unquoted_runs(_r["text"])
     _dropped = []
 
     def _sound(line):
         line = line.replace("**", "").strip()
         if len(line) < 20:
             return None
-        why = unfounded(line, _grounds, _prompt_runs)
+        why = unfounded(line, _grounds, _prompt_runs, _done, _known_runs)
         if why:
             _dropped.append((line, why))
             return None
@@ -1057,7 +1102,8 @@ def reflect(state, cfg, log=None):
         elif durable:
             log(f"reflected on cycle {cid}: model offered "
                 f"{len(durable)} durable and {len(passing)} passing, kept 0 "
-                f"(too short, or duplicates of something already stored)",
+                f"({len(_dropped)} for the reasons named above; the rest too "
+                f"short, or duplicates of something already stored)",
                 level="warn")
         elif passing:
             # ONLY PASSING NOTES IS NOT A FAULT (2026-11-19). Passing notes

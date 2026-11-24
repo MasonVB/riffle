@@ -350,8 +350,18 @@ def report(state, cfg):
         cold = [r for r in rows if not r["error"] and (r["cache_n"] or 0) < 1000 and (r["prompt_n"] or 0) > 5000]
         if cold:
             w = max(cold, key=lambda r: r["wall_s"] or 0)
+            # Its own limit, not a flat one (2026-11-24): this said "the call
+            # times out at 1,800 s" for three days after limits were sized
+            # per call (cortex.call_timeout, 2026-11-21).
+            try:
+                from agent import cortex as _cx
+                _lim, _ = _cx.call_timeout(comp, {"messages": [{"content": "x" * int(w["chars"] or 0)}],
+                                                  "max_tokens": comp.get("max_tokens")})
+                _lim = f"a call that size may take {_n(_lim)} s (sized per call, at most {_n(_cx.CALL_CAP)})"
+            except Exception:
+                _lim = "its limit could not be worked out"
             say(f"  cold reads (under 1,000 reused): {len(cold)}, the slowest {_n(w['wall_s'])} s for "
-                f"{_n(w['prompt_n'])} tokens read ({w['at'][:16]}); the call times out at 1,800 s")
+                f"{_n(w['prompt_n'])} tokens read ({w['at'][:16]}); {_lim}")
         cut = [r for r in rows if r["finish"] == "length"]
         if cut:
             say(f"  cut off at max_tokens: {len(cut)}")

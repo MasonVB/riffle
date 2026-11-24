@@ -414,9 +414,11 @@ a correction to something you believed. Not board state, which you can read.
 you used and what you took it from. Listing a number does not back it. A
 checker runs over every field a stranger reads (title included) before it is
 sent, and a figure counts only if it is in something you READ: a thread, a
-page you fetched, your build's output, your operator's words. A number you
-wrote yourself, in a note, a draft or a document you filed, is not a source;
-the place you took it from is. A figure you worked out is backed by writing
+page you fetched, your operator's words, or what a build of yours printed
+when the reader can see that build (appended here with "append", or in a
+post of yours you link). A number you wrote yourself, in a note, a draft or
+a document you filed, is not a source; the place you took it from is. A rate
+your simulation was given (random() < 0.7) is your assumption, not a finding. A figure you worked out is backed by writing
 its operands, each one something you read, straight after the figure:
 37.5% [[3/8*100]], sent as 37.5% (3/8*100)."""
 CONTRACT = CONTRACT.replace("%%ACTION_ONE_OF%%", _action_one_of())

@@ -38,6 +38,16 @@ and artifacts follows from that.
                        already said (the operator: several posts per project
                        are fine "if the posts are substantially different and
                        communicating different ideas").
+  post-claimed         "I am posting it … the post is #13370" with no post
+                       sent or queued, or a post number that is not riffle's
+                       (2026-11-24).
+  figure-assumed       a rate a simulation of riffle's printed after being
+                       given it: `random() < 0.718`, reported as "71.7%
+                       suppression in simulation" (2026-11-24).
+
+And for the number check: public_build_outputs() is what riffle's builds
+printed, for each build a reader can see; build_route() is what riffle is
+told about a figure one of its builds printed that it has not yet shown.
 
 And invented_instruction(), for a rationale that says the operator told
 riffle to do something no record of his says (action 3762: "The operator has
@@ -54,7 +64,16 @@ WHAT THESE CANNOT DO, said here and in AUDIT-RESPONSE section 23:
     has written; a claim that shares them with something he said about
     something else passes.
   - Misreporting another citizen's data (section 3.2 of the audit) is not
-    checked at all. It needs reading comprehension, not a pattern.
+    checked at all. It needs reading comprehension, not a pattern. It
+    happened again on 2026-11-24 (action 4345 credited swift-lantern with "the
+    suppression rate you observed"; that comment had no such rate).
+  - figure-assumed knows a rate set with random() compared to a number,
+    binomial/bernoulli/choices, or a name assigned one in the file. A rate
+    computed from other inputs, read from a file, or set by a distribution
+    with another name is not seen; nor is a figure riffle states without
+    naming or showing the build.
+  - post-claimed knows the present ("I am posting", "I have posted") and
+    "my post is #N". "As I posted earlier" passes.
 """
 import datetime as dt
 import json
@@ -451,6 +470,315 @@ def attachment_claimed(state, cfg, kind, payload, text):
             f"takes text only." + ways(state, cfg, kind, payload, row))
 
 
+# ------------------------------------------------- figures riffle's builds printed
+#
+# 2026-11-24, the operator's export of 11-21 to 11-24. riffle proposed 48
+# posts after batch 21 and sent none: 34 were refused by the number check on
+# one figure, 71.7%, which its own simulation had printed. Three things
+# together made that a trap with no way out:
+#   - the number check counted only the LAST build's output, and a newer
+#     build (verify_hypergeom.py) had replaced the one that printed it;
+#   - the only other way it counted a build's output was "library #N" in the
+#     text, which library-private refuses (the same check, two answers);
+#   - its refusal said "search_web a reference site", and riffle read the
+#     Wikipedia page on the hypergeometric distribution twice, looking for its
+#     own simulation's result.
+# And the figure was not a finding. verify_suppression.py and verify_final.py
+# drew each trial with `random.random() < 0.718`, "as per previous findings",
+# and reported the 0.717 that came back as confirmation.
+#
+# So: a figure a build of riffle's printed counts when a reader can see that
+# build, appended to the text or carried by a post of riffle's the text names
+# (public_build_outputs); the refusal for one that does not count names the
+# build and the ways to show it (build_route); and a figure a simulation was
+# given as its input is refused as a finding (figure_assumed).
+
+def _run_docs(state, run):
+    """(code rows, output row or None) of build run `run` ("build:c4936"),
+    including files shared with other runs through library_aliases."""
+    try:
+        rows = state.db.execute(
+            "SELECT * FROM library WHERE source IN (?, ?) UNION "
+            "SELECT l.* FROM library l JOIN library_aliases a ON a.lib_id = l.id"
+            " WHERE a.source IN (?, ?) ORDER BY id",
+            (run, run + ":stdout", run, run + ":stdout")).fetchall()
+    except Exception:
+        try:
+            rows = state.db.execute("SELECT * FROM library WHERE source IN (?, ?) ORDER BY id",
+                                    (run, run + ":stdout")).fetchall()
+        except Exception:
+            return [], None
+    code = [r for r in rows if r["kind"] == "code"]
+    out = [r for r in rows if r["kind"] == "data"]
+    return code, (out[-1] if out else None)
+
+
+def _runs_of(state, row):
+    """Every build run a library document came from: its own source and its
+    aliases, as "build:cN"."""
+    srcs = [str(row["source"] or "")]
+    try:
+        srcs += [str(a[0]) for a in state.db.execute(
+            "SELECT source FROM library_aliases WHERE lib_id=?", (row["id"],))]
+    except Exception:
+        pass
+    out = []
+    for s in srcs:
+        m = re.match(r"(build:[^:\s]+)", s)
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def _values(text):
+    out = []
+    for m in re.finditer(r"(?<![\w.])-?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE]-?\d+)?", text or ""):
+        try:
+            out.append(float(m.group(0).replace(",", "")))
+        except ValueError:
+            pass
+    return out
+
+
+def _printed_as(token, values):
+    """The printed value a figure written as `token` is, or None: 71.7 is 0.717
+    printed, or 71.7; 0.025 is 0.025012... printed. Whole numbers of ten or
+    less are everywhere, and are not looked for."""
+    try:
+        t = float(str(token).replace(",", ""))
+    except ValueError:
+        return None
+    d = len(str(token).split(".")[1]) if "." in str(token) else 0
+    if d == 0 and abs(t) <= 10:
+        return None
+    for v in values:
+        for k in (1, 100):
+            if round(v * k, d) == round(t, d):
+                return v
+    return None
+
+
+_RATE_LIT = r"(\d*\.\d+|1(?:\.0+)?)"
+_RATE_RES = (
+    re.compile(r"random\w*\([^()\n]*\)\s*[<>]=?\s*" + _RATE_LIT + r"(?![\d.])"),
+    re.compile(r"(?<![\w.])" + _RATE_LIT + r"\s*[<>]=?\s*[\w.]*random\w*\("),
+    re.compile(r"\b(?:binomial|bernoulli|choices)\([^()\n]*?(?:p\s*=\s*|,\s*)" + _RATE_LIT + r"(?![\d.])"),
+)
+_RATE_NAME_RE = re.compile(r"random\w*\([^()\n]*\)\s*[<>]=?\s*([A-Za-z_]\w*)")
+
+
+def assumed_rates(code):
+    """The probabilities a script draws its trials with: `random() < 0.718`,
+    `binomial(n, 0.3)`, or `random() < P` with `P = 0.718` set in the file."""
+    code = code or ""
+    out = set()
+    for rx in _RATE_RES:
+        for m in rx.finditer(code):
+            try:
+                v = float(m.group(1))
+            except ValueError:
+                continue
+            if 0 < v < 1:
+                out.add(v)
+    for m in _RATE_NAME_RE.finditer(code):
+        a = re.search(r"(?m)^\s*" + re.escape(m.group(1)) + r"\s*=\s*" + _RATE_LIT + r"\s*(?:#.*)?$", code)
+        if a:
+            try:
+                v = float(a.group(1))
+            except ValueError:
+                continue
+            if 0 < v < 1:
+                out.add(v)
+    return out
+
+
+def _assumes(state, cfg, code_rows, value):
+    """The rate in these files that `value` merely reproduces, or None."""
+    if value is None or not (0 < value < 1):
+        return None
+    for c in code_rows:
+        for p in assumed_rates(_doc_text(cfg, c)):
+            if abs(value - p) <= 0.02 or abs(value - (1 - p)) <= 0.02:
+                return p
+    return None
+
+
+def build_outputs(state, limit=200):
+    """Every build output document, newest first."""
+    try:
+        return state.db.execute(
+            "SELECT * FROM library WHERE kind='data' AND (source LIKE 'build:%:stdout'"
+            " OR id IN (SELECT lib_id FROM library_aliases WHERE source LIKE 'build:%:stdout'))"
+            " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    except Exception:
+        try:
+            return state.db.execute(
+                "SELECT * FROM library WHERE kind='data' AND source LIKE 'build:%:stdout'"
+                " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        except Exception:
+            return []
+
+
+def figure_source(state, cfg, token):
+    """(output row, code rows, printed value) for the newest build of riffle's
+    whose output carries the figure written as `token`, or None."""
+    for o in build_outputs(state):
+        v = _printed_as(token, _values(_doc_text(cfg, o)))
+        if v is None:
+            continue
+        code = []
+        for run in _runs_of(state, o):
+            code += [c for c in _run_docs(state, run)[0] if c not in code]
+        return o, code, v
+    return None
+
+
+def build_route(state, cfg, kind, payload, token):
+    """What riffle is told about a figure the number check could not back,
+    when one of its builds printed it; None when none did."""
+    hit = figure_source(state, cfg, token)
+    if not hit:
+        return None
+    o, code, v = hit
+    files = ", ".join(doc_label(c) for c in code) or doc_label(o)
+    when = str(o["created_at"] or "")[:16].replace("T", " ")
+    p = _assumes(state, cfg, code, v)
+    if p is not None:
+        return (f" {token} is what {files} printed ({when}), and {files} was given "
+                f"it: each trial is drawn with a probability of {p}. A simulation "
+                f"that sets a rate and then counts it has measured its own input, "
+                f"so {token} is your assumption, not a finding, and no source can "
+                f"back it as one. Say it as the assumption it is, or build "
+                f"something that measures the rate instead of setting it.")
+    return (f" {token} is what {files} printed ({when}). It counts once a reader "
+            f"can see that build."
+            + ways(state, cfg, kind, payload, code[0] if code else o))
+
+
+def public_build_outputs(state, cfg, text):
+    """{"build_output_<id>": what it printed} for each build of riffle's a
+    reader of `text` can see: one of its files or its output appended to the
+    text, or carried in full by a post of riffle's that the text names."""
+    from agent.cycle import _square_refs
+    mine = my_posts(state)
+    named = {n for k, n in _square_refs(text or "", cfg) if k == "post"}
+    posts = {p: b for p, b in mine.items() if p in named}
+    hay = "\n".join([text or ""] + list(posts.values()))
+    shas = {h.lower() for _, _, h in _hash_tokens(hay)}
+    names = {m.group(1).lower() for m in FILE_RE.finditer(hay)}
+    if not shas and not names:
+        return {}
+    try:
+        rows = state.db.execute(
+            "SELECT * FROM library WHERE kind IN ('code','data') AND (source LIKE 'build:%'"
+            " OR id IN (SELECT lib_id FROM library_aliases WHERE source LIKE 'build:%'))"
+            " ORDER BY id DESC LIMIT 400").fetchall()
+    except Exception:
+        return {}
+    out, done = {}, set()
+    for r in rows:
+        sha = str(r["sha256"] or "").lower()
+        if not (any(sha.startswith(h) for h in shas) or _doc_name(r) in names):
+            continue
+        if not published_in(state, cfg, r, text, posts):
+            continue
+        for run in _runs_of(state, r):
+            if run in done:
+                continue
+            done.add(run)
+            o = r if r["kind"] == "data" else _run_docs(state, run)[1]
+            t = _doc_text(cfg, o) if o is not None else None
+            if t:
+                out[f"build_output_{o['id']}"] = t[:20000]
+    return out
+
+
+_FIGURE_RE = re.compile(r"(?<![\w.#])(\d+(?:\.\d+)?)\s*%|(?<![\w.#])(\d*\.\d+)(?![\w.])")
+
+
+def figure_assumed(state, cfg, kind, payload, text):
+    """A percentage or fraction in the text that a build of riffle's printed
+    after being given it as its trial probability: the 0.718 that came back
+    as 71.7%. Only builds this text names or shows are looked at."""
+    t = text or ""
+    names = {m.group(1).lower() for m in FILE_RE.finditer(t)}
+    shown = public_build_outputs(state, cfg, t)
+    outs = []
+    for o in build_outputs(state):
+        if f"build_output_{o['id']}" in shown:
+            outs.append(o)
+            continue
+        runs = _runs_of(state, o)
+        if names and any(_doc_name(c) in names for run in runs for c in _run_docs(state, run)[0]):
+            outs.append(o)
+    if not outs:
+        return None
+    for m in _FIGURE_RE.finditer(outside_fences(t)):
+        tok = m.group(1) or m.group(2)
+        for o in outs:
+            v = _printed_as(tok, _values(_doc_text(cfg, o)))
+            if v is None:
+                continue
+            code = []
+            for run in _runs_of(state, o):
+                code += [c for c in _run_docs(state, run)[0] if c not in code]
+            p = _assumes(state, cfg, code, v)
+            if p is None:
+                continue
+            files = ", ".join(doc_label(c) for c in code)
+            return (f"you give {m.group(0).strip()} as a result, and it is what {files} "
+                    f"printed after drawing every trial with a probability of {p}. A "
+                    f"simulation that sets a rate and counts it back has measured its "
+                    f"own input: the figure is your assumption, not a finding, and "
+                    f"presenting it as one tells readers something was confirmed that "
+                    f"was not. Say it as the assumption it is (\"assuming {p} of ...\"), "
+                    f"or build something that measures the rate instead of setting it.")
+    return None
+
+
+# ------------------------------------------------ saying a post exists
+
+POST_CLAIM_RE = re.compile(
+    r"\bI(?:'m|\s+am)\s+(?:now\s+|also\s+)?(?:posting|publishing)\b"
+    r"|\bI(?:'ve|\s+have)\s+(?:now\s+|just\s+|also\s+)?(?:posted|published)\b"
+    r"|\b(?:my|the)\s+(?:new\s+|standalone\s+)?(?:post|analysis|synthesis|write-?up)\s+"
+    r"(?:is|was|will\s+be|went\s+out\s+as)\s+(?:post\s+)?#\s?\d+",
+    re.I)
+_POST_NUM_RE = re.compile(r"#\s?(\d+)")
+
+
+def post_claimed(state, cfg, text, kind=None):
+    """"I am posting it … The post is #13370" (action 4350, 2026-11-24), when
+    riffle has sent no post in six hours, or names a post number that is not
+    one of its own. Every one of its 48 posts in those three days was refused."""
+    mine = None
+    for m in POST_CLAIM_RE.finditer(text or ""):
+        if mine is None:
+            mine = my_posts(state)
+        n = _POST_NUM_RE.search(m.group(0))
+        if n:
+            if int(n.group(1)) in mine:
+                continue
+            return (f"you wrote \"{m.group(0)}\", and #{n.group(1)} is not a post you "
+                    f"sent. Name only a post that exists, and only once it does.")
+        if kind == "post":
+            continue            # "I am posting this because ..." is the post itself
+        lo = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=CLAIM_HOURS)
+              ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            hit = state.db.execute(
+                "SELECT 1 FROM actions WHERE kind='post' AND created_at > ?"
+                " AND status IN ('executed','sent','approved','queued') LIMIT 1",
+                (lo,)).fetchone()
+        except Exception:
+            hit = True
+        if not hit:
+            return (f"you wrote \"{m.group(0)}\", and you have sent or queued no post in "
+                    f"the last {CLAIM_HOURS} hours. Say a post exists once it does, and "
+                    f"give its number then.")
+    return None
+
+
 # ------------------------------------------------------------- the checks
 
 def orphan_declaration(text):
@@ -823,7 +1151,9 @@ def check(state, cfg, kind, payload, rationale="", exclude_id=None, project_id=N
                             ("hash-wrong-file", lambda: hash_wrong_file(state, text)),
                             ("hash-unpublished", lambda: hash_unpublished(state, cfg, kind, text)),
                             ("post-cannot-change", lambda: edit_promise(prose)),
-                            ("claim-unbacked", lambda: claim_unbacked(state, prose))):
+                            ("claim-unbacked", lambda: claim_unbacked(state, prose)),
+                            ("post-claimed", lambda: post_claimed(state, cfg, prose, kind)),
+                            ("figure-assumed", lambda: figure_assumed(state, cfg, kind, payload, text))):
             why = fn()
             if why:
                 return outcome, why

@@ -143,6 +143,31 @@ def open_project(state, title, question):
     return c.lastrowid, status
 
 
+def _words(t):
+    return {w for w in re.findall(r"[a-z0-9]+", (t or "").lower()) if len(w) > 3}
+
+
+def duplicate(state, title, question):
+    """The active or queued project this one would repeat, or None: the same
+    title, or a question sharing at least 70% of its words.
+
+    On 2026-11-21 riffle queued "Tripwire Conservation: Gate Order
+    Suppression Analysis" three times in two hours, each time with a
+    rationale about posting. Closing the first on 11-24 started the second at
+    once: the same question, opened afresh, with the post that could not go
+    out still the only way to finish it."""
+    t = " ".join((title or "").lower().split())
+    qw = _words(question)
+    for r in state.db.execute(
+            "SELECT * FROM projects WHERE status IN ('active','queued') ORDER BY id"):
+        if " ".join(str(r["title"] or "").lower().split()) == t:
+            return r
+        rw = _words(r["question"])
+        if qw and rw and len(qw & rw) / max(len(qw), len(rw)) >= 0.7:
+            return r
+    return None
+
+
 def promote_next(state):
     """Start the next queued project, if nothing is running. Returns it or None.
 
