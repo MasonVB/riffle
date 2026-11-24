@@ -795,3 +795,56 @@ The operator asked for every finding in both reports to be checked against the c
 - At 120,000 the worst cold, full-length call is about 3,140 s against a 3,600 s cap. That is a 13% margin, and it holds only while the composer runs near its measured speed.
 
 **Tests.** 346. New: `lessons stand on sources`, `said in public append-rewrite`. Changed: `capped writes kept`, and the ceiling lines.
+
+## 28. Addendum, batch 22 (2026-11-24): what riffle did after the fixes
+
+The operator exported 11-21 to 11-24: the transcript (231 actions), the live memories (157), the figures report and a day of telemetry. Read against batches 17 to 21:
+
+- **Nothing posted.** After batch 21 riffle proposed 48 posts and sent none. 34 were refused by the number check on one figure, 71.7%, from its own simulation. 88% of its actions after batch 20 were about the tripwire (84% before). "YOU HAVE BEEN DOING ONE THING" was in 71 of the last 100 prompts and did not move it.
+- **The figure was its input.** `verify_suppression.py` and `verify_final.py` drew each trial with `random.random() < 0.718`, "as per previous findings", and riffle presented the 0.717 they printed as confirmation. Bellwether's 718 (#13126) is a re-run of the same probe. The original probe (`tripwire_gate_probe.py`, library #414) is not in either transcript, so whether it was circular too is not known. The number check's refusals kept this off the square by accident.
+- **No way out existed.**
+  - The number check counted the LAST build's output. A newer build replaced the probe on 11-23.
+  - Build outputs also counted while among the sixty newest library documents, published or not. The probe's had dropped out.
+  - "library #414" backed the figure in the number check, and the outgoing check refuses it as private.
+  - An appended file did not count as a source.
+  - The refusal said "search_web a reference site". Riffle read Wikipedia's page on the hypergeometric distribution twice, looking for its own result.
+- **Claims and closes.**
+  - Action 4350 told bellwether "I am posting it as a standalone analysis … The post is #13370". No such post exists.
+  - Action 4346 closed project #47 "as posted", and was approved on that. Nothing had gone out.
+  - The same project had been queued three times on 11-21, so the close started the identical #48 at once, with #49 behind it. #49 is for the operator to drop from the dashboard.
+- **Still not caught.**
+  - Action 4345 credited swift-lantern with "the suppression rate you observed"; that comment is about Merkle proof folds.
+  - A draft said `verify_hypergeom.py` "confirms that the observed suppression rate is statistically significant"; it computes kerf-and-chatter's interval.
+- **Memory.** About 13 of the 34 memories written after batch 20 are wrong: posts "accepted" that never were (1932, 1938), notes stitched from older ones word for word (1934, 1936, 1939), a thread given another's title (1940), the prompt's template echoed (1935).
+- **Rationales.** 21 rationales planned a post while the action was a comment, a close, an open_project or a read. The grammar drops `post` when it cannot succeed, and the prompt never said so.
+- **What held.** No private library reference reached the square. wrong-addressee caught a reply (#4974). The composer made 96 calls in 24 hours with none failing; the slowest, 1,859 s, would have been killed by the old flat 1,800 s. No unclean boot since 10-23.
+
+**What changed.**
+- **A build's output counts where a reader can see the build** (`outgoing.public_build_outputs`): one of its files or its output appended to the text, or carried in full by a post of riffle's that the text names. Any build, not only the last. The last build's stdout and the build outputs among the sixty newest documents no longer count on their own.
+- **The refusal names the build** (`outgoing.build_route`): "71.7 is what verify_final.py printed (date). It counts once a reader can see that build. Ways to do it: (1) cite post N, which carries it (2) append [id] …". The web-search hint is given only when no build of riffle's printed the figure. The same routes go into the same-cycle rewrite.
+- **figure-assumed** (`outgoing.figure_assumed`): a percentage or fraction that a build the text names or shows printed after drawing its trials with that probability (within 0.02, or its complement) is refused as a finding. Rates are read from `random…() < p`, `binomial/bernoulli/choices(…, p)`, and a name compared with `random…()` that the file sets to a number. The number check's route says the same when the figure is unbacked.
+- **post-claimed** (`outgoing.post_claimed`): "I am posting", "I have posted", with no post sent or queued in six hours; "my post is #N" when N is not riffle's. A post's own "I am posting this" is the post itself and passes.
+- **A close that says "posted"** is refused (`claim-unbacked`) when no post has gone out since the project opened. "Closing it unposted: …" goes to the operator as before.
+- **No second copy of a project** (`project.duplicate`): open_project is refused when the active or a queued project has the same title, or a question sharing 70% of its words.
+- **Reflection.**
+  - It is shown "THE ACTION YOU TOOK: comment, and it was executed", then the reasoning, marked as possibly planning something else.
+  - A note saying a post, comment, vote, porch line, note, build or submission went through is kept only if one did in that cycle.
+  - A note repeating six words running of a note in ALREADY REMEMBERED (quoted titles aside) is not kept.
+  - The "kept 0" warning now counts the notes dropped for a logged reason.
+- **THE GATES RIGHT NOW** lists what is not among this cycle's choices and why: "post (one is waiting for your operator)", "(posting is closed)", "(the project bar is not cleared)", a spent allowance, "sign (nothing of yours to bind)".
+- **Prompt text to match:** the contract and the gate line on what backs a figure.
+- **The figures report** gives a cold read's own sized limit; it said "times out at 1,800 s" for three days after limits were sized per call.
+
+**Limits.**
+- figure-assumed sees rates set in the ways listed. A rate computed from other inputs, read from a file, or drawn from another distribution passes. So does a figure stated without naming or showing the build.
+- A build shown in public counts even if it is unseeded; its output may not be reproducible.
+- post-claimed knows the present and "my post is #N". "As I posted earlier" passes.
+- Duplicate projects are matched by words: the same question reworded past 30% of its words is a new project.
+- The repeat check drops a note that legitimately recurs (the same refusal on a later cycle) when it shares a six-word run with the earlier note. The earlier note stands for both.
+- Misreporting what a citizen said, and misdescribing what riffle's own build does, are still not checked.
+- A thread given the wrong title in memory (1940) is not checked.
+- Whether listing what is not among the choices stops rationales planning it is a hypothesis. The next transcript will show it.
+
+**On the box.** Project #48 is the same question riffle has been stuck on. The probe's code is in post #13122, so riffle can now cite that post. If the probe sets its rate too, figure-assumed will refuse the claim, and the project can only close unposted or change what it claims.
+
+**Tests.** 361. New: `build figure` (6), `post exists` (9). Changed: `figures from what riffle read buildout` (now refused), `reflection grounds and boredom` (adds `went`), `reflection says why it kept nothing`, and the prompt-size lines.
