@@ -4390,6 +4390,20 @@ def _main():
                   {"drive": drive})
         state.end_cycle(cid, _oc, why[:200])
         return 0
+    # A SECOND READING (the operator's decision, 2026-11-27): a reply read
+    # beside the comment it answers, by the triage model. Last, because it
+    # costs a model call and everything cheaper has passed. It runs before
+    # the reply is queued or sent, and is not re-run at approval: the reply
+    # and the comment it answers have not changed, and a model call would
+    # hold the dashboard's request.
+    _mis = outgoing.second_read(state, cfg, kind, payload,
+                                log=lambda m, **k: log(m, drive=drive, **k))
+    if _mis:
+        state.propose(cid, kind, drive, payload, rationale, "blocked")
+        state.say("report", f"Cycle {cid} \u00b7 I did not send that: {_mis}",
+                  {"drive": drive})
+        state.end_cycle(cid, "misread", _mis[:200])
+        return 0
     payload = outgoing.finish(kind, payload)
 
     # --- execute or queue --------------------------------------------------------

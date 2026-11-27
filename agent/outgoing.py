@@ -44,6 +44,10 @@ and artifacts follows from that.
   credited             a reply crediting its addressee with a number, or a
                        finding, their comment does not carry ("the
                        suppression rate you observed", 2026-11-24).
+  misread              a reply the triage model, reading it beside the comment
+                       it answers, finds misstates what that comment said
+                       (second_read; run by the cycle, not by check(): it
+                       costs a model call).
   claimed-before       "the same six I flagged earlier" when nothing riffle
                        sent in 30 days says so (2026-11-26).
   figure-assumed       a rate a simulation of riffle's printed after being
@@ -1159,6 +1163,93 @@ def claimed_before(state, text):
                     f"days says it. Say only what you did. If they found it, it is "
                     f"theirs: credit them.")
     return None
+
+
+# ------------------------------------------------ a second reading
+#
+# credited and claimed-before catch a number or a word riffle credits to
+# someone that is not in what they wrote. They caught none of the five
+# misstatements in the 14 comments of 2026-11-24 to 11-27: "#34 carries the
+# fix" (silt had said #33), "the full-row hash you measured" (there was no
+# second hash), "your measurement confirms the suppression hypothesis" (it
+# said nothing of gate order). Those are misreadings, and catching one needs
+# reading. The operator's decision, 2026-11-27: before a reply goes out the
+# triage model reads it beside the comment it answers.
+
+SECOND_READ_SYSTEM = """You check one reply before it is posted on a public forum. You are \
+shown a comment and a reply to it.
+
+Find every place where the reply says the comment's author said, measured, \
+found, showed, confirmed, agreed to or proposed something that their comment \
+does not say, or says differently: a number changed, a claim turned into \
+support for something else, one thing credited as another.
+
+Disagreeing, adding the replier's own view, guessing, or asking a question is \
+fine and is not a misstatement. Only what the reply says THEY said counts.
+
+Answer NONE if there is none. Otherwise answer with up to three lines, each:
+MISSTATED: "<the exact words from the reply>" | <what their comment actually says>"""
+
+_MIS_RE = re.compile(r'(?im)^\s*MISSTATED:\s*["\u201c](.+?)["\u201d]\s*\|\s*(.+?)\s*$')
+
+
+def second_read(state, cfg, kind, payload, log=None):
+    """Why the triage model, reading a reply beside the comment it answers,
+    finds it misstates what that comment said; None when it finds nothing,
+    or cannot be asked. Fails open: a reply is never held because the check
+    could not run. Every verdict goes to the journal, so a week of them can
+    be judged."""
+    sr = cfg.get("second_read") or {}
+    if kind != "comment" or not sr.get("enabled", True):
+        return None
+    par = (payload or {}).get("parent_id")
+    try:
+        par = int(par)
+    except (TypeError, ValueError):
+        return None
+    theirs = _body_of(state, par)
+    said = outside_fences((payload or {}).get("body") or "")
+    if not theirs or not said.strip():
+        return None
+    who = _author_of(state, par) or f"c{par}"
+    from agent import cortex
+    tri = dict((cfg.get("llm") or {}).get("triage") or {})
+    if not tri:
+        return None
+    tri["max_tokens"] = int(sr.get("max_tokens", 300))
+    try:
+        cortex.set_purpose("second read")
+        out = cortex.complete(tri, SECOND_READ_SYSTEM,
+                              f"THEIR COMMENT (c{par}, by {who}):\n{theirs[:3000]}\n\n"
+                              f"THE REPLY:\n{said[:3000]}",
+                              timeout=int(sr.get("timeout_seconds", 240)))
+    except Exception as e:
+        if log:
+            log(f"second read of the reply to c{par} could not run ({type(e).__name__}: "
+                f"{str(e)[:120]}); sent unread", level="warn")
+        return None
+    flat = " ".join(said.split()).lower()
+    found = []
+    for m in _MIS_RE.finditer(out or ""):
+        q = " ".join(m.group(1).split())
+        # The quote must be in the reply: a model can invent the words it
+        # objects to, and a refusal of words riffle never wrote teaches
+        # nothing.
+        if len(q) >= 12 and q.lower() in flat:
+            found.append((q, m.group(2).strip()))
+    if log:
+        log(f"second read of the reply to c{par} by {who}: "
+            + ("; ".join(f'"{q[:80]}" | {w[:120]}' for q, w in found) if found else
+               "nothing misstated" + ("" if not (out or "").strip().upper().startswith("MISSTATED")
+                                      else " (the words it named were not in the reply, or under 12 characters)")),
+            level="warn" if found else "info")
+    if not found:
+        return None
+    q, w = found[0]
+    return (f"read beside {who}'s comment c{par}, your reply says \"{q[:120]}\", and their "
+            f"comment says otherwise: {w[:240]}. Say only what they said. If it is your "
+            f"own reading, or your own finding, say so in those words."
+            + (f" ({len(found) - 1} more like it.)" if len(found) > 1 else ""))
 
 
 def voted_unread(state, payload):
