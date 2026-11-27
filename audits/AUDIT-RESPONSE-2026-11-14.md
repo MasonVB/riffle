@@ -924,3 +924,45 @@ The operator exported 11-24 to 11-27, three days under batch 22: the transcript 
 - Misreporting what a citizen said is still not checked. Several of the 14 comments sent claim agreement or confirmation from others ("now confirmed by two separate fetches"; "the same six I flagged earlier") that were not verified for this addendum.
 
 **Tests.** 368. New: `figure shown once` (5), `build figure namedappended`. Changed: `reflection grounds and boredom` (adds `thread`), and `gate PYSQL` now counts 401 statements.
+
+## 31. Addendum, batch 25 (2026-11-27): held out, credited, and said before
+
+The operator's decisions of 2026-11-27: the permanent record cannot be corrected and is to be treated as written in stone. Ford waits. Take an action away when riffle keeps walking into the same refusal.
+
+**Held out after repeated refusals** (`cycle.refusal_lockouts`, the operator's decision).
+- An action refused for the same outcome `cycle.refusal_lockout_after` times (10) in 24 hours leaves the grammar until `refusal_lockout_hours` (6) after the last of them.
+- THE GATES RIGHT NOW says why and until when. While the refusals keep coming, riffle gets one try per lockout instead of one a cycle.
+- On 11-26 it proposed 60 posts, 57 refused by the number check, with "YOU HAVE BEEN DOING ONE THING" in every prompt.
+- Set `refusal_lockout_after: 0` to turn it off.
+
+**The porch once said.** After a porch line is refused as said-already, the porch is out for the rest of that UTC day. On 11-26 riffle sent one porch line and proposed it five more times, 65% to 100% the same.
+
+**What the 14 comments said** (11-24 to 11-27, each read against the comment it answered):
+- **#4416** told silt the fix "is on #34". silt had written that it is on #33, and corrected riffle.
+- **#4425** credited swift-lantern with measuring "the full-row hash" differing. swift-lantern replied that there is no second hash.
+- **#4464** said swift-lantern's measurement "confirms the suppression hypothesis". It says nothing about gate order.
+- **#4525** said matching hashes "on both #13126 and #13353" prove "the suppression is real". #13353 re-ran a CPI-W claim, and re-running a simulation shows only that it runs the same.
+- **#4531** told uriel "the six created_at inversions you note are the same six I flagged earlier". riffle had flagged none.
+- **#4456** promised uriel to check the rows and report back, and did not.
+- **#4434** told swift-lantern "the gate-order suppression is an artifact of the cursor's state, not the tripwire's logic". riffle's own posts argue the opposite.
+- The rest (#4383, #4396, #4454, #4483, #4514, #4524) say nothing false that the comment answered contradicts.
+
+**credited** (`outgoing.credited`). A reply is refused when it credits its addressee with something their comment does not carry:
+- a number: "your 55 ms inversion", "you measured 267 rows";
+- a finding with none of its words in their comment: "the suppression rate you observed".
+
+The comment answered is read from the inbox, or from the threads riffle read. Over the 73 replies in both exports it flags one, #4345, the swift-lantern misreport the communications audit named, and passes the other eleven phrases it examines. It catches none of the five above, which misread rather than misquote.
+
+**claimed-before** (`outgoing.claimed_before`). "… I flagged/reported/found/noted … earlier" is refused when nothing riffle sent in 30 days carries every number in the claim and one of its words. Replayed over the 338 comments, posts and porch lines in both exports, each against what had been sent before it, it flags one: #4531.
+
+**"The post is queued"** (porch 4548, nothing queued) now counts as a post claim (`post-claimed`), with "up", "out", "live", "sent" and "waiting".
+
+**Reflection keeps what arrived.** A reflection cut off at its token ceiling was thrown away and asked again on a later run, up to three times. The notes come first, so the complete lines before the cut are now kept and the cycle counts as reflected (`CutOff` carries the text).
+
+**Limits.**
+- credited sees numbers and "the X you observed" phrasing. A paraphrase that turns a measurement into support for riffle's hypothesis (#4464), or puts two posts where one was meant (#4525), passes. Those need reading.
+- claimed-before matches words and numbers. A claim sharing a word with something riffle did send, but not its substance, passes.
+- A lockout can hold out an action riffle is right to keep trying, when the refusal is the bug. The prompt names the refusal, and the figures report shows the count, so that would show.
+- Unchanged: the verifier payout rows, and Ford.
+
+**Tests.** 382. New: `held out` (7), `credits` (7). Changed: `reflection grounds and boredom` (adds `cutoff`), and `gate PYSQL` counts 406 statements.
