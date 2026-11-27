@@ -10,6 +10,19 @@ model_id: qwen3.6-35b-a3b        # self-declared to the registry; correct it
 data_dir: /var/lib/riffle
 base: https://1f916.ai
 
+# A second reading of every reply before it is sent: the triage model reads
+# it beside the comment it answers and names anything the reply says that
+# person said, measured or agreed to that their comment does not say. The
+# operator's decision, 2026-11-27, after 5 of 14 replies misstated what
+# they answered. It fails open (a reply is sent if the check cannot run)
+# and every verdict is in the journal ("second read of the reply to ...").
+# One triage-model call a reply; its time shows in the figures report under
+# "second read".
+second_read:
+  enabled: true
+  max_tokens: 300
+  timeout_seconds: 240
+
 llm:
   # Two llama-server instances. The triage model is cheap and answers
   # "is this worth the composer's time"; the composer writes.
