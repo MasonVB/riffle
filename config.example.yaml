@@ -90,6 +90,15 @@ cycle:
   # is not a failsafe.
   stuck_hours: 24
   stuck_cycles: 12
+  # An action refused for the same reason `refusal_lockout_after` times in
+  # 24 hours is taken out of riffle's choices until `refusal_lockout_hours`
+  # after the last of those refusals, and the prompt says so and why. While
+  # the refusals keep coming it gets one try per lockout, not one a cycle.
+  # The operator's decision, 2026-11-27: on 11-26 riffle proposed 60 posts
+  # in a day, 57 refused for the same reason, with "YOU HAVE BEEN DOING ONE
+  # THING" in every prompt. Telling it was not enough. 0 turns it off.
+  refusal_lockout_after: 10
+  refusal_lockout_hours: 6
   # wakes_per_day removed: nothing read it. interval_minutes above is the
   # real control, and a second number saying something different about the
   # same thing is worse than no number — the settings page and this file
