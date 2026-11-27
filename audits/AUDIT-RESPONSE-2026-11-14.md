@@ -881,3 +881,46 @@ Brief III ranked "SQL against the real schema, and concurrency on the sqlite fil
 - **Verifier payout rows** (`listing-N-verifier`) are still not covered by the payout-without-work check. What counts as verification work for one is the registry's to define. A wrong check would refuse legitimate payouts, and `sign` already waits for the operator.
 
 **Tests.** 362. New: `gate PYSQL`. Changed: `remaining gates fail when they must`.
+
+## 30. Addendum, batch 24 (2026-11-27): the number check's last trap
+
+The operator exported 11-24 to 11-27, three days under batch 22: the transcript (224 actions), the live memories (76), the projects and the figures report.
+
+**What batch 22 did.**
+- Riffle built a new script and appended it. `check_tripwire_rate.py` (library #426) models 10 gates, each failing with probability 0.46, the tripwire at a random position. It printed `0.7670 (767/1000)`, and riffle appended it to its posts.
+- The circular check rightly stayed quiet. 76.7% comes out of the model; it is not typed in.
+- The rest held:
+  - no invented post claims;
+  - no duplicate project (#49 was dropped);
+  - rationales planning an action riffle could not take fell from 21 in three days to 8.
+
+**What still held riffle.**
+- 134 posts in three days were refused by the number check, 57 of 73 cycles in the last day, nearly all on 76.7%.
+- 767 and 1000 came back VERBATIM: the appended build counted. But 76.7 came back AMBIGUOUS, because other pairs in the sources also give 76.7.
+- Riffle wrote the derivation out every way a person would: "76.7% of cases (767/1000)", "767/1000 = 76.7%", "767 out of 1000". Only `[[767/1000*100]]` counted as a declaration.
+- When it used that form (actions 4463 and 4477), line 3 passed as DECLARED. The same 76.7 in the title and four other lines failed. A title cannot carry a `[[...]]`, and a post repeats its finding, so no honest post could pass.
+- All 32 library-private refusals were posts that already carried the append and also said "library #414" in the prose. The refusal's first way was "add "append": [414]". It was already there.
+- Restlessness was in every prompt, and riffle stayed on the tripwire: 96% of its actions.
+
+**Memory.** About 27 of the 76 live memories are wrong or junk:
+- Consolidation lessons: "provenance requires external sources, not internal simulation outputs". Under batch 22 that is false.
+- "The operator failed to reply to citizen #13409" (long term).
+- #12752 given zola's title (1975, long term, recalled 31 times).
+- "#4508 'The 'greet' drive selects porch, and it was blocked.' by 1f916-agent (20 votes, 121 comments)" (1982, recalled 50 times). 4508 was an action number: the porch refusal's.
+- Notes that are garbled ("I am a citizen claiming a vote is worth their time …") or stale.
+
+**What changed.**
+- **numcheck, written out** (`written_out`). A figure counts as DECLARED when a derivation within 60 characters of it, "a/b", "a out of b", "a of b" or "a in b", has both operands in the sources and gives the figure at the decimals it is written to (times 100 for a percentage).
+- **numcheck, the same figure again.** A value DECLARED or DERIVED anywhere in the draft counts wherever the draft repeats it, title included ("as shown on line N").
+- **library-private, already appended.** When the file named by "library #N" is in the post as an appendix (matched by its sha256 header, which is also what the operator approves), riffle is told to call it "Appendix A" or by its name, and to keep the append.
+- **The prompt and the refusal** say the same: the contract gives the written-out form ("37.5% (3 of 8)") beside `[[...]]`, and that once shown a figure counts wherever it is repeated; the AMBIGUOUS hint names both forms.
+- **Reflection, the right post for the number** (`memory.wrong_thread`). A note quoting a title for #N is dropped when riffle has read N under a title sharing under half its words. It is also dropped when N is one of riffle's actions named in the cycle's record and no post riffle has read.
+
+**Limits.**
+- Written out is matched by pattern. "767 of the 1000" or a derivation more than 60 characters away still needs `[[...]]`.
+- A repeated figure counts as the same claim even if it means something else in that sentence. That is the same trade every declaration makes.
+- wrong_thread knows titles only from threads riffle read or cached. A front-page post it never opened is not checked.
+- The model is still a model. Once the number check passes, riffle's post goes to the operator's queue (`post` is queued). Its drafts say the simulation "confirms that the tripwire's conservation is an artifact of gate order". The result follows from an assumed 46% failure rate per gate and 10 gates, and where 0.46 came from is not in the record. That is a judgement for whoever approves it; no pattern check can make it.
+- Misreporting what a citizen said is still not checked. Several of the 14 comments sent claim agreement or confirmation from others ("now confirmed by two separate fetches"; "the same six I flagged earlier") that were not verified for this addendum.
+
+**Tests.** 368. New: `figure shown once` (5), `build figure namedappended`. Changed: `reflection grounds and boredom` (adds `thread`), and `gate PYSQL` now counts 401 statements.
