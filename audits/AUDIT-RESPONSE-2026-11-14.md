@@ -1020,3 +1020,48 @@ They stay as defence in depth. The `libpage` case records which check holds. If 
 - The sample of 10 mutations shows the method agrees with mutation where it was tried. It does not prove every reached protection is pinned.
 
 **Tests.** 400. New: `untested refusal` (16), `walk lag` (2).
+
+## 33. Addendum, batch 27 (2026-11-27): a second reading, the untested successes, and bin/
+
+**A second reading of every reply.** Five of the 14 comments sent from 11-24 to 11-27 misstated what they answered: "#34 carries the fix" to silt, who had said #33; a "second hash" swift-lantern never measured; a measurement said to "confirm" a hypothesis it did not address. `credited` and `claimed-before` (§31) catch a wrong number or a claim riffle never made. They caught none of these, because these are misreadings, and catching one needs reading. The operator's decision: before a reply goes out, the triage model reads it.
+- `outgoing.second_read` gives the triage model the comment being answered and the reply, and asks for NONE or up to three lines `MISSTATED: "<exact words from the reply>" | <what their comment says>`. Disagreeing, guessing, asking, or riffle giving its own view do not count. Only what the reply says *they* said counts.
+- A reply is refused (outcome `misread`) only when the words named are in the reply and at least 12 characters long. A model can invent the words it objects to, and refusing words riffle never wrote would teach it nothing. riffle is told the words, what the comment says, and to say only what they said, or to call it its own reading.
+- It **fails open**. If the model errors or times out, if the parent comment's text is not held, or for a top-level comment, the reply goes out unread. Every verdict, including "nothing misstated" and "could not run", is a journal line starting "second read of the reply to", so a week of them can be judged.
+- It runs last among the send checks, because it costs a model call, and before the reply is queued or sent. With `comment: queue` the operator's queue only ever holds replies that have been read. It is not run again at approval, since neither text has changed.
+- Config: `second_read.enabled`, `max_tokens` (300) and `timeout_seconds` (240). The box's `config.yaml` needs nothing: the code's defaults are the same. Its calls show in the figures report under the purpose "second read".
+
+**The untested successes.** §32 listed 10 success outcomes no test reached. Each now runs through a real cycle and checks the effect, not just the outcome: `completed action`, 13 cases. They are library-read, fetched (the whole docket shelved), batch-read (the cursor moves by one batch), thread-exhausted, cycle-requested, project-opened and project-queued, note-added, remembered (saved unpinned when riffle asks for a pin), adjusted (the weight moves), and queued (for adjust_drive set to queue, for add_goal however autonomy is set, and for close_project with the open project's id). All 13 did what their outcome says. No bug was found.
+
+**The sweep of `bin/`.** §32 left out the signer and the reader. This time their tests ran under coverage, measured the same way.
+
+| | Refusing lines | Reached before | Reached now |
+|---|---|---|---|
+| `bin/riffle-sign` | 49 | 9 | 47 |
+| `bin/riffle-reader` | 18 | 6 | 18 |
+
+The two left in riffle-sign cannot be reached. `jcs()` refuses a big integer or a non-JSON value, but every value `attest` hands it is a string, a list of strings or null.
+
+The reader's unreached lines included **the check of each redirect hop**. The allowlist holds only if a listed page cannot pass the reader on to an unlisted one. `reader hop` (15 cases) shows it:
+- a redirect off the list, or to `http://`, is refused, and the next host is never asked;
+- a same-host redirect is followed;
+- no Location header, a redirect loop, 403, 429, 500, unreachable, no URL and unreadable URLs each say why they stopped;
+- a windows-1252 page is decoded by its charset.
+
+Nothing in the reader needed changing.
+
+`signer refuses` (44 cases) runs each signer refusal and checks that it exits non-zero, logs REFUSED and signs nothing. The registry is stubbed, so these cases do not need the registry's message builders. Two bugs came out of it:
+- **A payout's expiry was not checked against the one asked for.** Every other field of the registry's preimage was compared with the request or with payout.conf. The expiry was only required to be in the future. A preimage carrying a later expiry (the case uses a century) would have been signed as it came. `payout-wallet` already required the exact expiry. Now `payout` refuses a non-numeric or past expiry before asking the registry, and refuses a preimage whose expiry differs from the one asked for. It would take a registry bug or a compromised registry to send one, and the binding still pays only the operator's address, so this widened a margin rather than opening a hole. It is the only field the signer took on trust.
+- **A garbage key file was reported as "the key is 0 bytes".** `urlsafe_b64decode` skips bytes outside its alphabet, so ten bytes of noise decoded to nothing, and the right message ("not 32 raw bytes, 64 hex characters, or base64url") could never be shown. The decode is now strict. The `b64seed` and `hexseed` cases show that a key kept as text still loads.
+
+`riffle-sign` runs from a root-owned copy, so the fix takes effect only when it is installed. update.sh prints the command when the copy is behind: `sudo install -m 0755 -o root -g root /opt/riffle/bin/riffle-sign /usr/local/bin/riffle-sign`.
+
+**Not done.**
+- **The verifier payout check.** Writing it needs the registry's rules for verifier rows, and the commands to fetch them have been sent. Nothing about verifier rows changed.
+- **Top-level comments are not read a second time.** They answer a post, not a comment. Reading one beside its post is the same check with a longer text, if the journal shows the reply check earning its cost.
+
+**Limits.**
+- The second read is one small model reading one pair. It will miss things and flag some that are fine. The 12-character, words-must-be-in-the-reply rule stops it refusing words riffle never wrote, but nothing stops it misjudging words that are there. The journal is where to judge it.
+- A refused reply costs the cycle, as every refusal does, and a misjudgement can lose a good reply. Ten `misread` refusals in a day hold comments out for six hours, as the lockout (§31) does for any outcome.
+- The bin/ coverage was measured as root. The two refusals for an unreadable key or payout.conf are reached by making the module's own `open()` refuse, because root can read anything.
+
+**Tests.** 480. New: `second read` (8), `completed action` (13), `signer refuses` (44), `reader hop` (15).

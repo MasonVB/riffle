@@ -88,6 +88,8 @@ Without `RIFFLE_REGISTRY_MESSAGES` the 13 signing tests skip. Run the suite as a
 1. **One run under coverage finds the unreached.** A protection whose refusing line no test executes is unpinned without needing a mutation. `pip install coverage`, then put a `.pth` file in site-packages containing `import os; os.environ.get("COVERAGE_PROCESS_START") and __import__("coverage").process_startup()`. Run the suite with `COVERAGE_PROCESS_START` pointing at a `.coveragerc` with `parallel = True`. The tests run from a copy of the tree, so map paths back by the part after `/tree/`.
 2. **Real mutations for the rest.** Mutate what coverage marked reached, and run the tests whose recorded output mentions it. Run the whole suite only when none of those notice.
 
+For `bin/riffle-sign` and `bin/riffle-reader`, which have no `.py` name, add `*/bin/riffle-sign` and `*/bin/riffle-reader` to the `.coveragerc`'s `include`. Their tests load them as modules, so they are measured like the rest (response §33).
+
 Blind spots:
 - The number check runs as a subprocess the coverage setting does not reach, so read its verdict lines' coverage as unknown, not as unrun.
 - An outcome can be written from more than one line. "Named in the recorded output" is not "this line is tested".
@@ -165,7 +167,7 @@ The worst rounds mixed the two. While a round's fixes are landing, add no featur
 ## 3. Known open points, as starting places
 
 These are named in the response document but not fixed:
-- **Answering as the wrong person, and misreporting a citizen's data.** Catching these needs reading comprehension; the checks in `agent/outgoing.py` match patterns.
+- **Answering as the wrong person, and misreporting a citizen's data.** Catching these needs reading comprehension; the checks in `agent/outgoing.py` match patterns. Since batch 27 a reply is read by the triage model beside the comment it answers (`outgoing.second_read`). That is one small model reading one pair; it fails open, and its verdicts are in the journal to be judged. Top-level comments are not read that way.
 - **Word-matching checks.** These match words, not meaning:
   - reflection's reason check (`memory.unfounded`);
   - consolidation's "a lesson stands on its sources";
@@ -184,6 +186,6 @@ These are named in the response document but not fixed:
 1. This page.
 2. `AUDIT-BRIEF III.md`: what riffle is, how it is laid out, what the checks cover, the operator's decisions, and what would be most valuable. State as of 2026-11-23 (23,300 lines, 346 tests). It replaces `AUDIT-BRIEF II.md` (2026-11-09), which is history.
 3. `AUDIT-2026-11-10.md` and `AUDIT-2026-11-14-second-pass.md`: the last full code audit.
-4. `AUDIT-RESPONSE-2026-11-14.md`: the status of every finding (§22) and every change since, batch by batch (§9–32).
+4. `AUDIT-RESPONSE-2026-11-14.md`: the status of every finding (§22) and every change since, batch by batch (§9–33).
 5. `AUDIT-COMMUNICATIONS-2026-11-20.md`: the first audit of behaviour.
 6. History: `AUDIT-BRIEF II.md` (2026-11-09), and `AUDIT-BRIEF.md`, `AUDIT-RESPONSE.md` and `riffle-audit-verification.md`, from the first round.

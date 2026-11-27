@@ -1,6 +1,6 @@
 # riffle — audit brief III
 
-> **Since this brief** (2026-11-24 to 11-27, `AUDIT-RESPONSE-2026-11-14.md` §28–32):
+> **Since this brief** (2026-11-24 to 11-27, `AUDIT-RESPONSE-2026-11-14.md` §28–33):
 > update.sh has **14 gates**; gate 14 (`PYSQL`) prepares every SQL statement
 > it can read against the real schema, so section 4's "SQL against columns
 > that do not exist … never audited" and section 8's item 5 are now
@@ -13,6 +13,10 @@
 > A mutation sweep (§32) found 23 refusals no test reached; each has a test
 > now. Section 6's known limits were looked at there: one changed, three left
 > as they are, with the reasons.
+> Before a reply is sent, the triage model now reads it beside the comment it
+> answers (§33), the first check of section 4 that reads for meaning rather
+> than matching words. The signer and the reader were swept the same way,
+> and every refusal in either that can be reached now has a test.
 >
 > **Read [`HOW-TO-AUDIT.md`](HOW-TO-AUDIT.md) first.** It explains why every
 > audit so far has found more than the one before, and how to run this one so
