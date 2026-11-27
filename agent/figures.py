@@ -556,6 +556,12 @@ def report(state, cfg):
                                           f"{r['through_id']}" for r in rows))
         else:
             say("  witness: no marks recorded")
+        # How far behind the changes walk is (2026-11-27): its cursor's age at
+        # the last walk. Over a couple of hours and growing means it is not
+        # keeping up at changes.max_rows_per_cycle.
+        _lag = state.note("changes_lag_ms")
+        if _lag and str(_lag).lstrip("-").isdigit():
+            say(f"  changes walk: cursor {int(_lag) / 3.6e6:.1f} h behind at the last walk")
         try:
             from agent import project
             p = project.active(state)

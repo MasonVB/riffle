@@ -4957,6 +4957,21 @@ def walk_changes(state, reader, cfg, log):
             break
 
     state.note("changes_since", str(since))
+    # HOW FAR BEHIND (2026-11-27). Brief II listed "the walk fetches 400 rows
+    # though ~1,500 are shown" as a limit; the walk resumes from its cursor,
+    # so 400 a wake is a pace, not a cap. What would matter is falling behind
+    # for good on a busy board, and nothing said whether it was. The cursor
+    # is a time in ms; how old it is, is how far behind the walk is.
+    try:
+        _lag = int(time.time() * 1000) - int(since)
+        if 10 ** 12 < int(since):
+            state.note("changes_lag_ms", str(_lag))
+            if _lag > 2 * 3600 * 1000:
+                log(f"changes: the walk's cursor is {_lag / 3.6e6:.1f}h behind now; at "
+                    f"{max_rows} rows a wake it may not be keeping up "
+                    f"(changes.max_rows_per_cycle)", level="warn")
+    except (TypeError, ValueError):
+        pass
     if etag:
         state.note("changes_etag", etag)
     # ONE ROW PER ID (L8, audit 2026-10-27). The registry says legacy mode can
