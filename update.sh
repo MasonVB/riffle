@@ -1368,6 +1368,159 @@ then
   exit 1
 fi
 
+# --- gate 14: every SQL statement prepares against the schema -------------
+#
+# No audit had ever checked the SQL (AUDIT-BRIEF III, section 4). 23,000
+# lines hold about 400 statements, the schema is created across nine modules
+# (four tables lazily, the first time something writes one), and nearly every
+# query sits in a try/except that turns "no such column" into an empty
+# answer. A misspelt column would deploy, and read as "nothing found" on
+# every cycle. The first run, 2026-11-24, found none.
+#
+# This builds the whole schema in a scratch database, from the code's own
+# ensure() functions and lazy schemas, and asks sqlite to prepare every
+# statement in the code (EXPLAIN: nothing runs). Parameters become NULL. An
+# f-string whose only holes are IN (...) lists is checked with the list
+# filled in; one with a table name or a clause in a hole is skipped, and
+# counted.
+if ! python3 - <<'PYSQL'
+import ast
+import glob
+import os
+import re
+import sqlite3
+import sys
+import tempfile
+
+sys.path.insert(0, os.getcwd())
+try:
+    import yaml
+    from agent.state import State
+    from agent import (chat, desk, figures, inbox, library, memory, policy,
+                       project, telemetry)
+    from agent import state as _state
+    d = tempfile.mkdtemp()
+    st = State(os.path.join(d, "schema.sqlite"))
+    for f in (desk.ensure, figures.ensure, inbox.ensure, project.ensure,
+              telemetry.ensure):
+        f(st)
+    library.ensure(st, os.path.join(d, "library"))
+    policy.ensure(st, yaml.safe_load(open("config.example.yaml")) or {})
+    memory._ensure_fts(st)
+    for s in (project.READS_SCHEMA, chat.CACHE_SCHEMA, _state.INSTR_SCHEMA,
+              _state.ASK_SCHEMA):
+        st.db.executescript(s)
+    st._ensure_cycle_approval()
+except Exception as e:
+    print(f"  SQL could not build the schema to check against: "
+          f"{type(e).__name__}: {e}")
+    sys.exit(1)
+
+SQL = re.compile(
+    r"^\s*(SELECT\s[\s\S]*\bFROM\b|SELECT\s+(?:\d|COUNT|MAX|MIN|json|changes|"
+    r"last_insert)|INSERT\s+(?:OR\s+\w+\s+)?INTO\s|UPDATE\s+\w+\s+SET\s|"
+    r"DELETE\s+FROM\s|WITH\s+\w+\s*(?:\(|AS)|REPLACE\s+INTO\s)")
+
+
+def consts(scope):
+    """Names in a function (or module) set to a string constant, or looped
+    over a tuple of them: `live = "superseded_by IS NULL ..."`,
+    `for t in ("board_cache", "thread_reads")`. The first value is used."""
+    out = {}
+    for n in ast.walk(scope):
+        if (isinstance(n, ast.Assign) and len(n.targets) == 1
+                and isinstance(n.targets[0], ast.Name)):
+            v = n.value
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                out.setdefault(n.targets[0].id, v.value)
+            elif isinstance(v, ast.BinOp) or isinstance(v, ast.JoinedStr):
+                t = text_of(v, {})
+                if t and "\0" not in t:
+                    out.setdefault(n.targets[0].id, t)
+        elif (isinstance(n, ast.For) and isinstance(n.target, ast.Name)
+              and isinstance(n.iter, (ast.Tuple, ast.List)) and n.iter.elts
+              and isinstance(n.iter.elts[0], ast.Constant)
+              and isinstance(n.iter.elts[0].value, str)):
+            out.setdefault(n.target.id, n.iter.elts[0].value)
+    return out
+
+
+def text_of(node, names):
+    """A string expression's text, each f-string hole it cannot resolve as
+    \\0. A hole that is a name in `names` takes that name's value."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        out = ""
+        for v in node.values:
+            if isinstance(v, ast.Constant):
+                out += v.value
+            elif isinstance(v.value, ast.Name) and v.value.id in names:
+                out += names[v.value.id]
+            else:
+                out += "\0"
+        return out
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        a, b = text_of(node.left, names), text_of(node.right, names)
+        if a is not None or b is not None:
+            return (a if a is not None else "\0") + (b if b is not None else "\0")
+    return None
+
+
+files = sorted(glob.glob("agent/*.py")) + [p for p in ("numcheck.py", "witness.py")
+                                           if os.path.exists(p)]
+bad, n, skipped = [], 0, 0
+for path in files:
+    try:
+        tree = ast.parse(open(path).read())
+    except (OSError, SyntaxError):
+        continue
+    inside = set()
+    scopes = [n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    scopes.sort(key=lambda f: -(getattr(f, "end_lineno", f.lineno) - f.lineno))
+    owner = {}
+    for f in scopes:                       # the innermost function wins
+        for c in ast.walk(f):
+            owner[id(c)] = f
+    names_of = {}
+    module_names = consts(tree)
+    for node in ast.walk(tree):
+        if id(node) in inside or not isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+            continue
+        f = owner.get(id(node))
+        if f is not None and id(f) not in names_of:
+            names_of[id(f)] = {**module_names, **consts(f)}
+        t = text_of(node, names_of[id(f)] if f is not None else module_names)
+        if not t or not SQL.match(t):
+            continue
+        inside.update(id(c) for c in ast.walk(node))
+        if "\0" in t:
+            if re.sub(r"IN \(\0\)", "", t).count("\0"):
+                skipped += 1
+                continue
+            t = t.replace("IN (\0)", "IN (NULL)")
+        n += 1
+        sql = re.sub(r":[a-z_]+\b", "NULL", t.replace("?", "NULL"))
+        try:
+            st.db.execute("EXPLAIN " + sql)
+        except sqlite3.Error as e:
+            bad.append(f"{path}:{node.lineno}: {e}: {' '.join(t.split())[:120]}")
+if n < 100:
+    bad.append(f"only {n} statements found; the gate is reading the wrong thing")
+for b in bad:
+    print(f"  SQL {b}")
+print(f"  {n} SQL statements prepare against the schema"
+      f" ({skipped} built from table names or clauses at run time, not checked)"
+      if not bad else f"  {len(bad)} of {n} SQL statements do not prepare")
+sys.exit(1 if bad else 0)
+PYSQL
+then
+  echo "!! SQL that does not prepare against the schema; rolling back to $BEFORE"
+  git reset --hard "$BEFORE"
+  exit 1
+fi
+
 if [ -f config.example.yaml ] && [ -f config.yaml ]; then
   python3 - <<'PY'
 import re
