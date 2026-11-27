@@ -966,3 +966,57 @@ The comment answered is read from the inbox, or from the threads riffle read. Ov
 - Unchanged: the verifier payout rows, and Ford.
 
 **Tests.** 382. New: `held out` (7), `credits` (7). Changed: `reflection grounds and boredom` (adds `cutoff`), and `gate PYSQL` counts 406 statements.
+
+## 32. Addendum, batch 26 (2026-11-27): the mutation sweep
+
+HOW-TO-AUDIT §2.1–2.2 asks for every protection to be switched off in turn, and the 11-14 pass did 41: 19 went unnoticed. Nobody had done it since, and batches 17 to 25 added about twenty refusals, the lockout, gate 14 and the memory checks.
+
+**How.** On two cores a run per mutation would take more than a day, so it was done in two passes (the method is now in HOW-TO-AUDIT §2.2):
+1. **The inventory: 126 protections.**
+   - 95 refusal outcomes the cycle, the dashboard and chat write;
+   - 16 outgoing checks (the 11 in its list and the 5 beside it);
+   - 16 number-check verdicts;
+   - 4 memory drop reasons.
+2. **One run of the whole suite under coverage**, every Python process it starts included.
+3. **Real mutations** of a sample, each run against the tests that mention it.
+
+**Never reached by any test: 50 of the 126.**
+- **23 were refusals.** Each now has a case in `untested refusal`, and each case was shown to produce its refusal through a real cycle:
+  - queue-full, composer-busy;
+  - cooldown, not-ready and cap-reached (the send-time backstops behind the grammar);
+  - voted-already, post-queued-already, said-already, already-commented;
+  - hash-unresolvable, artifact-unfetchable;
+  - ask-refused, goal-refused, extra-capped, no-project;
+  - library-refused (see below).
+
+  On the box, said-already, voted-already and already-commented refuse real actions every day. Until now each could have been switched off unnoticed: the said-already mutant was shown unnoticed before the new case and noticed after.
+- **8 were failure paths, not protections:** page-failed, search-failed, build-failed, fetch-failed, read-failed, a second sign-failed, and the never-sent and unknown-outcome written from a second place. Tests reach those outcomes, through their other lines.
+- **10 were success outcomes** of local actions (library-read, fetched, note-added, remembered, adjusted, …). None is tested by its own line; none refuses anything.
+- **7 were number-check verdicts**, which coverage cannot see: the number check runs as a subprocess. Its verdicts are exercised by `number check masking`, `figure shown once` and the figure tests.
+- **2 were memory drop branches.**
+
+**Two refusals cannot be reached from a proposal.** The gate refuses the same input first:
+- library_put of a `page`, or with a `build:`/`1f916:` source (the gate allows only note, code, thread, post, data, reference and draft);
+- adjust_drive with a reason under 20 characters.
+
+They stay as defence in depth. The `libpage` case records which check holds. If the gate is ever loosened, the later check is what is left.
+
+**Mutated, to check the method.** 10 protections switched off, each run against the tests whose recorded output mentions it. All 10 were noticed:
+- an action set to queue waits for the operator (one of the 19 unnoticed on 11-14; 8 tests notice it now);
+- wrong-addressee, library-private, voted-unread, the tag limit;
+- reflection's footing check, the number check's written-out form;
+- the lockout, the duplicate-project check;
+- said-already (after its new case).
+
+**Known limits from Brief II, looked at.**
+- **The changes walk** "fetches 400 rows though ~1,500 are shown". The walk resumes from its cursor, so 400 rows a wake is a pace, not a cap. What would matter is falling behind for good on a busy board, and nothing said whether it was. The walk now notes how far behind its cursor is, warns past two hours (naming `changes.max_rows_per_cycle`), and the figures report shows the lag under WORK. Not raised: whether it needs raising is what the lag will say.
+- **Reflection skips cycles over two days old.** Unchanged, deliberately. It was added when reflection fell a week behind and spent every wake on last week. Cycles do not accumulate while the box is off, so it fires only after two days of failing reflection, and batch 25 removed the main cause. It says so when it fires.
+- **The five-tags limit** "knows only tags sent through this system". The registry's limit is per citizen (the refusal of 2026-10-28 says so), so riffle's own tags are the only ones that count, and all of them go through this system. Not a gap unless tags are added as riffle by hand.
+- **The run-cycle path unit names `/var/lib/riffle`.** So do eight other working lines across the units and update.sh. A unit cannot read config.yaml, and the data directory has never moved. Left as it is.
+
+**Limits.**
+- Coverage was measured as root: the five root-only tests are in it, and a path reached only as an ordinary user would not be.
+- `bin/riffle-sign` and `bin/riffle-reader` were not in the coverage run. They have their own tests, which run them as subprocesses.
+- The sample of 10 mutations shows the method agrees with mutation where it was tried. It does not prove every reached protection is pinned.
+
+**Tests.** 400. New: `untested refusal` (16), `walk lag` (2).

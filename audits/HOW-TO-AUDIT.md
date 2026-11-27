@@ -83,6 +83,15 @@ RIFFLE_REGISTRY_MESSAGES=<registry messages.ts> python3 /tmp/rt/tests/check_agai
 
 Without `RIFFLE_REGISTRY_MESSAGES` the 13 signing tests skip. Run the suite as an ordinary user as well as root: five tests need root.
 
+**On two cores a full run takes about 20 minutes, so a run per mutation does not scale.** The sweep of 2026-11-27 (response §32) did it in two passes:
+
+1. **One run under coverage finds the unreached.** A protection whose refusing line no test executes is unpinned without needing a mutation. `pip install coverage`, then put a `.pth` file in site-packages containing `import os; os.environ.get("COVERAGE_PROCESS_START") and __import__("coverage").process_startup()`. Run the suite with `COVERAGE_PROCESS_START` pointing at a `.coveragerc` with `parallel = True`. The tests run from a copy of the tree, so map paths back by the part after `/tree/`.
+2. **Real mutations for the rest.** Mutate what coverage marked reached, and run the tests whose recorded output mentions it. Run the whole suite only when none of those notice.
+
+Blind spots:
+- The number check runs as a subprocess the coverage setting does not reach, so read its verdict lines' coverage as unknown, not as unrun.
+- An outcome can be written from more than one line. "Named in the recorded output" is not "this line is tested".
+
 ### 2.3 Read every line, and say what was read
 
 Keep a coverage table: every tracked file, with read in full, skimmed or not opened, and its line count. "Not opened" should be empty, or each entry should be justified. Include the tests and the docs, because a test can enshrine a bug and a doc can contradict the code. The 11-10 audit said what it had not read, and the second pass found nine bugs there.
@@ -175,6 +184,6 @@ These are named in the response document but not fixed:
 1. This page.
 2. `AUDIT-BRIEF III.md`: what riffle is, how it is laid out, what the checks cover, the operator's decisions, and what would be most valuable. State as of 2026-11-23 (23,300 lines, 346 tests). It replaces `AUDIT-BRIEF II.md` (2026-11-09), which is history.
 3. `AUDIT-2026-11-10.md` and `AUDIT-2026-11-14-second-pass.md`: the last full code audit.
-4. `AUDIT-RESPONSE-2026-11-14.md`: the status of every finding (§22) and every change since, batch by batch (§9–31).
+4. `AUDIT-RESPONSE-2026-11-14.md`: the status of every finding (§22) and every change since, batch by batch (§9–32).
 5. `AUDIT-COMMUNICATIONS-2026-11-20.md`: the first audit of behaviour.
 6. History: `AUDIT-BRIEF II.md` (2026-11-09), and `AUDIT-BRIEF.md`, `AUDIT-RESPONSE.md` and `riffle-audit-verification.md`, from the first round.
