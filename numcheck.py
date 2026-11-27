@@ -263,6 +263,36 @@ def normalize(d):
     return d.normalize()
 
 
+WRITTEN_RE = re.compile(
+    r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s*(?:/|\bout\s+of\b|\bof\b|\bin\b)\s*"
+    r"(\d[\d,]*(?:\.\d+)?)(?![\w.]*\d)")
+
+
+def written_out(line, start, end, target, is_percent, corpus_set, reach=60):
+    """"767/1000", "767 out of 1000" or "767 of 1000" within `reach`
+    characters of the figure, both operands in the sources and the figure
+    their quotient (times 100 for a percentage) at the decimals it is written
+    to. Returns the derivation as written, or None."""
+    places = -target.as_tuple().exponent
+    q = Decimal(1).scaleb(-places) if places > 0 else Decimal(1)
+    lo, hi = max(0, start - reach), min(len(line), end + reach)
+    for w in WRITTEN_RE.finditer(line, lo, hi):
+        if w.start() <= start < w.end():
+            continue                       # the figure is one of the operands
+        a, b = dec(w.group(1)), dec(w.group(2))
+        if a is None or b is None or b == 0:
+            continue
+        if normalize(a) not in corpus_set or normalize(b) not in corpus_set:
+            continue
+        v = a / b * (100 if is_percent else 1)
+        try:
+            if v.quantize(q) == target:
+                return f"{w.group(1)}/{w.group(2)}" + ("*100" if is_percent else "")
+        except Exception:
+            continue
+    return None
+
+
 def derive(target, corpus_list, is_percent):
     """Find arithmetic relations among source values that yield target.
 
@@ -597,22 +627,54 @@ def check(draft_path, source_paths, derive_cap=400, declared=None):
                                               f"{val}, not {d}"))
                 else:
                     findings.append(dict(line=lineno, kind="num", token=tok, status="DECLARED",
+                                         value=str(d),
                                          note=f"= {decl.group(1)}, operands verbatim in sources"))
+                continue
+            # WRITTEN OUT (2026-11-24 to 11-27). riffle wrote "76.7% of cases
+            # (767/1000)", "767/1000 = 76.7%" and "767 out of 1000" for three
+            # days, with 767 and 1000 verbatim in its appended build's output,
+            # and each came back AMBIGUOUS: other pairs in the corpus also
+            # give 76.7. A derivation the text itself shows, beside the figure,
+            # with both operands in the sources, is the declaration a reader
+            # can check, and only [[...]] counted as one.
+            wrote = written_out(masked, m.start(), m.end(), d, is_pct, corpus_set)
+            if wrote:
+                findings.append(dict(line=lineno, kind="num", token=tok, status="DECLARED",
+                                     value=str(d), note=f"written out as {wrote}, operands "
+                                                        f"verbatim in sources"))
                 continue
             rel, n = derive(d, corpus_list, is_pct)
             if rel:
                 findings.append(dict(line=lineno, kind="num", token=tok,
-                                     status="DERIVED", note=rel))
+                                     status="DERIVED", value=str(d), note=rel))
             elif n > 1:
                 findings.append(dict(line=lineno, kind="num", token=tok, status="AMBIGUOUS",
                                      note=f"{n}+ source pairs produce this value, so no single "
                                           f"one is its provenance — declare the operands, e.g. "
-                                          f"{tok}% [[a/b*100]]"))
+                                          f"{tok}% [[a/b*100]], or write them out beside it, "
+                                          f"{tok}% (a/b); once is enough for every repeat"))
             else:
                 findings.append(dict(line=lineno, kind="num", token=tok, status="UNBACKED",
                                      note="low-signal (small count or year)" if low_signal(d, raw)
                                      else "no source value and no simple relation produces this",
                                      low=low_signal(d, raw)))
+    # THE SAME FIGURE AGAIN (2026-11-27). Action 4477 declared "76.7%
+    # [[767/1000*100]]" on line 3 and it passed; the same 76.7 in its title
+    # and on four other lines came back AMBIGUOUS, so the post was refused.
+    # A title cannot carry a [[...]], and a post states its finding more than
+    # once. A figure declared or derived anywhere in the draft is the same
+    # claim wherever it is repeated.
+    shown = {}
+    for f in findings:
+        if f.get("kind") == "num" and f.get("status") in ("DECLARED", "DERIVED") and f.get("value"):
+            shown.setdefault(f["value"], f["line"])
+    for f in findings:
+        if f.get("kind") == "num" and f.get("status") in ("AMBIGUOUS", "UNBACKED"):
+            v = dec(str(f["token"]).lstrip("-"))
+            v = str(normalize(v)) if v is not None else None
+            if v in shown:
+                f["status"] = "DECLARED"
+                f["note"] = f"as shown on line {shown[v]}"
     return findings, files, len(corpus_set), len(hexes)
 
 
