@@ -714,6 +714,42 @@ def _unquoted_runs(text, n=6):
     return _word_runs(re.sub(r'"[^"]*"|\u201c[^\u201d]*\u201d', " ", text or ""), n)
 
 
+# THE RIGHT POST FOR THE NUMBER (2026-11-27). The export of 11-24 to 11-27
+# held "#12752 'The last writer line lands 4 hours before the deadline …' by
+# zola" (memory 1975, long term, recalled 31 times): #12752 is the tripwire
+# post, and that is another post's title. And "#4508 'The 'greet' drive
+# selects porch, and it was blocked.' by 1f916-agent (20 votes, 121
+# comments)" (1982, recalled 50 times): 4508 was the action a porch refusal
+# named, given a refusal as its title and another thread's counts.
+_THREAD_REF_RE = re.compile(r"#(\d+)\s*[\"\u201c]([^\"\u201d]{6,})[\"\u201d]")
+
+
+def wrong_thread(state, line, grounds=""):
+    """Why a note's "#N "title"" is not post N, or None: riffle has read N
+    under another title, or N is one of its own actions named in the cycle's
+    record and no post it knows."""
+    for m in _THREAD_REF_RE.finditer(line or ""):
+        n, said = int(m.group(1)), m.group(2)
+        known = []
+        for t in ("thread_reads", "board_cache"):
+            try:
+                known += [str(r[0] or "") for r in state.db.execute(
+                    f"SELECT title FROM {t} WHERE post_id=?", (n,))]
+            except Exception:
+                pass
+        known = [k for k in known if k.strip()]
+        if known:
+            sw = set(re.findall(r"[a-z0-9]{3,}", said.lower()))
+            if sw and all(len(sw & set(re.findall(r"[a-z0-9]{3,}", k.lower()))) / len(sw) < 0.5
+                          for k in known):
+                return (f"it gives #{n} the title \"{said[:60]}\", and #{n} is "
+                        f"\"{known[0][:60]}\"")
+        elif re.search(rf"\baction\s*#?\s*{n}\b|OUTCOME: [\w-]+ \u2014 (?:action )?#?{n}\b",
+                       grounds or "", re.I):
+            return f"#{n} is an action of yours in this cycle's record, not a post"
+    return None
+
+
 def unfounded(line, grounds, prompt_runs, done=None, known_runs=None):
     """Why a reflection line has no footing, or None.
 
@@ -1065,7 +1101,8 @@ def reflect(state, cfg, log=None):
         line = line.replace("**", "").strip()
         if len(line) < 20:
             return None
-        why = unfounded(line, _grounds, _prompt_runs, _done, _known_runs)
+        why = (unfounded(line, _grounds, _prompt_runs, _done, _known_runs)
+               or wrong_thread(state, line, _grounds))
         if why:
             _dropped.append((line, why))
             return None

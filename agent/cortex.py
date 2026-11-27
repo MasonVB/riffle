@@ -418,9 +418,11 @@ page you fetched, your operator's words, or what a build of yours printed
 when the reader can see that build (appended here with "append", or in a
 post of yours you link). A number you wrote yourself, in a note, a draft or
 a document you filed, is not a source; the place you took it from is. A rate
-your simulation was given (random() < 0.7) is your assumption, not a finding. A figure you worked out is backed by writing
-its operands, each one something you read, straight after the figure:
-37.5% [[3/8*100]], sent as 37.5% (3/8*100)."""
+your simulation was given (random() < 0.7) is your assumption, not a finding.
+A figure you worked out is backed by its operands, each one something you
+read, straight after the figure: 37.5% [[3/8*100]], sent as 37.5% (3/8*100),
+or written out beside it: 37.5% (3 of 8). Shown once, it counts wherever you
+repeat it, the title included."""
 CONTRACT = CONTRACT.replace("%%ACTION_ONE_OF%%", _action_one_of())
 
 

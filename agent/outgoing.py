@@ -800,6 +800,24 @@ def library_reference(state, cfg, kind, payload, text):
         return None
     num = re.search(r"\d+", m.group(0))
     row = _doc(state, num.group(0)) if num else None
+    # ALREADY APPENDED (2026-11-27). All 32 of these refusals in three days
+    # were posts with "append": [414] (or [426]) set and "library #414" in
+    # the prose, and the first way offered was "add "append": [414] to this
+    # post". It was there; what was wrong was the number.
+    # The appendix itself is the evidence: attach() has taken "append" out of
+    # the payload by now and written each file under "Appendix X: name,
+    # sha256 H", and that is also what the operator approves.
+    letter = None
+    if row is not None:
+        for am in re.finditer(r"(?m)^Appendix ([A-Z]): .*?, sha256 ([0-9a-f]{64})\s*$", text or ""):
+            if am.group(2) == str(row["sha256"] or "").lower():
+                letter = am.group(1)
+                break
+    if letter:
+        return (f"you wrote \"{m.group(0)}\", and {_doc_name(row)} is already appended to "
+                f"this {kind} as Appendix {letter}. A reader sees the appendix, not your "
+                f"library's numbering: write \"Appendix {letter}\" or \"{_doc_name(row)}\" "
+                f"wherever you wrote \"{m.group(0)}\", and keep the append.")
     return (f"you wrote \"{m.group(0)}\". Your library is on this machine: nobody "
             f"reading can open it, so it is not a source and not evidence."
             + ways(state, cfg, kind, payload, row))
