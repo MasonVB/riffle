@@ -66,7 +66,7 @@ Do these in order. Each produces something to hand back, so whoever comes next c
 List every protection in the code:
 - every refusal outcome: `grep -oh 'end_cycle(cid, "[a-z_-]*"' agent/*.py | sort -u`, plus the `_oc` outcomes from `agent/outgoing.py`;
 - every check the dashboard re-runs at approval (`dash.Handler.decide`);
-- every deploy gate (`update.sh`, gates PY through PYOUT);
+- every deploy gate (`update.sh`, gates PY through PYSQL);
 - every rule in `drives.SCHEMA` and `policy`;
 - the signer's checks (`bin/riffle-sign`) and the reader's rules (`bin/riffle-reader`).
 
@@ -113,7 +113,7 @@ Do not trust a "fixed" in a response document. Check each finding against the co
 
 | Layer | What to look for | Where the evidence is |
 |---|---|---|
-| Mechanical | Undefined names, signatures, SQL against the schema | pyflakes, compile every statement |
+| Mechanical | Undefined names, signatures, SQL against the schema | pyflakes; gate 14 (`PYSQL`) prepares every SQL statement it can read against the real schema |
 | State | Every action status and every transition, including `unknown`, `sending`, `approved` | `state.py`, `dash.py`, the cycle |
 | Checks | Can each check be passed without the thing it exists to establish? | Construct the input that does it |
 | Prompt | Does every instruction to the model match what the code now does? Stale prompt text taught riffle to cite private hashes for two months | `cortex.py`, `conduct.py`, the cycle's blocks; the `system prompt contents` test |
@@ -175,6 +175,6 @@ These are named in the response document but not fixed:
 1. This page.
 2. `AUDIT-BRIEF III.md`: what riffle is, how it is laid out, what the checks cover, the operator's decisions, and what would be most valuable. State as of 2026-11-23 (23,300 lines, 346 tests). It replaces `AUDIT-BRIEF II.md` (2026-11-09), which is history.
 3. `AUDIT-2026-11-10.md` and `AUDIT-2026-11-14-second-pass.md`: the last full code audit.
-4. `AUDIT-RESPONSE-2026-11-14.md`: the status of every finding (§22) and every change since, batch by batch (§9–27).
+4. `AUDIT-RESPONSE-2026-11-14.md`: the status of every finding (§22) and every change since, batch by batch (§9–29).
 5. `AUDIT-COMMUNICATIONS-2026-11-20.md`: the first audit of behaviour.
 6. History: `AUDIT-BRIEF II.md` (2026-11-09), and `AUDIT-BRIEF.md`, `AUDIT-RESPONSE.md` and `riffle-audit-verification.md`, from the first round.

@@ -1,5 +1,13 @@
 # riffle — audit brief III
 
+> **Since this brief** (2026-11-24, `AUDIT-RESPONSE-2026-11-14.md` §28–29):
+> update.sh has **14 gates**; gate 14 (`PYSQL`) prepares every SQL statement
+> it can read against the real schema, so section 4's "SQL against columns
+> that do not exist … never audited" and section 8's item 5 are now
+> partly answered: none failed. Concurrency was measured, not proven (§29).
+> Section 4's send checks gained `figure-assumed` and `post-claimed`, and a
+> build's output counts only where a reader can see the build.
+>
 > **Read [`HOW-TO-AUDIT.md`](HOW-TO-AUDIT.md) first.** It explains why every
 > audit so far has found more than the one before, and how to run this one so
 > it finds what is there. This brief describes riffle itself. It replaces

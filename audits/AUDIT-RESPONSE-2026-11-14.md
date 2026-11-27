@@ -848,3 +848,36 @@ The operator exported 11-21 to 11-24: the transcript (231 actions), the live mem
 **On the box.** Project #48 is the same question riffle has been stuck on. The probe's code is in post #13122, so riffle can now cite that post. If the probe sets its rate too, figure-assumed will refuse the claim, and the project can only close unposted or change what it claims.
 
 **Tests.** 361. New: `build figure` (6), `post exists` (9). Changed: `figures from what riffle read buildout` (now refused), `reflection grounds and boredom` (adds `went`), `reflection says why it kept nothing`, and the prompt-size lines.
+
+## 29. Addendum, batch 23 (2026-11-24): the SQL, the sqlite file, and the memory store
+
+Brief III ranked "SQL against the real schema, and concurrency on the sqlite file. Never checked" fifth. Both were checked.
+
+**SQL.**
+- **How.** The whole schema was built in a scratch database from the code's own `ensure()` functions, plus the four tables created lazily the first time something writes them (`thread_reads`, `board_cache`, `instructions`, `questions`) and the `approval` column. Every SQL statement in `agent/`, `numcheck.py` and `witness.py` was prepared against it (`EXPLAIN`, nothing runs).
+- **Result: none failed.** No query names a table or column that does not exist, and none is malformed. Of 403 statements, 400 were checked. They include f-strings whose holes are `IN (...)` lists, local constants (memory's `live` clause), or a loop over table names. The 3 skipped are built at run time, and were checked by hand: storage's two history queries, for every table in `HISTORY`, and memory's keyword fallback, whose `LIKE` clauses are joined per search (memory.py, near line 362).
+- **Gate 14 (`PYSQL`)** does the same on every deploy, and rolls back if any statement does not prepare. It was shown failing on a misspelt column in a plain query and in an f-string.
+
+**Concurrency.**
+- **The setup.** Each thread gets its own connection (`State.db`), in WAL mode with a 30-second busy timeout. Nothing opens an explicit transaction or rolls one back; writes are single statements committed straight after. Approvals are atomic by compare-and-set (`UPDATE … WHERE status='queued'`). `executescript`, which several modules call to create tables, commits anything pending first. With no explicit transactions anywhere, that cannot split one.
+- **The risk** is a write transaction left open across a slow call. It would hold the database's write lock for minutes, so the dashboard and chat would fail after 30 seconds.
+- **Measured.** The whole suite was run once with an instrument recording any composer call, registry call (Reader/Writer, including the tests' stand-ins), build (`subprocess`) or network call made while the calling thread's own connection held an open write. None, across 361 tests. Without the per-thread restriction there were three hits, all a telemetry dump's short write in its own thread overlapping a call in the main thread.
+- **Limits.** This covers what the tests exercise. Two processes writing at once is exercised only by the approvals race test. The instrument is scratch tooling and is not in the suite.
+
+**The memory store.**
+- **101 of the 157 live memories** in the operator's export of 2026-11-24 should go:
+  - 28 give "the project had 3 drafts" as the reason for votes, reads, replies and notes, which that limit does not touch;
+  - 18 are the number check loop of 11-22 to 11-24, its reasons now obsolete;
+  - 16 are one day's refusals from 11-22, stale and mostly misstated;
+  - 10 copy a rationale;
+  - 8 attach a refusal to the wrong action;
+  - 8 echo the reflection prompt's template;
+  - 6 are wrong;
+  - 7 are stale, duplicate or a front-page dump.
+- **The 56 kept** are accurate thread notes and facts.
+- **The command** backs up the rows to JSON and retires each through `memory.forget`, which also clears the search index and demotes lessons citing them. It is the operator's to run, under the cycle lock.
+
+**Not changed.**
+- **Verifier payout rows** (`listing-N-verifier`) are still not covered by the payout-without-work check. What counts as verification work for one is the registry's to define. A wrong check would refuse legitimate payouts, and `sign` already waits for the operator.
+
+**Tests.** 362. New: `gate PYSQL`. Changed: `remaining gates fail when they must`.
