@@ -164,8 +164,12 @@ def load_seed():
         text = ""
     if len(text) == 64 and all(c in "0123456789abcdefABCDEF" for c in text):
         return bytes.fromhex(text)
+    # validate=True (2026-11-27): urlsafe_b64decode skips every byte outside
+    # the alphabet, so ten bytes of garbage decoded to nothing and were
+    # reported as "the key is 0 bytes", and the line below never ran.
     try:
-        seed = base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+        seed = base64.b64decode(raw + b"=" * (-len(raw) % 4), altchars=b"-_",
+                                validate=True)
     except Exception:
         die("the key file is not 32 raw bytes, 64 hex characters, or base64url")
     if len(seed) != 32:
@@ -339,11 +343,23 @@ def cmd_payout(a):
 
     if not glob_ok(c["allowed_rows"], a.row):
         die(f"row {a.row!r} does not match allowed_rows in {CONF_PATH}")
+    # THE EXPIRY ASKED FOR IS THE EXPIRY SIGNED (2026-11-27). Every other
+    # field the registry hands back is checked against what was asked or what
+    # payout.conf says. The expiry was checked only for being in the future,
+    # so a preimage carrying a later expiry than the one asked for (a binding
+    # valid for a century, not 29 days) would have been signed as it came.
+    # payout-wallet below already required the exact expiry.
+    try:
+        _exp = int(a.expiry)
+    except ValueError:
+        die(f"expiry {a.expiry!r} is not a unix timestamp")
+    if _exp <= dt.datetime.now(dt.timezone.utc).timestamp():
+        die(f"expiry {_exp} is already in the past")
 
     # The preimage is FETCHED, never accepted from the caller. This is the
     # whole point: the agent chooses which row and when, and nothing else.
     q = urllib.parse.urlencode({"handle": c["handle"], "row": a.row,
-                                "address": c["address"], "expiry": a.expiry})
+                                "address": c["address"], "expiry": _exp})
     body = fetch(f"{BASE}/api/payout-bindings/preimage?{q}")
     pre = body.get("preimage") or body.get("bytes") or ""
     if not isinstance(pre, str) or not pre:
@@ -363,6 +379,7 @@ def cmd_payout(a):
         (address.lower() == _addr.lower(),
          f"address {address!r} is not the address in {CONF_PATH}"),
         (amount.isdigit(), f"amount {amount!r} is not a number"),
+        (expiry == str(_exp), f"expiry {expiry!r} is not the expiry asked for ({_exp})"),
     ]
     for ok, why in checks:
         if not ok:
@@ -378,11 +395,6 @@ def cmd_payout(a):
             die(f"amount {amount} is over the ceiling {_ceil}")
     if int(amount) <= 0:
         die(f"amount {amount} is not positive")
-    try:
-        if int(expiry) <= dt.datetime.now(dt.timezone.utc).timestamp():
-            die(f"expiry {expiry} is already in the past")
-    except ValueError:
-        die(f"expiry {expiry!r} is not a unix timestamp")
 
     # LOG FIRST, then sign. This log is the only record that a signature
     # exists; writing it after the fact means a crash, a full disk or a
