@@ -41,6 +41,11 @@ and artifacts follows from that.
   post-claimed         "I am posting it … the post is #13370" with no post
                        sent or queued, or a post number that is not riffle's
                        (2026-11-24).
+  credited             a reply crediting its addressee with a number, or a
+                       finding, their comment does not carry ("the
+                       suppression rate you observed", 2026-11-24).
+  claimed-before       "the same six I flagged earlier" when nothing riffle
+                       sent in 30 days says so (2026-11-26).
   figure-assumed       a rate a simulation of riffle's printed after being
                        given it: `random() < 0.718`, reported as "71.7%
                        suppression in simulation" (2026-11-24).
@@ -742,7 +747,10 @@ POST_CLAIM_RE = re.compile(
     r"\bI(?:'m|\s+am)\s+(?:now\s+|also\s+)?(?:posting|publishing)\b"
     r"|\bI(?:'ve|\s+have)\s+(?:now\s+|just\s+|also\s+)?(?:posted|published)\b"
     r"|\b(?:my|the)\s+(?:new\s+|standalone\s+)?(?:post|analysis|synthesis|write-?up)\s+"
-    r"(?:is|was|will\s+be|went\s+out\s+as)\s+(?:post\s+)?#\s?\d+",
+    r"(?:is|was|will\s+be|went\s+out\s+as)\s+(?:post\s+)?#\s?\d+"
+    # "The tripwire post is queued with the build appended" (porch 4548,
+    # 2026-11-26): no post was queued or sent.
+    r"|\b(?:my|the)\s+(?:[\w-]+\s+){0,3}?post\s+is\s+(?:now\s+)?(?:queued|waiting|up|out|live|sent)\b",
     re.I)
 _POST_NUM_RE = re.compile(r"#\s?(\d+)")
 
@@ -993,6 +1001,166 @@ def wrong_addressee(state, payload):
     return None
 
 
+# ------------------------------------------------ what riffle says they said
+#
+# The communications audit of 2026-11-20 found riffle misreporting other
+# citizens' data, and it did again on 11-24: action 4345 told swift-lantern
+# "the suppression rate you observed", replying to a comment about Merkle
+# proof folds that has no rate in it. Whether a paraphrase is fair needs
+# reading; whether a number or a finding credited to someone is in what they
+# wrote does not.
+
+_CREDIT_VERBS = (r"observed|measured|found|reported|saw|computed|counted|got|"
+                 r"confirmed|ran|walked|showed|identified|recorded|noted|derived")
+_CREDIT_RES = (
+    # "the suppression rate you observed", "the inversion that you measured"
+    re.compile(r"\bthe\s+((?:[\w-]+\s+){0,4}?[\w-]+)\s+(?:that\s+)?you(?:'ve|\s+have)?\s+(?:"
+               + _CREDIT_VERBS + r")\b", re.I),
+    # "you measured 267 rows", "you found zero structural mismatches"
+    re.compile(r"\byou(?:'ve|\s+have)?\s+(?:" + _CREDIT_VERBS + r")\s+([^.;:!?\n]{1,80})", re.I),
+    # "your 55 ms inversion"
+    re.compile(r"\byour\s+(\d[\d,.]*(?:\s*(?:ms|s|%|rows?|runs?|pages?|hits?))?)", re.I),
+)
+_STOP = {"that", "this", "these", "those", "with", "from", "your", "their", "which",
+         "what", "there", "here", "into", "about", "some", "more", "each", "very",
+         "just", "only", "also", "even", "much", "than", "then", "them", "they",
+         "were", "have", "been", "being", "when", "where", "while", "point", "note",
+         "thing", "things", "result", "results", "finding", "work", "check", "same"}
+
+
+def _body_of(state, comment_id):
+    """The text of comment `comment_id` as riffle has it, or None."""
+    have = _tables(state)
+    cid = int(comment_id)
+    try:
+        if "inbox_items" in have:
+            r = state.db.execute("SELECT body FROM inbox_items WHERE comment_id=?"
+                                 " AND body IS NOT NULL", (cid,)).fetchone()
+            if r and r["body"]:
+                return r["body"]
+        for t in ("thread_reads", "board_cache"):
+            if t not in have:
+                continue
+            r = state.db.execute(
+                f"SELECT json_extract(j.value,'$.body') AS b FROM {t}, "
+                f"json_each(CASE WHEN json_valid({t}.comments_json) THEN {t}.comments_json ELSE '[]' END) j"
+                f" WHERE CAST(json_extract(j.value,'$.id') AS INTEGER)=? LIMIT 1",
+                (cid,)).fetchone()
+            if r and r["b"]:
+                return r["b"]
+    except Exception:
+        return None
+    return None
+
+
+def credited_wrongly(said, theirs):
+    """What a reply credits to its addressee that their text does not carry,
+    as (the phrase, what is missing), or None. `said` is riffle's reply,
+    `theirs` the comment it replies to."""
+    if not said or not theirs:
+        return None
+    t = theirs.lower()
+    tnums = {n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", t)}
+    tstems = {w[:5] for w in re.findall(r"[a-z][a-z-]{3,}", t)}
+    for k, rx in enumerate(_CREDIT_RES):
+        for m in rx.finditer(outside_fences(said)):
+            phrase = m.group(1)
+            nums = [n.replace(",", "").rstrip(".") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", phrase)]
+            bad = [n for n in nums if n not in tnums]
+            if bad:
+                return m.group(0).strip(), ", ".join(bad)
+            if k == 0:
+                words = [w for w in re.findall(r"[a-z][a-z-]{3,}", phrase.lower()) if w not in _STOP]
+                if words and not any(w[:5] in tstems for w in words):
+                    return m.group(0).strip(), " ".join(words)
+    return None
+
+
+def credited(state, payload):
+    """A reply that credits its addressee with a number or a finding their
+    comment does not carry."""
+    par = (payload or {}).get("parent_id")
+    if par is None:
+        return None
+    try:
+        par = int(par)
+    except (TypeError, ValueError):
+        return None
+    theirs = _body_of(state, par)
+    hit = credited_wrongly((payload or {}).get("body") or "", theirs)
+    if not hit:
+        return None
+    phrase, missing = hit
+    who = _author_of(state, par) or f"c{par}"
+    return (f"you wrote \"{phrase[:90]}\", replying to {who}, and their comment "
+            f"c{par} has nothing of it ({missing}). Credit them only with what they "
+            f"wrote. If it is your reading of what they wrote, or something you "
+            f"found yourself, say so: \"I read this as …\", \"my own run found …\".")
+
+
+# ------------------------------------------------ what riffle says it said before
+#
+# Action 4531 (2026-11-26) told uriel "The six created_at inversions you note
+# are the same six I flagged earlier". riffle had flagged none: holdfast named
+# five and uriel found the sixth; riffle's one earlier mention of an inversion
+# (action 4483) was of uriel's sixth, thanking someone else for it.
+
+_NUMERALS = {"two", "three", "four", "five", "six", "seven", "eight", "nine",
+             "ten", "eleven", "twelve", "dozen", "twenty", "hundred"}
+BEFORE_RE = re.compile(
+    r"([^.;!?\n]{0,140}?)\bI(?:'d|\s+had|\s+have|'ve)?\s+(?:already\s+)?"
+    r"(?:flagged|reported|found|noted|identified|raised|pointed\s+out|showed|posted|"
+    r"mentioned|measured|computed|named|called\s+out)\s+(?:it|them|this|these|that)?\s*"
+    r"(?:earlier|before|previously|already|last\s+week|yesterday|in\s+my\s+(?:post|comment))\b",
+    re.I)
+
+
+def _said_before(state, days=30):
+    """The text of everything riffle sent in the last `days` days."""
+    lo = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = []
+    try:
+        for r in state.db.execute(
+                "SELECT payload FROM actions WHERE kind IN ('comment','post','porch')"
+                " AND status IN ('executed','sent') AND created_at > ?", (lo,)):
+            try:
+                p = json.loads(r["payload"] or "{}")
+            except ValueError:
+                continue
+            out.append(" ".join(str(p.get(k) or "") for k in ("title", "body", "text")).lower())
+    except Exception:
+        return None
+    return out
+
+
+def claimed_before(state, text):
+    """"… the same six I flagged earlier" when nothing riffle sent in 30 days
+    carries what it says it flagged: every number in the claim, and a word
+    of it."""
+    prior = None
+    for m in BEFORE_RE.finditer(outside_fences(text or "")):
+        what = m.group(1).lower()
+        nums = set(re.findall(r"\d[\d,]*(?:\.\d+)?", what)) | {w for w in re.findall(r"[a-z]+", what)
+                                                                if w in _NUMERALS}
+        stems = {w[:5] for w in re.findall(r"[a-z][a-z_-]{3,}", what) if w not in _STOP
+                 and w not in _NUMERALS and w not in ("same", "note", "notes", "flagged")}
+        if not nums and not stems:
+            continue
+        if prior is None:
+            prior = _said_before(state)
+            if prior is None:
+                return None
+        ok = any(all(re.search(rf"(?<![\w.]){re.escape(n)}(?![\w])", t) for n in nums)
+                 and (not stems or stems & {w[:5] for w in re.findall(r"[a-z][a-z_-]{3,}", t)})
+                 for t in prior)
+        if not ok:
+            said = m.group(0).strip()
+            return (f"you wrote \"{said[:100]}\", and nothing you sent in the last 30 "
+                    f"days says it. Say only what you did. If they found it, it is "
+                    f"theirs: credit them.")
+    return None
+
+
 def voted_unread(state, payload):
     tt = (payload or {}).get("target_type") or "post"
     try:
@@ -1171,6 +1339,8 @@ def check(state, cfg, kind, payload, rationale="", exclude_id=None, project_id=N
                             ("post-cannot-change", lambda: edit_promise(prose)),
                             ("claim-unbacked", lambda: claim_unbacked(state, prose)),
                             ("post-claimed", lambda: post_claimed(state, cfg, prose, kind)),
+                            ("credited", lambda: credited(state, payload)),
+                            ("claimed-before", lambda: claimed_before(state, prose)),
                             ("figure-assumed", lambda: figure_assumed(state, cfg, kind, payload, text))):
             why = fn()
             if why:

@@ -1011,8 +1011,23 @@ def reflect(state, cfg, log=None):
         _tri = dict(cfg["llm"]["triage"])
         _tri["max_tokens"] = max(int(_tri.get("max_tokens") or 0), 1000)
         cortex.set_purpose("reflection")
-        out = cortex.complete(_tri, REFLECT_PROMPT,
-                              _already + "\n\n" + _rest, timeout=900)
+        try:
+            out = cortex.complete(_tri, REFLECT_PROMPT,
+                                  _already + "\n\n" + _rest, timeout=900)
+        except cortex.CutOff as _c:
+            # KEEP WHAT ARRIVED (2026-11-27). The notes come first and the
+            # model then runs on: in the export of 11-24 to 11-27 reflection
+            # hit its 1,000 tokens on about one call in fifteen, and each was
+            # thrown away whole and asked again on a later run, up to three
+            # times. The lines before the cut are complete; the last is not.
+            _t = (getattr(_c, "text", None) or "").rstrip()
+            if "\n" not in _t or not re.search(r"(?im)^\s*(?:DURABLE|PASSING)\b", _t):
+                raise
+            out = _t.rsplit("\n", 1)[0]
+            if log:
+                log(f"reflection on cycle {cid} ran to its {_tri['max_tokens']} tokens; "
+                    f"keeping the {out.count(chr(10)) + 1} complete lines before the cut",
+                    level="warn")
     except Exception as e:
         # GIVE UP ON A CYCLE AFTER THREE TRIES.
         #

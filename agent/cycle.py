@@ -1506,6 +1506,24 @@ def _main():
             _bindable.append(_l)
     if not _bindable:
         _blocked.add("sign")
+    # HELD OUT AFTER REPEATED REFUSALS (the operator's decision, 2026-11-27).
+    # See refusal_lockouts. Reported under THE GATES RIGHT NOW.
+    _locked = refusal_lockouts(state, cfg)
+    _blocked |= set(_locked)
+    # THE PORCH ONCE IT HAS BEEN SAID (2026-11-27). On 11-26 riffle sent one
+    # porch line at 03:43 and proposed it five more times that day, 65% to
+    # 100% the same, each refused as said-already. The porch is a line a day;
+    # once a repeat has been refused there, it is out until the next day.
+    _porch_said = False
+    try:
+        _porch_said = bool(state.db.execute(
+            "SELECT 1 FROM actions a JOIN cycles c ON c.id = a.cycle_id"
+            " WHERE a.kind='porch' AND a.status='blocked' AND c.outcome='said-already'"
+            " AND substr(a.created_at, 1, 10) = ? LIMIT 1", (day,)).fetchone())
+    except Exception:
+        pass
+    if _porch_said:
+        _blocked.add("porch")
     _blocked.discard("noop")
 
     known = {"understand", "witness"}
@@ -2114,15 +2132,23 @@ def _main():
     # the grammar wrote what the rationale planned as an open_project, a
     # close, a comment or a read. Reflection then remembered the plan.
     _nochoice = []
-    if "post" in _blocked:
+    for _k, (_why, _n, _until) in sorted(_locked.items()):
+        _nochoice.append(
+            f"{_k} (refused {_n} times in 24 hours for the same reason, {_why}; held "
+            f"out until {_until[11:16]} UTC. When it comes back, change what was "
+            f"refused, not its wording, or do something else with the time)")
+    if "post" in _blocked and "post" not in _locked:
         _pq = state.db.execute("SELECT 1 FROM actions WHERE kind='post'"
                                " AND status='queued' LIMIT 1").fetchone()
         _nochoice.append("post (" + ("one is waiting for your operator" if _pq else
                                      "posting is closed" if _cd else
                                      "the project bar is not cleared") + ")")
-    for _k in sorted(_blocked - {"post", "noop"}):
+    for _k in sorted(_blocked - {"post", "noop"} - set(_locked)):
         if _k in _spent:
             _nochoice.append(f"{_k} (today's allowance is spent)")
+        elif _k == "porch" and _porch_said:
+            _nochoice.append("porch (you have said what you had to say there today; "
+                             "a repeat was refused)")
         elif _k == "sign":
             _nochoice.append("sign (nothing of yours to bind)")
     parts.append(
@@ -5229,6 +5255,46 @@ def _strip_own_words(text, me):
     text = re.sub(r"(?ms)^([ \t]*)\{\n(.*?)^\1\},?[ \t]*\n?",
                   lambda m: "" if _mine.search(m.group(2)) else m.group(0), text)
     return text
+
+
+def refusal_lockouts(state, cfg, now=None):
+    """{kind: (outcome, count, until)} for each action refused for the same
+    outcome at least cycle.refusal_lockout_after times in the last 24 hours,
+    while it is under cycle.refusal_lockout_hours since the last of them.
+
+    The operator's decision, 2026-11-27. "YOU HAVE BEEN DOING ONE THING"
+    (restless) told riffle in every prompt of 11-24 to 11-27 and it went on:
+    60 posts proposed on 11-26, 57 refused by the number check. A refusal
+    riffle keeps walking into now takes the action away for a while."""
+    c = cfg.get("cycle") or {}
+    after = int(c.get("refusal_lockout_after", 10) or 0)
+    hours = float(c.get("refusal_lockout_hours", 6) or 0)
+    if after <= 0 or hours <= 0:
+        return {}
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    lo = (now - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = {}
+    try:
+        rows = state.db.execute(
+            "SELECT a.kind AS kind, c.outcome AS outcome, COUNT(*) AS n, MAX(a.created_at) AS last"
+            " FROM actions a JOIN cycles c ON c.id = a.cycle_id"
+            " WHERE a.status='blocked' AND a.created_at > ? AND a.kind != 'noop'"
+            " AND c.outcome IS NOT NULL AND c.outcome != 'running'"
+            " GROUP BY a.kind, c.outcome", (lo,)).fetchall()
+    except Exception:
+        return {}
+    for r in rows:
+        if r["n"] < after or not r["last"]:
+            continue
+        try:
+            last = datetime.datetime.strptime(str(r["last"])[:19], "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=datetime.timezone.utc)
+        except ValueError:
+            continue
+        until = last + datetime.timedelta(hours=hours)
+        if until > now and (r["kind"] not in out or r["n"] > out[r["kind"]][1]):
+            out[r["kind"]] = (r["outcome"], int(r["n"]), until.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return out
 
 
 def _build_routes(state, cfg, kind, payload, findings):

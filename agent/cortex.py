@@ -462,10 +462,11 @@ class CutOff(ValueError):
     every existing handler is unchanged; it carries what the cycle needs to
     tell a reply that was simply too long (worth asking again, shorter) from
     a loop (not worth it): characters per token, whitespace share, length."""
-    def __init__(self, msg, chars, chars_per_token, whitespace, max_tokens):
+    def __init__(self, msg, chars, chars_per_token, whitespace, max_tokens, text=None):
         super().__init__(msg)
         self.chars, self.cpt, self.ws, self.max_tokens = (
             chars, chars_per_token, whitespace, max_tokens)
+        self.text = text          # what arrived before the cut (2026-11-27)
 
 
 # SEVERAL USER MESSAGES (V1, audit round 3). The composer is a hybrid model:
@@ -722,7 +723,7 @@ def complete(llm_cfg, system, user, timeout=None, schema=None):
             f"means the model looped, not that the body was too long. "
             f"Otherwise raise llm.composer.max_tokens, or the body being "
             f"written is too long for one call.",
-            len(t), len(t) / max(1, ntok), ws, body.get("max_tokens"))
+            len(t), len(t) / max(1, ntok), ws, body.get("max_tokens"), text=t)
     return text
 
 
