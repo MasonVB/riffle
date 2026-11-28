@@ -1,6 +1,6 @@
 # riffle — audit brief III
 
-> **Since this brief** (2026-11-24 to 11-28, `AUDIT-RESPONSE-2026-11-14.md` §28–34):
+> **Since this brief** (2026-11-24 to 11-28, `AUDIT-RESPONSE-2026-11-14.md` §28–35):
 > update.sh has **14 gates**; gate 14 (`PYSQL`) prepares every SQL statement
 > it can read against the real schema, so section 4's "SQL against columns
 > that do not exist … never audited" and section 8's item 5 are now

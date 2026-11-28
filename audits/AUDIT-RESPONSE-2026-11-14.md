@@ -1086,3 +1086,24 @@ The field names are the registry's, as served on 11-28: `verifier_price_atomic`,
 - "submission #2001" and "submission id 2001" are recognised, but "s2001" is not.
 
 **Tests.** 493. New: `verifier payout` (13 cases): each condition refused on its own, the ignore list, a verification of another listing's submission not counting, a verified case reaching the operator's queue, and `sign` offered or not offered with nothing else to bind.
+
+## 35. Addendum, batch 29 (2026-11-28): the first day of the second read, reflection, and a sent draft
+
+From the figures of 11-28 01:57, the second read's journal, and the operator's export of the refused reply, the reflection drops and the desk.
+
+**The second read's first refusal was right, for the wrong reason.** Cycle 5274 answered lucykimi's c162821. lucykimi had proposed a test the board had *not* seen: a seat that sets its own clock deliberately wrong by about 2 s. The reply called it "the forward test you suggest is the one bellwether and head-of-experiments just ran", and then offered the same idea as its own "stronger forward test". That is a misreading, and the reply should not have gone. But the model's verdict named the reply's last sentence, riffle's own prediction. As "what their comment says" it gave that same sentence again. riffle was told its own words were what lucykimi said otherwise, which teaches nothing.
+- A finding now has to quote both sides: `MISSTATED: "<exact words from the reply>" | "<exact words from their comment>"`. It is kept only when the first quote is in the reply, the second is in their comment, both are at least 12 characters, and the reply's words are not their words too. Quoting someone accurately is not misstating them.
+- riffle is now told both quotes.
+- The other six replies of the day passed, two of them after the model named words that were not in the reply.
+- The cost is a median of 13 s and at most 22 s a reply.
+- **Limit:** a small model that cannot quote their comment exactly now fails open more often. The journal says when that happens: "what it quoted was not in the reply and their comment".
+
+**Reflection kept nothing for eleven cycles, because of one shared phrase.** From 11-27 22:16, every durable line was dropped as "it repeats a note already remembered", and the passing lines are only considered after a durable one is kept. The rule from 11-24 counted a line as a repeat when it shared a single six-word run with a remembered note. Every refusal note shares "but the system refused it because". Among the lines lost were a new note on lucykimi's misread reply and one on the Date arm's 0.86 s against 0.36 s. Before 22:16 most drops were real repeats of the same refused-synthesis lesson.
+- A repeat is now a line at least half of whose six-word runs are already remembered. On the box's own lines, a new note shares 8–24% and the reworded synthesis note 80%. The note stitched from two older ones (the 11-24 case) shares 79% and is still dropped.
+- **Limit:** the prompt-echo check still drops a line for one five-word run of the reflection prompt. It took 4 of about 130 lines on 11-27, and none of those 4 is clearly new. It is left as it is until more of them are seen.
+
+**Four drafts of a post that had gone out.** The tripwire post was sent on 11-27 at 19:52 (action 4632). Four drafts of it stayed on the desk, all opening word for word as the post does: 9,268 characters in every prompt. At 01:01 riffle updated one, writing "The operator turned down the post earlier". No message riffle holds says so (the export searched for one); the operator had rejected a `close_project` (5248), not the post. The desk is riffle's to clear, so the code does not clear it. Instead `desk.sent_as` marks any draft whose six-word runs are at least half in a post riffle sent: "SENT: this draft went out as your post (action N, time). It is done; clear this slot". It also cuts that draft to 240 characters in the prompt.
+
+**The composer margin, measured.** Over the day's 76 cycles the slowest took 1,390 s, and the slowest cold read was 1,252 s for 22,772 tokens. The most the composer wrote in one call was 1,253 tokens. The 3,140 s worst case in HOW-TO §3 assumed a full 37,000-token prompt and all 4,000 tokens written, and neither happened. No change.
+
+**Tests.** 500. New: `second read` unquoted, echo, theirwords and box5274 (the reply and comment of cycle 5274, with a verdict quoting both correctly); `reflection repeat rule` (4 cases from the box's own lines); `desk sent draft` sent and unsent. The recorded output of the eight earlier `second read` cases changed with the message.
