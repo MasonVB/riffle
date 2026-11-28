@@ -1187,10 +1187,22 @@ support for something else, one thing credited as another.
 Disagreeing, adding the replier's own view, guessing, or asking a question is \
 fine and is not a misstatement. Only what the reply says THEY said counts.
 
-Answer NONE if there is none. Otherwise answer with up to three lines, each:
-MISSTATED: "<the exact words from the reply>" | <what their comment actually says>"""
+Answer NONE if there is none. Otherwise answer with up to three lines, each \
+quoting the reply's words and then THEIR comment's own words that show what \
+they actually said, both copied exactly:
+MISSTATED: "<exact words from the reply>" | "<exact words from their comment>\""""
 
-_MIS_RE = re.compile(r'(?im)^\s*MISSTATED:\s*["\u201c](.+?)["\u201d]\s*\|\s*(.+?)\s*$')
+# BOTH HALVES ARE QUOTES, AND BOTH ARE CHECKED (box, 2026-11-28). The first
+# refusal on the box, cycle 5274, answered lucykimi's c162821. The reply did
+# misread it: lucykimi asked for a seat set deliberately wrong as a test the
+# board had NOT seen, and the reply called it "the one bellwether and
+# head-of-experiments just ran", then offered the same idea as its own. But
+# the model's verdict named the reply's last sentence (riffle's own
+# prediction) and gave, as "what their comment says", that same sentence
+# again, which riffle was then told. A finding is now kept only when its
+# second half is words of their comment, and not when the reply's words are
+# theirs too (quoting someone accurately is not misstating them).
+_MIS_RE = re.compile(r'(?im)^\s*MISSTATED:\s*["\u201c](.+?)["\u201d]\s*\|\s*["\u201c](.+?)["\u201d]\s*$')
 
 
 def second_read(state, cfg, kind, payload, log=None):
@@ -1229,25 +1241,29 @@ def second_read(state, cfg, kind, payload, log=None):
                 f"{str(e)[:120]}); sent unread", level="warn")
         return None
     flat = " ".join(said.split()).lower()
+    tflat = " ".join(theirs.split()).lower()
     found = []
     for m in _MIS_RE.finditer(out or ""):
         q = " ".join(m.group(1).split())
-        # The quote must be in the reply: a model can invent the words it
-        # objects to, and a refusal of words riffle never wrote teaches
-        # nothing.
-        if len(q) >= 12 and q.lower() in flat:
-            found.append((q, m.group(2).strip()))
+        w = " ".join(m.group(2).split())
+        # Each quote must be where it says it is: a model can invent the
+        # words it objects to, or what it says they said, and a refusal
+        # built on words nobody wrote teaches nothing.
+        if (len(q) >= 12 and q.lower() in flat and len(w) >= 12
+                and w.lower() in tflat and q.lower() not in tflat):
+            found.append((q, w))
     if log:
         log(f"second read of the reply to c{par} by {who}: "
-            + ("; ".join(f'"{q[:80]}" | {w[:120]}' for q, w in found) if found else
+            + ("; ".join(f'"{q[:80]}" | "{w[:120]}"' for q, w in found) if found else
                "nothing misstated" + ("" if not (out or "").strip().upper().startswith("MISSTATED")
-                                      else " (the words it named were not in the reply, or under 12 characters)")),
+                                      else " (what it quoted was not in the reply and their "
+                                           "comment, or was their own words, or under 12 characters)")),
             level="warn" if found else "info")
     if not found:
         return None
     q, w = found[0]
-    return (f"read beside {who}'s comment c{par}, your reply says \"{q[:120]}\", and their "
-            f"comment says otherwise: {w[:240]}. Say only what they said. If it is your "
+    return (f"read beside {who}'s comment c{par}, your reply says \"{q[:120]}\", where "
+            f"their comment says \"{w[:240]}\". Say only what they said. If it is your "
             f"own reading, or your own finding, say so in those words."
             + (f" ({len(found) - 1} more like it.)" if len(found) > 1 else ""))
 

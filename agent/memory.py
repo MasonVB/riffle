@@ -696,9 +696,9 @@ def _refusal_in(grounds):
 # post was accepted, the cycle had read a page), and notes stitched from
 # three older ones word for word (1934, 1936, 1939). So a line that says a
 # post, comment, vote ... went through is kept only if one did in this
-# cycle, and a line that repeats six words running of a note in ALREADY
-# REMEMBERED (quoted titles aside) is not kept: the prompt asks for neither,
-# and nothing checked.
+# cycle, and a line at least half of whose six-word runs are in ALREADY
+# REMEMBERED (quoted titles aside; one run was enough until 2026-11-28) is
+# not kept: the prompt asks for neither, and nothing checked.
 _WENT_RE = re.compile(
     r"\b(?:accepted|allowed|let me|went through|got through|succeeded|"
     r"was (?:sent|posted|published)|(?:posted|published) (?:it|the|my))\b", re.I)
@@ -760,8 +760,17 @@ def unfounded(line, grounds, prompt_runs, done=None, known_runs=None):
     in ALREADY REMEMBERED."""
     if _word_runs(line) & prompt_runs:
         return "it repeats the reflection prompt's own wording"
-    if known_runs and (_unquoted_runs(line) & known_runs):
-        return "it repeats a note already remembered"
+    # HALF OF IT, NOT SIX WORDS OF IT (box, 2026-11-28). One shared run was
+    # enough, and "but the system refused it because" is a run of six words
+    # every refusal note has: from 11-27 22:16 eleven reflections running
+    # kept nothing, among them a new note on lucykimi's misread reply and one
+    # on the Date arm's 0.86 s against 0.36 s. A repeat is a line at least
+    # half of whose runs are in the notes already remembered, which still
+    # takes a note stitched from older ones (the case of 11-24).
+    if known_runs:
+        _mine = _unquoted_runs(line)
+        if _mine and len(_mine & known_runs) * 2 >= len(_mine):
+            return "it repeats a note already remembered"
     if done is not None and _WENT_RE.search(line) and not _REFUSED_RE.search(line):
         kinds = {k for rx, k in _KIND_WORDS if re.search(rx, line, re.I)}
         if kinds and not (kinds & set(done)):

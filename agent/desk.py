@@ -40,6 +40,8 @@ the oldest UNTOUCHED item goes — touched meaning read or updated — so a thin
 being actively worked survives and a thing put down and forgotten does not.
 """
 import datetime as dt
+import json
+import re
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS desk (
@@ -179,6 +181,42 @@ def evict(state, cap=MAX_ITEMS):
 FROM_BOARD = ("thread", "scrap")
 
 
+def _runs(text, n=6):
+    w = re.findall(r"[a-z0-9']+", (text or "").lower())
+    return {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def sent_as(state, body, share=0.5):
+    """(action id, created_at) of the post riffle sent that this draft is,
+    or None: a post that holds at least `share` of the draft's six-word runs.
+
+    A DRAFT THAT WENT OUT (box, 2026-11-28). The tripwire post was sent on
+    11-27 at 19:52 (action 4632). Four drafts of it stayed on the desk, all
+    four opening word for word as the post does: 9,268 characters in every
+    prompt after it. At 01:01 riffle updated one, writing "The operator
+    turned down the post earlier", which nothing had told it. The desk is
+    riffle's to clear, so it is not cleared for it; it is told the draft
+    went out."""
+    mine = _runs(body)
+    if len(mine) < 10:
+        return None
+    try:
+        rows = state.db.execute(
+            "SELECT id, created_at, payload FROM actions WHERE kind='post'"
+            " AND status IN ('executed','sent','unknown') ORDER BY id DESC LIMIT 30").fetchall()
+    except Exception:
+        return None
+    for r in rows:
+        try:
+            p = json.loads(r["payload"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        theirs = _runs(f"{p.get('title') or ''}\n{p.get('body') or ''}")
+        if len(mine & theirs) >= share * len(mine):
+            return r["id"], r["created_at"]
+    return None
+
+
 def as_context(state, budget=PROMPT_BUDGET, board_side=False):
     """The desk, in the prompt, every cycle, in two halves.
 
@@ -221,11 +259,15 @@ def as_context(state, budget=PROMPT_BUDGET, board_side=False):
                   if _else else "")]
     for r in rows:
         b = r["body"]
-        if len(b) > per:
-            b = b[:per] + f"\n[...{len(r['body']) - per} more characters]"
+        sent = sent_as(state, b) if r["kind"] == "draft" else None
+        cut = min(per, 240) if sent else per
+        if len(b) > cut:
+            b = b[:cut] + f"\n[...{len(r['body']) - cut} more characters]"
         age = r["updated_at"]
         out.append(f"--- [{r['kind']}] {r['slot']}  (updated {age}, "
                    f"picked up {r['touches']}x)"
+                   + (f"\n    SENT: this draft went out as your post (action {sent[0]}, "
+                      f"{sent[1]}). It is done; clear this slot." if sent else "")
                    + (f"\n    why: {r['why']}" if r["why"] else "")
                    + f"\n{b}")
     return "\n".join(out)
