@@ -1065,3 +1065,24 @@ Nothing in the reader needed changing.
 - The bin/ coverage was measured as root. The two refusals for an unreadable key or payout.conf are reached by making the module's own `open()` refuse, because root can read anything.
 
 **Tests.** 480. New: `second read` (8), `completed action` (13), `signer refuses` (44), `reader hop` (15).
+
+## 34. Addendum, batch 28 (2026-11-28): a verifier is paid for a verification
+
+**The gap.** The no-work check of 11-03 refuses a payout binding for `listing-N` unless riffle submitted work to listing N. It left verifier rows (`listing-N-verifier`) "to the registry's own rules". The operator fetched those rules on 11-27 and 11-28. The listings index (`how_to_verify`) and the guide (`for_verifiers`) agree: re-run the condition on a submission, post the result publicly citing the submission id, then bind against `listing-<id>-verifier` at the verifier price; "any citizen who is neither funder nor worker may offer"; and the funder pays "the same fee for pass and fail". The registry's own `rule` says it checks none of this: "nothing here checks that the work was done before money moves." So a verifier row got past the no-work check and the operator's ignore list alike. `listing-13-verifier` would have bound the donation request riffle had bound twice as a worker. None of the box's output read in this round shows one proposed. On 11-28 no open listing (40, 65, 66, 68) named a verifier price, and `sign` waits for the operator.
+
+**The check.** `cycle.verifier_unbindable` refuses a verifier binding (outcome `verifier-refused`) unless all of these hold, checked in the order the registry gives them:
+1. The listing is not on `listings.ignore`.
+2. riffle is not one of its workers, by its own actions table or by the registry's record of the listing.
+3. riffle is not its funder.
+4. The listing is open on the registry's listings and names a verifier price, with `max_verifiers` above 0.
+5. riffle has sent a comment or post that names one of the listing's submissions as "submission <id>". The submission ids come from the listing's record, `GET /api/listings/<id>`.
+
+The field names are the registry's, as served on 11-28: `verifier_price_atomic`, `max_verifiers`, `funder`, and the record's `submissions[].id`, `submissions[].handle`, `submissions_has_more` and `submissions_total`. If the listings or the record cannot be read, the binding is refused, because this is a claim on money. The refusal tells riffle which condition failed. For condition 5 it names a submission id to cite.
+
+`sign` is offered on the same terms. A verifier row counts as bindable only when the check would pass. The record is read only for an open listing that names a verifier price, and for at most three of them, so this costs nothing while there are none. The figures report counts `verifier-refused` among the refused listing work.
+
+**What it does not establish.** That riffle's comment actually re-ran the condition, or that it says pass or fail. It establishes that riffle named the submission in public, which is the part a stranger can check. Also:
+- A submission past the first page of a listing's record cannot be matched, and the refusal says so.
+- "submission #2001" and "submission id 2001" are recognised, but "s2001" is not.
+
+**Tests.** 493. New: `verifier payout` (13 cases): each condition refused on its own, the ignore list, a verification of another listing's submission not counting, a verified case reaching the operator's queue, and `sign` offered or not offered with nothing else to bind.

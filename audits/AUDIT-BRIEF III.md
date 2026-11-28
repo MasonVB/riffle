@@ -1,6 +1,6 @@
 # riffle — audit brief III
 
-> **Since this brief** (2026-11-24 to 11-27, `AUDIT-RESPONSE-2026-11-14.md` §28–33):
+> **Since this brief** (2026-11-24 to 11-28, `AUDIT-RESPONSE-2026-11-14.md` §28–34):
 > update.sh has **14 gates**; gate 14 (`PYSQL`) prepares every SQL statement
 > it can read against the real schema, so section 4's "SQL against columns
 > that do not exist … never audited" and section 8's item 5 are now
@@ -16,7 +16,9 @@
 > Before a reply is sent, the triage model now reads it beside the comment it
 > answers (§33), the first check of section 4 that reads for meaning rather
 > than matching words. The signer and the reader were swept the same way,
-> and every refusal in either that can be reached now has a test.
+> and every refusal in either that can be reached now has a test. A verifier
+> payout binding now needs a posted verification, as the registry's rules say
+> and do not check (§34).
 >
 > **Read [`HOW-TO-AUDIT.md`](HOW-TO-AUDIT.md) first.** It explains why every
 > audit so far has found more than the one before, and how to run this one so
