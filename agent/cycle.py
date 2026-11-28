@@ -1504,6 +1504,25 @@ def _main():
                 " AND status IN ('queued','approved','sending','sent','executed','unknown')"
                 " LIMIT 1", (f"listing-{_l}",)).fetchone():
             _bindable.append(_l)
+    # A verifier row is bindable on the same terms the gate refuses it on
+    # (verifier_unbindable). Only listings that name a verifier price are
+    # looked at, so this costs a read of a listing's record only when one
+    # exists, and at most three.
+    _vcand = [l for l in open_listings
+              if str(l.get("verifier_price_atomic") or "0").isdigit()
+              and int(l.get("verifier_price_atomic") or 0) > 0
+              and str(l.get("max_verifiers") or "0").isdigit()
+              and int(l.get("max_verifiers") or 0) > 0
+              and l.get("id") not in _ignored_l][:3]
+    for _vl in _vcand:
+        if state.db.execute(
+                "SELECT 1 FROM actions WHERE kind='sign'"
+                " AND json_extract(payload,'$.row')=?"
+                " AND status IN ('queued','approved','sending','sent','executed','unknown')"
+                " LIMIT 1", (f"listing-{_vl['id']}-verifier",)).fetchone():
+            continue
+        if verifier_unbindable(state, cfg, reader, _vl["id"], _vl, _ignored_l) is None:
+            _bindable.append(f"{_vl['id']}-verifier")
     if not _bindable:
         _blocked.add("sign")
     # HELD OUT AFTER REPEATED REFUSALS (the operator's decision, 2026-11-27).
@@ -3072,8 +3091,9 @@ def _main():
     # to the registry", having submitted nothing there; it tried again the
     # next day. A payout binding claims money for work done: a plain
     # listing-N row needs a submission of riffle's to listing N. Verifier
-    # rows (listing-N-verifier) pay for checking someone else's, and are left
-    # to the registry's own rules.
+    # rows (listing-N-verifier) pay for checking someone else's. They were
+    # left to the registry's own rules until 2026-11-28, when those rules
+    # turned out to check nothing; see verifier_unbindable.
     if kind == "sign" and payload.get("kind") == "payout":
         _mrow = re.fullmatch(r"listing-(\d+)", str(payload.get("row") or ""))
         if _mrow and not state.db.execute(
@@ -3093,6 +3113,22 @@ def _main():
                       {"drive": drive})
             state.end_cycle(cid, "payout-without-work", _mrow.group(1))
             return 0
+        # A VERIFIER ROW (2026-11-28): see verifier_unbindable.
+        _vrow = re.fullmatch(r"listing-(\d+)-verifier", str(payload.get("row") or ""))
+        if _vrow:
+            _vl = int(_vrow.group(1))
+            why = verifier_unbindable(
+                state, cfg, reader, _vl,
+                next((l for l in listings if l.get("id") == _vl and _is_open(l)), None),
+                _ignored_l, _listings_known)
+            if why:
+                state.propose(cid, kind, drive, payload, rationale, "blocked")
+                log(f"sign refused: listing-{_vl}-verifier: {why[:120]}",
+                    level="warn", drive=drive)
+                state.say("report", f"Cycle {cid} · I did not propose that: {why}",
+                          {"drive": drive})
+                state.end_cycle(cid, "verifier-refused", str(_vl))
+                return 0
 
     # AN INSTRUCTION RIFFLE DOES NOT HAVE (communications audit, 2026-11-20).
     # Action 3762 opened the project that took 62% of four days with "The
@@ -5188,6 +5224,98 @@ def _set_aside(lid):
             f"so it will never be open to you. Stop working on it: no "
             f"submission, no payout binding, no project note or draft for it. "
             f"If a draft on your desk is for listing {lid}, clear it.")
+
+
+# "submission 1075", "submission #1075", "submission id 1075".
+_SUB_CITE_RE = re.compile(r"(?i)\bsubmission\s*(?:id\s*)?#?\s*(\d{1,9})\b")
+
+
+def verifier_unbindable(state, cfg, reader, lid, row, ignored, listings_known=True):
+    """Why riffle may not bind listing-<lid>-verifier, or None when it may.
+
+    A VERIFIER IS PAID FOR A VERIFICATION (2026-11-28). The no-work check
+    above it covered plain listing-N rows and left verifier rows "to the
+    registry's own rules". The registry's rules (GET /api/listings,
+    how_to_verify, read 2026-11-28): "re-run the condition on a submission,
+    post the result publicly citing the submission id, then bind against
+    listing-<id>-verifier at the verifier price. Any citizen who is neither
+    funder nor worker may offer." Its own rule says it checks none of that:
+    "nothing here checks that the work was done before money moves". So a
+    verifier row went past the no-work check and the operator's ignore list
+    alike: listing-13-verifier would have bound the donation request riffle
+    bound twice as a worker.
+
+    Each condition, in the order the registry gives them. The listing's
+    record (GET /api/listings/<id>) supplies the submission ids; it is read
+    only for a listing that names a verifier price, and if it cannot be read
+    the binding is refused, because this is a claim on money.
+
+    What this does NOT establish: that riffle's comment re-ran the condition
+    or says pass or fail. It establishes that riffle named the submission in
+    public, which is the part a stranger can check."""
+    if lid in ignored:
+        return _set_aside(lid)
+    me = cfg.get("handle", "riffle")
+    if state.db.execute(
+            "SELECT 1 FROM actions WHERE kind='listing_submission'"
+            " AND status IN ('sent','executed','unknown')"
+            " AND CAST(json_extract(payload,'$.listing_id') AS INTEGER)=? LIMIT 1",
+            (lid,)).fetchone():
+        return (f"you submitted work to listing {lid}, so you are one of its "
+                f"workers. The registry pays a verifier only if they are neither "
+                f"its funder nor one of its workers.")
+    if not listings_known:
+        return (f"the registry's listings could not be read this cycle, so "
+                f"listing {lid}'s verifier price cannot be checked. Try again later.")
+    if row is None:
+        return (f"listing {lid} is not open on the registry's listings, so it "
+                f"has no verifier to pay.")
+    if str(row.get("funder") or "") == me:
+        return f"you are listing {lid}'s funder; a funder cannot be paid as its verifier."
+    try:
+        _price, _max = int(row.get("verifier_price_atomic") or 0), int(row.get("max_verifiers") or 0)
+    except (TypeError, ValueError):
+        _price, _max = 0, 0
+    if _price <= 0 or _max <= 0:
+        return (f"listing {lid} names no verifier price (max_verifiers "
+                f"{row.get('max_verifiers')}), so it pays no verifier. Only "
+                f"listing-{lid} pays, and only for submitted work.")
+    try:
+        rec = reader.get(f"/api/listings/{lid}")
+    except (HttpError, OSError, ValueError) as e:
+        return (f"listing {lid}'s submissions could not be read to check your "
+                f"verification ({str(e)[:120]}). Try again later.")
+    subs = {}
+    for s in (rec or {}).get("submissions") or []:
+        try:
+            subs[int(s.get("id"))] = str(s.get("handle") or "")
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if me in subs.values():
+        return (f"the registry's record of listing {lid} has a submission of yours, "
+                f"so you are one of its workers. The registry pays a verifier only "
+                f"if they are neither its funder nor one of its workers.")
+    cited = set()
+    for r in state.db.execute(
+            "SELECT payload FROM actions WHERE kind IN ('comment','post')"
+            " AND status IN ('sent','executed','unknown')"):
+        try:
+            body = str(json.loads(r["payload"] or "{}").get("body") or "")
+        except (ValueError, TypeError):
+            continue
+        cited |= {int(m.group(1)) for m in _SUB_CITE_RE.finditer(body)}
+    if any(i in subs for i in cited):
+        return None
+    _eg = next(iter(subs), None)
+    _more = (f" The registry listed {len(subs)} of its {rec.get('submissions_total')} "
+             f"submissions; one past those cannot be checked here."
+             if rec.get("submissions_has_more") else "")
+    return (f"you have posted no verification of a submission to listing {lid}. "
+            f"The registry pays a verifier for re-running the listing's condition "
+            f"on a submission and posting the result publicly, citing the "
+            f"submission's id"
+            + (f' (write it as "submission {_eg}")' if _eg is not None else "")
+            + f". Do that first, then bind.{_more}")
 
 
 def _hex_runs(texts):

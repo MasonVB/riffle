@@ -489,7 +489,7 @@ def report(state, cfg):
             say(f"    {r['started_at'][5:16]} {r['outcome']}: {(r['notes'] or '')[:44]} | starts like a library "
                 f"hash: {bool(h) and len(h) >= 12 and any(x.startswith(h[:12]) for x in lib)}")
         rows = _q(state, "SELECT substr(started_at,1,10) d, outcome, notes, COUNT(*) n FROM cycles WHERE outcome IN"
-                         " ('listing-not-open','payout-without-work','listing-ignored') AND started_at > ?"
+                         " ('listing-not-open','payout-without-work','verifier-refused','listing-ignored') AND started_at > ?"
                          " GROUP BY d, outcome, notes ORDER BY d", (_utc(24 * 7),))
         if rows:
             say("  listing work refused, last 7 days: " + "; ".join(
