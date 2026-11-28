@@ -492,6 +492,13 @@ _CTX_SEEN = {}
 # figures page is opened). Bounded: the oldest go first.
 CALLS = []
 _TL = threading.local()
+# THE LAST CYCLE REQUEST, WHOLE (2026-11-28). To judge a model before
+# switching to it, the operator needs a real prompt to replay, and none was
+# kept: the cycle builds it from live state and sends it once. complete()
+# keeps the body of the last call labelled "cycle", and cycle.main() writes
+# it to <data_dir>/last-cycle-request.json; `python3 -m agent.trial` replays
+# it against another server.
+LAST_CYCLE_REQUEST = {}
 
 
 def set_purpose(purpose):
@@ -656,6 +663,11 @@ def complete(llm_cfg, system, user, timeout=None, schema=None):
                                    "json_schema": {"name": "proposal",
                                                    "strict": True,
                                                    "schema": schema}}
+    if schema is not None and getattr(_TL, "purpose", None) == "cycle":
+        LAST_CYCLE_REQUEST.clear()
+        LAST_CYCLE_REQUEST.update(
+            at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            url=str(llm_cfg.get("url") or ""), body=body)
     _budgeted = timeout is None
     why = ""
     if _budgeted:

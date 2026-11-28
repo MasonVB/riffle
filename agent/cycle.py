@@ -829,6 +829,24 @@ def main():
     finally:
         if _RUN:
             figures.after_cycle(_RUN[0], _RUN[1], cortex.CALLS)
+            keep_last_request(_RUN[1])
+
+
+def keep_last_request(cfg):
+    """Write this cycle's composer request to <data_dir>/last-cycle-request.json
+    (owner-only, replaced whole), for `python3 -m agent.trial` to replay; see
+    cortex.LAST_CYCLE_REQUEST. Never fails a cycle."""
+    if not cortex.LAST_CYCLE_REQUEST:
+        return
+    try:
+        path = os.path.join(os.path.expanduser(cfg["data_dir"]), "last-cycle-request.json")
+        tmp = path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(cortex.LAST_CYCLE_REQUEST, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 def _main():
